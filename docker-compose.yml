@@ -1,0 +1,18 @@
+services:
+  voicevox:
+    image: voicevox/voicevox_engine:latest
+    ports:
+      - "50021:50021"
+
+  app:
+    build: .
+    depends_on:
+      - voicevox
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - VOICEVOX_HOST=http://voicevox:50021
+    volumes:
+      - ./output:/app/output
+    env_file:
+      - path: .env
+        required: false
