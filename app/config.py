@@ -16,10 +16,14 @@ _DEFAULTS = {
     "image_size": "1792x1024",
     "num_scenes": 3,
     "image_style": (
-        "photorealistic photograph, cinematic lighting, dark moody atmosphere, "
-        "Japanese horror aesthetic, muted desaturated color palette, "
-        "film grain, shallow depth of field, 35mm lens, "
-        "absolutely no text, no letters, no words, no writing, no watermarks, no UI elements"
+        "photorealistic photograph, sepia toned, desaturated muted colors, "
+        "dark ominous sinister atmosphere, Japanese horror aesthetic, "
+        "heavy shadows, oppressive darkness, eerie unsettling mood, "
+        "faded washed-out colors like old photograph, warm brownish undertone, "
+        "film grain, vignette, shallow depth of field, 35mm lens, "
+        "dread, foreboding, supernatural horror, cursed imagery, "
+        "absolutely no text, no letters, no words, no writing, no watermarks, no UI elements, "
+        "no vibrant colors, no bright saturated colors, no cheerful mood"
     ),
     "image_rate_limit": 15,
     "fps": 30,
