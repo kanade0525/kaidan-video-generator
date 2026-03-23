@@ -92,8 +92,11 @@ def settings_page():
     with ui.card().classes("w-full mb-4 p-4"):
         ui.label("テキスト設定").classes("text-lg font-bold mb-2")
 
+        text_model_input = ui.input(
+            "テキスト処理モデル", value=config.get("text_model", "gpt-4o-mini")
+        ).classes("w-64")
         gemini_model = ui.input(
-            "Geminiモデル", value=config.get("gemini_model", "gemini-2.5-flash-lite")
+            "Geminiモデル (画像プロンプト用)", value=config.get("gemini_model", "gemini-2.5-flash-lite")
         ).classes("w-64")
         max_chunk = ui.number("最大チャンク長", value=config.get("max_chunk", 200), min=50, max=1000)
         text_prompt = ui.textarea(
@@ -118,6 +121,7 @@ def settings_page():
             "fade_out": fade_out.value,
             "bgm_path": bgm_select.value,
             "bgm_volume": bgm_volume.value,
+            "text_model": text_model_input.value,
             "gemini_model": gemini_model.value,
             "max_chunk": int(max_chunk.value),
             "text_prompt": text_prompt.value,

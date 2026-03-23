@@ -25,6 +25,7 @@ _DEFAULTS = {
     "fade_out": 1.0,
     "bgm_path": "",
     "bgm_volume": 0.1,
+    "text_model": "gemini-2.5-flash",
     "gemini_model": "gemini-2.5-flash-lite",
     "max_chunk": 200,
     "text_prompt": (
