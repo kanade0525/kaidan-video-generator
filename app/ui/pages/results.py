@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 from nicegui import app, ui
@@ -121,7 +120,7 @@ def _retry_button(story, target_stage: str, label: str = "再処理"):
 
     status_label = ui.label("").classes("text-sm text-gray-500")
 
-    async def do_retry():
+    def do_retry():
         status_label.text = "処理中..."
         status_label.classes(replace="text-sm text-blue-500")
         btn.disable()
@@ -129,22 +128,22 @@ def _retry_button(story, target_stage: str, label: str = "再処理"):
         def run():
             try:
                 pipeline.run_single(story.id, target_stage)
-                return None
+                error = None
             except Exception as e:
-                return str(e)
+                error = str(e)
 
-        loop = asyncio.get_event_loop()
-        error = await loop.run_in_executor(None, run)
+            try:
+                if error:
+                    status_label.text = f"エラー: {error[:100]}"
+                    status_label.classes(replace="text-sm text-red-500")
+                else:
+                    status_label.text = "完了!"
+                    status_label.classes(replace="text-sm text-green-500")
+                btn.enable()
+            except Exception:
+                pass  # UI element may have been deleted
 
-        if error:
-            status_label.text = f"エラー: {error[:100]}"
-            status_label.classes(replace="text-sm text-red-500")
-            ui.notify(f"エラー: {error[:100]}", color="negative")
-        else:
-            status_label.text = "完了!"
-            status_label.classes(replace="text-sm text-green-500")
-            ui.notify(f"{STAGE_LABELS.get(target_stage, target_stage)} 完了", color="positive")
-        btn.enable()
+        threading.Thread(target=run, daemon=True).start()
 
     btn = ui.button(label, on_click=do_retry, color="orange").props("size=sm")
 
