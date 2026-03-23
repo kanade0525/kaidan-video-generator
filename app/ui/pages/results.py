@@ -33,8 +33,11 @@ def results_page():
 
         search_input = ui.input("タイトル検索").classes("w-64")
 
-    story_select = ui.select({}, label="ストーリー選択").classes("w-96 mb-4")
+    select_container = ui.column().classes("w-full mb-4")
     detail_container = ui.column().classes("w-full")
+
+    # Keep reference to current select widget
+    state = {"select": None}
 
     def update_story_list():
         stage = stage_filter.value or None
@@ -42,18 +45,23 @@ def results_page():
         stories = db.get_stories(stage=stage, limit=200)
         if keyword:
             stories = [s for s in stories if keyword in s.title]
-        options = {s.id: f"{s.title} [{STAGE_LABELS.get(s.stage, s.stage)}]" for s in stories}
-        story_select.options = options
-        story_select.value = None
-        if not options:
-            detail_container.clear()
-            with detail_container:
+
+        select_container.clear()
+        detail_container.clear()
+
+        with select_container:
+            if not stories:
                 ui.label("該当なし").classes("text-gray-500")
+                return
+            options = {s.id: f"{s.title} [{STAGE_LABELS.get(s.stage, s.stage)}]" for s in stories}
+            sel = ui.select(options, label="ストーリー選択").classes("w-96")
+            sel.on_value_change(lambda e: show_detail(e.value))
+            state["select"] = sel
 
     stage_filter.on_value_change(lambda _: update_story_list())
     search_input.on("keydown.enter", lambda _: update_story_list())
 
-    selected = story_select
+    selected = None
     update_story_list()
 
     def show_detail(story_id):
@@ -103,12 +111,7 @@ def results_page():
                 with ui.tab_panel(video_tab):
                     _show_video_result(story)
 
-    selected.on_value_change(lambda e: show_detail(e.value))
-
-    # Auto-select from query param
-    query_id = app.storage.general.get("selected_story_id")
-    if query_id:
-        selected.value = int(query_id)
+    # (event binding is done inside update_story_list)
 
 
 def _retry_button(story: db, target_stage: str, label: str = "再処理"):
