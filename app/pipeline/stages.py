@@ -14,6 +14,7 @@ from app.utils.paths import (
     narration_path,
     processed_text_path,
     raw_content_path,
+    story_dir,
     video_path,
 )
 
@@ -80,7 +81,23 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
     if progress_callback:
         progress_callback(0, 3)
     img_dir = images_dir(story.title)
-    images = sorted(img_dir.glob("*.png"))
+    sdir = story_dir(story.title)
+
+    # Load slideshow config if exists
+    slideshow_config_path = sdir / "slideshow.json"
+    if slideshow_config_path.exists():
+        import json as _json
+        slide_config = _json.loads(slideshow_config_path.read_text())
+        images = []
+        durations = []
+        for slide in slide_config:
+            img_path = img_dir / slide["file"]
+            if img_path.exists():
+                images.append(img_path)
+                durations.append(slide.get("duration", 0))
+    else:
+        images = sorted(img_dir.glob("*.png"))
+        durations = None
 
     if not images:
         raise RuntimeError("No images found")
@@ -90,7 +107,7 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
         raise RuntimeError("Narration file not found")
 
     output = video_path(story.title)
-    video_generator.create_video(images, narration, output, progress_callback=progress_callback)
+    video_generator.create_video(images, narration, output, durations=durations, progress_callback=progress_callback)
 
 
 # Stage function registry: maps output stage -> processing function

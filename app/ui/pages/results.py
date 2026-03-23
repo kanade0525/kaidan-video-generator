@@ -211,18 +211,57 @@ def _show_voice_result(story):
 
 
 def _show_images_result(story):
+    import json as _json
+
     img_dir = images_dir(story.title)
     images = sorted(img_dir.glob("*.png"))
 
     if images:
-        import time
         static_path = f"/images/{story.id}"
         app.add_static_files(static_path, str(img_dir))
 
-        with ui.row().classes("gap-2 flex-wrap"):
-            for img in images:
-                ts = int(img.stat().st_mtime)
-                ui.image(f"{static_path}/{img.name}?t={ts}").classes("w-64 rounded")
+        # Load or create slideshow config
+        config_path = story_dir(story.title) / "slideshow.json"
+        if config_path.exists():
+            slide_config = _json.loads(config_path.read_text())
+        else:
+            slide_config = [{"file": img.name, "duration": 0} for img in images]
+            # duration 0 = auto (total / num_images)
+
+        ui.label("スライドショー編集").classes("text-lg font-bold mt-2 mb-2")
+        ui.label("表示時間0 = 自動（均等分割）。ドラッグで並び替えはできないため、順番は番号で指定してください。").classes("text-xs text-gray-500 mb-2")
+
+        slide_inputs = []
+        for i, slide in enumerate(slide_config):
+            img_file = slide["file"]
+            img_path = img_dir / img_file
+            if not img_path.exists():
+                continue
+            ts = int(img_path.stat().st_mtime)
+
+            with ui.row().classes("items-center gap-2 mb-2 w-full"):
+                ui.label(f"{i + 1}.").classes("text-sm w-6")
+                ui.image(f"{static_path}/{img_file}?t={ts}").classes("w-32 h-20 rounded object-cover")
+                ui.label(img_file).classes("text-xs text-gray-500 w-32")
+                dur_input = ui.number(
+                    "秒", value=slide.get("duration", 0),
+                    min=0, max=60, step=0.5, format="%.1f"
+                ).classes("w-20").props("dense size=sm")
+                order_input = ui.number(
+                    "順番", value=i + 1,
+                    min=1, max=len(slide_config), step=1
+                ).classes("w-16").props("dense size=sm")
+                slide_inputs.append({"file": img_file, "duration": dur_input, "order": order_input})
+
+        def save_slideshow():
+            # Sort by order
+            sorted_slides = sorted(slide_inputs, key=lambda s: s["order"].value)
+            config = [{"file": s["file"], "duration": s["duration"].value} for s in sorted_slides]
+            config_path.write_text(_json.dumps(config, ensure_ascii=False, indent=2))
+            ui.notify("スライドショー設定を保存しました", color="positive")
+
+        ui.button("スライドショー設定を保存", on_click=save_slideshow, color="blue").props("size=sm")
+
     else:
         ui.label("未生成").classes("text-gray-500")
 

@@ -143,38 +143,49 @@ def _find_cjk_font(size: int) -> ImageFont.FreeTypeFont | None:
 
 def create_title_card(title: str, width: int = 1792, height: int = 1024) -> bytes:
     """Create a horror-themed title card image."""
+    import math
     import random
 
-    img = Image.new("RGB", (width, height), (8, 3, 3))
+    img = Image.new("RGB", (width, height), (0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # Dark gradient background with reddish-black tones
+    # Radial dark gradient - darkest at edges, slightly lighter at center
+    cx, cy = width // 2, height // 2
+    max_dist = math.sqrt(cx**2 + cy**2)
     for y in range(height):
-        ratio = y / height
-        r = int(8 + ratio * 20)
-        g = int(3 + ratio * 5)
-        b = int(3 + ratio * 8)
-        draw.line([(0, y), (width, y)], fill=(r, g, b))
+        for x in range(0, width, 2):  # Step 2 for performance
+            dist = math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+            ratio = dist / max_dist
+            r = int(25 * (1 - ratio))
+            g = int(5 * (1 - ratio))
+            b = int(5 * (1 - ratio))
+            draw.rectangle([x, y, x + 1, y], fill=(r, g, b))
 
-    # Add noise/grain
-    random.seed(42)
-    for _ in range(3000):
+    # Heavy noise/grain
+    random.seed(hash(title))
+    for _ in range(8000):
         x = random.randint(0, width - 1)
         y = random.randint(0, height - 1)
-        v = random.randint(5, 25)
-        draw.point((x, y), fill=(v, v - 2, v - 2))
+        v = random.randint(3, 20)
+        r_noise = v + random.randint(0, 10)
+        draw.point((x, y), fill=(r_noise, v // 2, v // 2))
 
-    # Vignette effect
-    for i in range(80):
-        alpha = int(255 * (1 - i / 80) * 0.6)
-        draw.rectangle(
-            [i, i, width - i, height - i],
-            outline=(0, 0, 0, alpha) if img.mode == "RGBA" else (0, 0, 0),
-        )
+    # Blood drip-like streaks from top
+    for _ in range(15):
+        sx = random.randint(width // 4, 3 * width // 4)
+        streak_len = random.randint(100, 400)
+        for sy in range(0, streak_len):
+            alpha = max(0, 40 - sy // 5)
+            wx = sx + random.randint(-1, 1)
+            draw.point((wx, sy), fill=(alpha, 0, 0))
 
-    # Title text - large and centered
-    font_size = min(width // (len(title) + 1), 160)
-    font_size = max(font_size, 80)
+    # Title text - as large as possible
+    # Calculate max font size that fits width with padding
+    padding = width // 8
+    available_width = width - padding * 2
+    font_size = available_width // max(len(title), 1)
+    font_size = min(font_size, 280)
+    font_size = max(font_size, 100)
     font = _find_cjk_font(font_size)
     if font is None:
         font = ImageFont.load_default()
@@ -184,30 +195,58 @@ def create_title_card(title: str, width: int = 1792, height: int = 1024) -> byte
     x = (width - tw) // 2
     y = (height - th) // 2
 
-    # Shadow layers for depth
-    for offset in range(8, 0, -2):
-        shadow_alpha = 40 + offset * 10
+    # Deep shadow layers
+    for offset in range(12, 0, -1):
+        intensity = int(15 + offset * 3)
         draw.text(
             (x + offset, y + offset), title,
-            fill=(shadow_alpha // 4, 0, 0), font=font,
+            fill=(intensity, 0, 0), font=font,
         )
 
-    # Red glow
-    draw.text((x - 1, y - 1), title, fill=(80, 10, 10), font=font)
-    draw.text((x + 1, y + 1), title, fill=(80, 10, 10), font=font)
+    # Outer glow - dark red spread
+    for dx, dy in [(-3, -3), (3, -3), (-3, 3), (3, 3), (-2, 0), (2, 0), (0, -2), (0, 2)]:
+        draw.text((x + dx, y + dy), title, fill=(100, 5, 5), font=font)
 
-    # Main text - blood red to white gradient feel
-    draw.text((x, y), title, fill=(200, 30, 30), font=font)
+    # Inner glow
+    for dx, dy in [(-1, -1), (1, -1), (-1, 1), (1, 1)]:
+        draw.text((x + dx, y + dy), title, fill=(160, 15, 15), font=font)
 
-    # Subtle top line decoration
-    line_y = y - 30
-    line_w = tw + 40
+    # Main text - crimson red
+    draw.text((x, y), title, fill=(220, 20, 20), font=font)
+
+    # Highlight on top edge of text for 3D effect
+    small_font = _find_cjk_font(font_size)
+    if small_font:
+        draw.text((x, y - 1), title, fill=(255, 60, 40), font=small_font)
+
+    # Decorative lines
+    line_w = tw + 80
     line_x = (width - line_w) // 2
-    draw.line([(line_x, line_y), (line_x + line_w, line_y)], fill=(120, 20, 20), width=2)
 
-    # Bottom line
-    line_y2 = y + th + 30
-    draw.line([(line_x, line_y2), (line_x + line_w, line_y2)], fill=(120, 20, 20), width=2)
+    # Top decorative line with fade
+    line_y = y - 50
+    for i in range(line_w):
+        fade = 1 - abs(i - line_w // 2) / (line_w // 2)
+        c = int(130 * fade)
+        draw.point((line_x + i, line_y), fill=(c, 5, 5))
+        draw.point((line_x + i, line_y + 1), fill=(c // 2, 2, 2))
+
+    # Bottom decorative line with fade
+    line_y2 = y + th + 50
+    for i in range(line_w):
+        fade = 1 - abs(i - line_w // 2) / (line_w // 2)
+        c = int(130 * fade)
+        draw.point((line_x + i, line_y2), fill=(c, 5, 5))
+        draw.point((line_x + i, line_y2 + 1), fill=(c // 2, 2, 2))
+
+    # Corner ornaments
+    ornament_size = 30
+    for corner_x, corner_y in [(line_x, line_y), (line_x + line_w, line_y),
+                                 (line_x, line_y2), (line_x + line_w, line_y2)]:
+        for i in range(ornament_size):
+            c = int(100 * (1 - i / ornament_size))
+            draw.point((corner_x, corner_y - i + ornament_size // 2), fill=(c, 3, 3))
+            draw.point((corner_x - i + ornament_size // 2, corner_y), fill=(c, 3, 3))
 
     buf = BytesIO()
     img.save(buf, format="PNG")

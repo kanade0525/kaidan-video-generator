@@ -14,6 +14,7 @@ def create_video(
     narration: Path,
     output_path: Path,
     bgm_path: str | None = None,
+    durations: list[float] | None = None,
     progress_callback=None,
 ) -> Path:
     """Create the final video from images, narration, and optional BGM."""
@@ -27,11 +28,21 @@ def create_video(
     slideshow_path = temp_dir / "slideshow_temp.mp4"
     faded_path = temp_dir / "faded_temp.mp4"
 
+    # Step 0: Boost narration volume
+    boosted_narration = temp_dir / "narration_boosted.wav"
+    from app.utils.ffmpeg import run_ffmpeg
+    log.info("ナレーション音量ブースト中...")
+    run_ffmpeg([
+        "-i", str(narration),
+        "-filter:a", "volume=3.0",
+        str(boosted_narration),
+    ])
+
     # Step 1: Create slideshow
     if progress_callback:
-        progress_callback(1, 3)
+        progress_callback(1, 4)
     log.info("スライドショー作成中...")
-    create_slideshow(images, narration, slideshow_path, fps=fps)
+    create_slideshow(images, boosted_narration, slideshow_path, fps=fps, durations=durations)
 
     # Step 2: Add fade effects
     if progress_callback:
@@ -50,6 +61,7 @@ def create_video(
 
     # Cleanup temp files
     slideshow_path.unlink(missing_ok=True)
+    boosted_narration.unlink(missing_ok=True)
     if faded_path.exists() and faded_path != output_path:
         faded_path.unlink(missing_ok=True)
 

@@ -11,7 +11,7 @@ _DEFAULTS = {
     "speed": 0.9,
     "pitch": 0.0,
     "intonation": 1.0,
-    "volume": 1.2,
+    "volume": 2.0,
     "image_model": "z-image",
     "image_size": "1792x1024",
     "num_scenes": 3,

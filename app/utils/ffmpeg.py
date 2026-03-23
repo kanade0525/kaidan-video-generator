@@ -52,18 +52,33 @@ def create_slideshow(
     audio_path: Path,
     output_path: Path,
     fps: int = 30,
+    durations: list[float] | None = None,
 ) -> Path:
-    """Create a slideshow video from images synced to audio duration."""
-    duration = get_audio_duration(audio_path)
-    per_image = duration / len(images)
+    """Create a slideshow video from images synced to audio duration.
+
+    Args:
+        durations: Per-image durations in seconds. 0 or None = auto (equal split).
+    """
+    total_duration = get_audio_duration(audio_path)
+
+    # Calculate per-image durations
+    if durations and len(durations) == len(images):
+        # Fill in auto (0) durations
+        fixed_total = sum(d for d in durations if d > 0)
+        auto_count = sum(1 for d in durations if d <= 0)
+        auto_dur = max(0.5, (total_duration - fixed_total) / auto_count) if auto_count > 0 else 0
+        final_durations = [d if d > 0 else auto_dur for d in durations]
+    else:
+        per_image = total_duration / len(images)
+        final_durations = [per_image] * len(images)
 
     # Write concat file
     concat_file = output_path.parent / "concat.txt"
     lines = []
-    for img in images:
+    for img, dur in zip(images, final_durations):
         safe_path = str(img.resolve()).replace("'", "'\\''")
         lines.append(f"file '{safe_path}'")
-        lines.append(f"duration {per_image:.3f}")
+        lines.append(f"duration {dur:.3f}")
     # Repeat last image to avoid ffmpeg truncation
     safe_last = str(images[-1].resolve()).replace("'", "'\\''")
     lines.append(f"file '{safe_last}'")
