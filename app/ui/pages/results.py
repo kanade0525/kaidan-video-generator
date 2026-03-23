@@ -23,18 +23,38 @@ def results_page():
     """Results viewer page."""
     ui.label("生成結果").classes("text-2xl font-bold mb-4")
 
-    # Story selector
-    completed_stages = STAGES[1:]  # Everything except pending
-    stories = db.get_stories(limit=100)
+    # Filters
+    with ui.row().classes("gap-2 mb-4 items-end"):
+        stage_filter = ui.select(
+            {"": "全て", **{s: STAGE_LABELS.get(s, s) for s in STAGES[1:]}},
+            value="video_complete",
+            label="ステージ",
+        ).classes("w-48")
 
-    if not stories:
-        ui.label("ストーリーなし").classes("text-gray-500")
-        return
+        search_input = ui.input("タイトル検索").classes("w-64")
 
-    story_options = {s.id: f"{s.title} [{STAGE_LABELS.get(s.stage, s.stage)}]" for s in stories}
-    selected = ui.select(story_options, label="ストーリー選択").classes("w-96 mb-4")
-
+    story_select = ui.select({}, label="ストーリー選択").classes("w-96 mb-4")
     detail_container = ui.column().classes("w-full")
+
+    def update_story_list():
+        stage = stage_filter.value or None
+        keyword = search_input.value.strip() if search_input.value else None
+        stories = db.get_stories(stage=stage, limit=200)
+        if keyword:
+            stories = [s for s in stories if keyword in s.title]
+        options = {s.id: f"{s.title} [{STAGE_LABELS.get(s.stage, s.stage)}]" for s in stories}
+        story_select.options = options
+        story_select.value = None
+        if not options:
+            detail_container.clear()
+            with detail_container:
+                ui.label("該当なし").classes("text-gray-500")
+
+    stage_filter.on_value_change(lambda _: update_story_list())
+    search_input.on("keydown.enter", lambda _: update_story_list())
+
+    selected = story_select
+    update_story_list()
 
     def show_detail(story_id):
         if not story_id:
