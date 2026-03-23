@@ -5,3 +5,7 @@ __pycache__/
 .ruff_cache/
 output/
 images/
+config.json
+jobs/
+stories.json
+bgm/

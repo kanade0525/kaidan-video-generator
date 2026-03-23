@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from app.config import get as cfg_get
+from app.utils.ffmpeg import add_fade, create_slideshow, mix_bgm
+from app.utils.log import get_logger
+
+log = get_logger("kaidan.video")
+
+
+def create_video(
+    images: list[Path],
+    narration: Path,
+    output_path: Path,
+    bgm_path: str | None = None,
+) -> Path:
+    """Create the final video from images, narration, and optional BGM."""
+    fps = cfg_get("fps")
+    fade_in = cfg_get("fade_in")
+    fade_out = cfg_get("fade_out")
+    bgm = bgm_path or cfg_get("bgm_path")
+    bgm_volume = cfg_get("bgm_volume")
+
+    temp_dir = output_path.parent
+    slideshow_path = temp_dir / "slideshow_temp.mp4"
+    faded_path = temp_dir / "faded_temp.mp4"
+
+    # Step 1: Create slideshow
+    log.info("スライドショー作成中...")
+    create_slideshow(images, narration, slideshow_path, fps=fps)
+
+    # Step 2: Add fade effects
+    log.info("フェード効果追加中...")
+    add_fade(slideshow_path, faded_path, fade_in=fade_in, fade_out=fade_out)
+
+    # Step 3: Mix BGM if configured
+    if bgm and Path(bgm).exists():
+        log.info("BGMミックス中...")
+        mix_bgm(faded_path, Path(bgm), output_path, bgm_volume=bgm_volume)
+    else:
+        faded_path.rename(output_path)
+
+    # Cleanup temp files
+    slideshow_path.unlink(missing_ok=True)
+    if faded_path.exists() and faded_path != output_path:
+        faded_path.unlink(missing_ok=True)
+
+    log.info("動画生成完了: %s", output_path)
+    return output_path
