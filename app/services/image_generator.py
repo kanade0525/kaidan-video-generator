@@ -76,10 +76,21 @@ def generate_image_ai(prompt: str, model: str | None = None, size: str | None = 
     style = cfg_get("image_style")
 
     full_prompt = f"{prompt}, {style}"
+    negative_prompt = (
+        "text, letters, words, writing, captions, watermark, signature, logo, "
+        "title, subtitle, label, UI, numbers, symbols, typography, font, "
+        "anime, cartoon, illustration, drawing, painting, sketch, "
+        "bright colors, vibrant, cheerful, happy"
+    )
 
     r = requests.post(
         AIRFORCE_URL,
-        json={"model": img_model, "prompt": full_prompt, "size": img_size},
+        json={
+            "model": img_model,
+            "prompt": full_prompt,
+            "negative_prompt": negative_prompt,
+            "size": img_size,
+        },
         timeout=120,
     )
     r.raise_for_status()
@@ -113,26 +124,58 @@ def generate_fallback_image(width: int = 1792, height: int = 1024) -> bytes:
     return buf.getvalue()
 
 
-def create_title_card(title: str, width: int = 1792, height: int = 1024) -> bytes:
-    """Create a title card image."""
-    img = Image.new("RGB", (width, height), (5, 5, 15))
-    draw = ImageDraw.Draw(img)
-
-    # Try to find a CJK font
-    font = None
+def _find_cjk_font(size: int) -> ImageFont.FreeTypeFont | None:
+    """Find a CJK font on the system."""
     font_paths = [
         "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
     ]
     for fp in font_paths:
         if Path(fp).exists():
             try:
-                font = ImageFont.truetype(fp, 72)
-                break
+                return ImageFont.truetype(fp, size)
             except Exception:
                 continue
+    return None
 
+
+def create_title_card(title: str, width: int = 1792, height: int = 1024) -> bytes:
+    """Create a horror-themed title card image."""
+    import random
+
+    img = Image.new("RGB", (width, height), (8, 3, 3))
+    draw = ImageDraw.Draw(img)
+
+    # Dark gradient background with reddish-black tones
+    for y in range(height):
+        ratio = y / height
+        r = int(8 + ratio * 20)
+        g = int(3 + ratio * 5)
+        b = int(3 + ratio * 8)
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
+
+    # Add noise/grain
+    random.seed(42)
+    for _ in range(3000):
+        x = random.randint(0, width - 1)
+        y = random.randint(0, height - 1)
+        v = random.randint(5, 25)
+        draw.point((x, y), fill=(v, v - 2, v - 2))
+
+    # Vignette effect
+    for i in range(80):
+        alpha = int(255 * (1 - i / 80) * 0.6)
+        draw.rectangle(
+            [i, i, width - i, height - i],
+            outline=(0, 0, 0, alpha) if img.mode == "RGBA" else (0, 0, 0),
+        )
+
+    # Title text - large and centered
+    font_size = min(width // (len(title) + 1), 160)
+    font_size = max(font_size, 80)
+    font = _find_cjk_font(font_size)
     if font is None:
         font = ImageFont.load_default()
 
@@ -140,7 +183,31 @@ def create_title_card(title: str, width: int = 1792, height: int = 1024) -> byte
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     x = (width - tw) // 2
     y = (height - th) // 2
-    draw.text((x, y), title, fill=(200, 200, 220), font=font)
+
+    # Shadow layers for depth
+    for offset in range(8, 0, -2):
+        shadow_alpha = 40 + offset * 10
+        draw.text(
+            (x + offset, y + offset), title,
+            fill=(shadow_alpha // 4, 0, 0), font=font,
+        )
+
+    # Red glow
+    draw.text((x - 1, y - 1), title, fill=(80, 10, 10), font=font)
+    draw.text((x + 1, y + 1), title, fill=(80, 10, 10), font=font)
+
+    # Main text - blood red to white gradient feel
+    draw.text((x, y), title, fill=(200, 30, 30), font=font)
+
+    # Subtle top line decoration
+    line_y = y - 30
+    line_w = tw + 40
+    line_x = (width - line_w) // 2
+    draw.line([(line_x, line_y), (line_x + line_w, line_y)], fill=(120, 20, 20), width=2)
+
+    # Bottom line
+    line_y2 = y + th + 30
+    draw.line([(line_x, line_y2), (line_x + line_w, line_y2)], fill=(120, 20, 20), width=2)
 
     buf = BytesIO()
     img.save(buf, format="PNG")
