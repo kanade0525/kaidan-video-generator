@@ -1,21 +1,20 @@
 FROM python:3.12-slim
 
-# システム依存パッケージのインストール
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     fonts-noto-cjk \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# 依存関係のインストール
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# アプリケーションコードのコピー
 COPY . .
 
-# 出力ディレクトリの作成
-RUN mkdir -p output images
+RUN mkdir -p output data bgm
 
-ENTRYPOINT ["python", "main.py"]
+EXPOSE 8080
+
+CMD ["python", "-m", "app.main"]

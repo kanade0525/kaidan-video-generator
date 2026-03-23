@@ -2,6 +2,12 @@ __pycache__/
 *.pyc
 .env
 output/
-images/
+data/
+bgm/
 .git/
+.claude/
 .ruff_cache/
+.venv/
+stories.json
+config.json
+*.md
