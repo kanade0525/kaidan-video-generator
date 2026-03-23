@@ -37,17 +37,21 @@ def extract_scene_prompts(
     model_name = model or cfg_get("gemini_model")
 
     prompt = (
-        f"以下の怪談「{title}」の内容から、動画のサムネイルや背景に使う{num_scenes}個の画像プロンプトを英語で生成してください。\n\n"
-        f"要件:\n"
-        f"・物語の具体的な場面・情景を描写すること（登場人物、場所、時間帯、天候、光源など）\n"
-        f"・全ての画像が同じトーン・雰囲気・色調で統一されるよう、共通のスタイル指示を含めること\n"
-        f"・写実的な描写にすること（アニメ風やイラスト風にしない）\n"
-        f"・各プロンプトは具体的で詳細に（50〜100語程度）\n"
-        f"・構図の指示を含めること（close-up, wide shot, low angle, overhead等）\n"
-        f"・照明の指示を含めること（moonlight, dim candlelight, shadow等）\n"
+        f"以下の怪談「{title}」の内容を読み、怪談朗読動画の背景画像として使う{num_scenes}枚の画像生成プロンプトを英語で作ってください。\n\n"
+        f"重要な要件:\n"
+        f"・物語の「場所」や「状況」を具体的に描写すること。人物ではなく風景・空間・物体を中心に\n"
+        f"・各画像は異なるシーン・異なる構図にすること。似た画像は絶対に避ける\n"
+        f"  - 1枚目: 物語の舞台となる場所の全景（wide establishing shot）\n"
+        f"  - 2枚目: 物語の転換点や恐怖の核心となるモチーフのクローズアップ\n"
+        f"  - 3枚目以降: クライマックスの情景や余韻を残すシーン\n"
+        f"・写実的でダークな描写。ホラー映画のワンシーンのように\n"
+        f"・各プロンプトは50〜80語程度で具体的に\n"
+        f"・構図（wide shot, close-up, overhead, dutch angle等）を必ず含める\n"
+        f"・照明（moonlight, flickering light, backlit silhouette等）を必ず含める\n"
+        f"・人物を描く場合は後ろ姿やシルエットにする\n"
         f"・テキストや文字は絶対に含めない\n"
         f"・1行に1プロンプト、番号やマーカーは不要\n\n"
-        f"{text[:2000]}"
+        f"物語:\n{text[:2000]}"
     )
     try:
         response = client.models.generate_content(model=model_name, contents=prompt)
