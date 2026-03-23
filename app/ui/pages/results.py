@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from nicegui import app, ui
@@ -114,17 +115,38 @@ def results_page():
     # (event binding is done inside update_story_list)
 
 
-def _retry_button(story: db, target_stage: str, label: str = "再処理"):
-    """Add a retry button for a specific stage."""
-    def do_retry():
-        try:
-            ns = target_stage
-            pipeline.run_single(story.id, ns)
-            ui.notify(f"{STAGE_LABELS.get(ns, ns)} 完了", color="positive")
-        except Exception as e:
-            ui.notify(f"エラー: {e}", color="negative")
+def _retry_button(story, target_stage: str, label: str = "再処理"):
+    """Add a retry button that runs the stage in a background thread."""
+    import threading
 
-    ui.button(label, on_click=do_retry, color="orange").props("size=sm")
+    status_label = ui.label("").classes("text-sm text-gray-500")
+
+    async def do_retry():
+        status_label.text = "処理中..."
+        status_label.classes(replace="text-sm text-blue-500")
+        btn.disable()
+
+        def run():
+            try:
+                pipeline.run_single(story.id, target_stage)
+                return None
+            except Exception as e:
+                return str(e)
+
+        loop = asyncio.get_event_loop()
+        error = await loop.run_in_executor(None, run)
+
+        if error:
+            status_label.text = f"エラー: {error[:100]}"
+            status_label.classes(replace="text-sm text-red-500")
+            ui.notify(f"エラー: {error[:100]}", color="negative")
+        else:
+            status_label.text = "完了!"
+            status_label.classes(replace="text-sm text-green-500")
+            ui.notify(f"{STAGE_LABELS.get(target_stage, target_stage)} 完了", color="positive")
+        btn.enable()
+
+    btn = ui.button(label, on_click=do_retry, color="orange").props("size=sm")
 
 
 def _show_scrape_result(story):
