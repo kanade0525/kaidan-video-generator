@@ -56,39 +56,40 @@ def process_text(text: str, prompt_template: str | None = None, model: str | Non
     result = re.sub(r"```[\s\S]*?```", "", result)
     result = result.strip()
 
-    # Post-process: convert particle は→わ, へ→え
+    # Post-process: convert particle は→わ, へ→え using MeCab
     result = _fix_particles(result)
     return result
 
 
 def _fix_particles(text: str) -> str:
-    """Convert particle は to わ and へ to え for correct TTS pronunciation.
+    """Convert particle は to わ and へ to え using MeCab morphological analysis."""
+    try:
+        import MeCab
+        tagger = MeCab.Tagger()
+        tagger.parse("")  # Initialize
 
-    Geminiに任せると無視されるため、後処理で変換する。
-    助詞の「は」は直後にひらがなが続かないパターンで判定する。
-    """
-    # 助詞の「は」: 直後が句読点、改行、EOF、または次の文節の開始
-    # 「は」の後に続くひらがなが助詞の一部でないケースを狙う
-    # 安全なパターン: は + 句読点/改行/EOF
-    text = re.sub(r"は(?=[、。！？\n]|$)", "わ", text)
-    # は + 助動詞/補助的表現のパターン
-    for pattern in ["はない", "はある", "はいる", "はおも", "はしろ",
-                     "はして", "はされ", "はでき", "はなく", "はなか",
-                     "はわか", "はいえ", "はいけ", "はいた", "はいい",
-                     "はいっ", "はおお", "はこの", "はその", "はあの",
-                     "はどう", "はなに", "はとて", "はまだ", "はもう",
-                     "はただ", "はつね"]:
-        replacement = "わ" + pattern[1:]
-        text = text.replace(pattern, replacement)
+        output = []
+        node = tagger.parseToNode(text)
+        while node:
+            surface = node.surface
+            feature = node.feature.split(",")
+            pos = feature[0] if feature else ""
 
-    # 助詞の「へ」: へ + 助詞的パターン
-    text = re.sub(r"へ(?=[、。！？\n]|$)", "え", text)
-    for pattern in ["へいく", "へいっ", "へいき", "へむか", "へつれ",
-                     "へはい", "へでか"]:
-        replacement = "え" + pattern[1:]
-        text = text.replace(pattern, replacement)
+            if surface == "は" and pos == "助詞":
+                output.append("わ")
+            elif surface == "へ" and pos == "助詞":
+                output.append("え")
+            else:
+                output.append(surface)
+            node = node.next
 
-    return text
+        return "".join(output)
+    except ImportError:
+        log.warning("MeCab not installed, skipping particle conversion")
+        return text
+    except Exception as e:
+        log.warning("MeCab error: %s", e)
+        return text
 
 
 def split_into_chunks(text: str, max_length: int | None = None) -> list[str]:
