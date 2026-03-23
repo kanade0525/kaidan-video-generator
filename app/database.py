@@ -144,6 +144,7 @@ def get_story_by_url(url: str) -> Story | None:
 def get_stories(
     stage: str | None = None,
     category: str | None = None,
+    keyword: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[Story]:
@@ -162,6 +163,9 @@ def get_stories(
     if category:
         conditions.append("sc.category = ?")
         params.append(category)
+    if keyword:
+        conditions.append("s.title LIKE ?")
+        params.append(f"%{keyword}%")
 
     if conditions:
         query += " WHERE " + " AND ".join(conditions)

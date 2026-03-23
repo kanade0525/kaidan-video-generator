@@ -32,6 +32,7 @@ def results_page():
         ).classes("w-48")
 
         search_input = ui.input("タイトル検索").classes("w-64")
+        ui.button("検索", on_click=lambda: update_story_list()).props("size=sm")
 
     select_container = ui.column().classes("w-full mb-4")
     detail_container = ui.column().classes("w-full")
@@ -42,9 +43,7 @@ def results_page():
     def update_story_list():
         stage = stage_filter.value or None
         keyword = search_input.value.strip() if search_input.value else None
-        stories = db.get_stories(stage=stage, limit=200)
-        if keyword:
-            stories = [s for s in stories if keyword in s.title]
+        stories = db.get_stories(stage=stage, keyword=keyword, limit=200)
 
         select_container.clear()
         detail_container.clear()
