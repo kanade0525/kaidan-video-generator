@@ -115,33 +115,45 @@ def results_page():
 
 
 def _retry_button(story, target_stage: str, label: str = "再処理"):
-    """Add a retry button that runs the stage in a background thread."""
+    """Add a retry button with progress bar that runs in a background thread."""
     import threading
 
+    progress = ui.linear_progress(value=0, show_value=False).classes("w-full").props("rounded")
+    progress.visible = False
     status_label = ui.label("").classes("text-sm text-gray-500")
 
     def do_retry():
         status_label.text = "処理中..."
         status_label.classes(replace="text-sm text-blue-500")
+        progress.visible = True
+        progress.value = 0
         btn.disable()
+
+        def progress_callback(current, total):
+            try:
+                progress.value = current / total if total > 0 else 0
+                status_label.text = f"処理中... ({current}/{total})"
+            except Exception:
+                pass
 
         def run():
             try:
-                pipeline.run_single(story.id, target_stage)
+                pipeline.run_single(story.id, target_stage, progress_callback=progress_callback)
                 error = None
             except Exception as e:
                 error = str(e)
 
             try:
+                progress.value = 1.0 if not error else 0
                 if error:
                     status_label.text = f"エラー: {error[:100]}"
                     status_label.classes(replace="text-sm text-red-500")
                 else:
-                    status_label.text = "完了!"
+                    status_label.text = "完了! (ページを再読み込みで結果を確認)"
                     status_label.classes(replace="text-sm text-green-500")
                 btn.enable()
             except Exception:
-                pass  # UI element may have been deleted
+                pass
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -181,9 +193,12 @@ def _show_text_result(story):
 def _show_voice_result(story):
     narr_path = narration_path(story.title)
     if narr_path.exists():
-        # Serve audio file
-        app.add_static_files("/audio", str(narr_path.parent))
-        ui.audio(f"/audio/{narr_path.name}").classes("w-full")
+        # Serve audio file with cache-busting timestamp
+        import time
+        ts = int(narr_path.stat().st_mtime)
+        static_path = f"/audio/{story.id}"
+        app.add_static_files(static_path, str(narr_path.parent))
+        ui.audio(f"{static_path}/{narr_path.name}?t={ts}").classes("w-full")
 
         # Individual chunks
         a_dir = audio_dir(story.title)
@@ -201,13 +216,14 @@ def _show_images_result(story):
     images = sorted(img_dir.glob("*.png"))
 
     if images:
-        # Serve image files
+        import time
         static_path = f"/images/{story.id}"
         app.add_static_files(static_path, str(img_dir))
 
         with ui.row().classes("gap-2 flex-wrap"):
             for img in images:
-                ui.image(f"{static_path}/{img.name}").classes("w-64 rounded")
+                ts = int(img.stat().st_mtime)
+                ui.image(f"{static_path}/{img.name}?t={ts}").classes("w-64 rounded")
     else:
         ui.label("未生成").classes("text-gray-500")
 
@@ -217,9 +233,11 @@ def _show_images_result(story):
 def _show_video_result(story):
     vid_path = video_path(story.title)
     if vid_path.exists():
+        import time
+        ts = int(vid_path.stat().st_mtime)
         static_path = f"/video/{story.id}"
         app.add_static_files(static_path, str(vid_path.parent))
-        ui.video(f"{static_path}/{vid_path.name}").classes("w-full max-w-2xl")
+        ui.video(f"{static_path}/{vid_path.name}?t={ts}").classes("w-full max-w-2xl")
     else:
         ui.label("未生成").classes("text-gray-500")
 

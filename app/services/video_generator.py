@@ -14,6 +14,7 @@ def create_video(
     narration: Path,
     output_path: Path,
     bgm_path: str | None = None,
+    progress_callback=None,
 ) -> Path:
     """Create the final video from images, narration, and optional BGM."""
     fps = cfg_get("fps")
@@ -27,14 +28,20 @@ def create_video(
     faded_path = temp_dir / "faded_temp.mp4"
 
     # Step 1: Create slideshow
+    if progress_callback:
+        progress_callback(1, 3)
     log.info("スライドショー作成中...")
     create_slideshow(images, narration, slideshow_path, fps=fps)
 
     # Step 2: Add fade effects
+    if progress_callback:
+        progress_callback(2, 3)
     log.info("フェード効果追加中...")
     add_fade(slideshow_path, faded_path, fade_in=fade_in, fade_out=fade_out)
 
     # Step 3: Mix BGM if configured
+    if progress_callback:
+        progress_callback(3, 3)
     if bgm and Path(bgm).exists():
         log.info("BGMミックス中...")
         mix_bgm(faded_path, Path(bgm), output_path, bgm_volume=bgm_volume)

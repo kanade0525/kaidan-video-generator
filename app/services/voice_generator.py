@@ -81,12 +81,14 @@ def text_to_speech(
     return r.content
 
 
-def generate_narration(chunks: list[str], output_dir: Path) -> Path:
+def generate_narration(chunks: list[str], output_dir: Path, progress_callback=None) -> Path:
     """Generate narration for all chunks and concatenate."""
     audio_files = []
 
     for i, chunk in enumerate(chunks):
         log.info("音声生成中 (%d/%d)", i + 1, len(chunks))
+        if progress_callback:
+            progress_callback(i, len(chunks))
         audio_data = text_to_speech(chunk)
         audio_path = output_dir / f"narration_{i:04d}.wav"
         audio_path.write_bytes(audio_data)
@@ -94,6 +96,8 @@ def generate_narration(chunks: list[str], output_dir: Path) -> Path:
         log.info("保存: %s", audio_path.name)
 
     # Concatenate
+    if progress_callback:
+        progress_callback(len(chunks), len(chunks))
     output_path = output_dir.parent / "narration_complete.wav"
     concatenate_wav(audio_files, output_path)
     log.info("結合完了: %s", output_path)

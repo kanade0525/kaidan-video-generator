@@ -138,7 +138,7 @@ def create_title_card(title: str, width: int = 1792, height: int = 1024) -> byte
 
 
 def generate_images_for_story(
-    text: str, title: str, output_dir: Path
+    text: str, title: str, output_dir: Path, progress_callback=None
 ) -> list[Path]:
     """Generate all images for a story."""
     num_scenes = cfg_get("num_scenes")
@@ -153,6 +153,8 @@ def generate_images_for_story(
     prompts = extract_scene_prompts(text, title, num_scenes)
 
     for i, prompt in enumerate(prompts):
+        if progress_callback:
+            progress_callback(i + 1, len(prompts) + 1)  # +1 for title card
         log.info("AI画像生成中 (%d/%d): %s", i + 1, len(prompts), prompt[:60])
         img_path = output_dir / f"scene_{i:03d}.png"
 
