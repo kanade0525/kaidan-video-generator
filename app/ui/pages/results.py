@@ -28,7 +28,7 @@ def results_page():
     with ui.row().classes("gap-2 mb-4 items-end"):
         stage_filter = ui.select(
             {"": "全て", **{s: STAGE_LABELS.get(s, s) for s in STAGES[1:]}},
-            value="video_complete",
+            value="",
             label="ステージ",
         ).classes("w-48")
 
