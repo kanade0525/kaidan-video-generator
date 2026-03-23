@@ -3,8 +3,10 @@
 __pycache__/
 .venv/
 .ruff_cache/
+.claude/
 output/
 images/
+data/
 config.json
 jobs/
 stories.json
