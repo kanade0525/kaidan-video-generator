@@ -37,11 +37,17 @@ def extract_scene_prompts(
     model_name = model or cfg_get("gemini_model")
 
     prompt = (
-        f"以下の怪談「{title}」の内容から、{num_scenes}個の重要なシーンを抽出し、"
-        f"それぞれ英語の画像生成プロンプトにしてください。\n"
-        f"・1行に1プロンプト\n"
-        f"・番号やマーカーは不要\n"
-        f"・プロンプトのみ出力\n\n{text[:2000]}"
+        f"以下の怪談「{title}」の内容から、動画のサムネイルや背景に使う{num_scenes}個の画像プロンプトを英語で生成してください。\n\n"
+        f"要件:\n"
+        f"・物語の具体的な場面・情景を描写すること（登場人物、場所、時間帯、天候、光源など）\n"
+        f"・全ての画像が同じトーン・雰囲気・色調で統一されるよう、共通のスタイル指示を含めること\n"
+        f"・写実的な描写にすること（アニメ風やイラスト風にしない）\n"
+        f"・各プロンプトは具体的で詳細に（50〜100語程度）\n"
+        f"・構図の指示を含めること（close-up, wide shot, low angle, overhead等）\n"
+        f"・照明の指示を含めること（moonlight, dim candlelight, shadow等）\n"
+        f"・テキストや文字は絶対に含めない\n"
+        f"・1行に1プロンプト、番号やマーカーは不要\n\n"
+        f"{text[:2000]}"
     )
     try:
         response = client.models.generate_content(model=model_name, contents=prompt)

@@ -16,8 +16,10 @@ _DEFAULTS = {
     "image_size": "1792x1024",
     "num_scenes": 3,
     "image_style": (
-        "photorealistic, cinematic lighting, dark atmosphere, Japanese horror, "
-        "no text, no letters, no words, no writing, no captions"
+        "photorealistic photograph, cinematic lighting, dark moody atmosphere, "
+        "Japanese horror aesthetic, muted desaturated color palette, "
+        "film grain, shallow depth of field, 35mm lens, "
+        "absolutely no text, no letters, no words, no writing, no watermarks, no UI elements"
     ),
     "image_rate_limit": 15,
     "fps": 30,
