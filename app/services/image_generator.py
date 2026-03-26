@@ -6,8 +6,11 @@ import time
 from io import BytesIO
 from pathlib import Path
 
+import random
+
+import numpy as np
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from app.config import get as cfg_get
 from app.pipeline.retry import with_retry
@@ -109,6 +112,61 @@ def generate_image_ai(prompt: str, model: str | None = None, size: str | None = 
     raise RuntimeError("Image generation returned empty data")
 
 
+def degrade_to_vhs(image_data: bytes) -> bytes:
+    """Degrade a high-quality image to look like VHS/surveillance camera footage."""
+    img = Image.open(BytesIO(image_data)).convert("RGB")
+    w, h = img.size
+
+    # 1. Downscale to 1/4 then upscale back (pixelation)
+    small = img.resize((w // 4, h // 4), Image.BILINEAR)
+    img = small.resize((w, h), Image.NEAREST)
+
+    # 2. Slight blur (cheap lens)
+    img = img.filter(ImageFilter.GaussianBlur(radius=1.2))
+
+    # 3. Reduce color depth / desaturate
+    arr = np.array(img, dtype=np.float32)
+    gray = np.mean(arr, axis=2, keepdims=True)
+    arr = arr * 0.4 + gray * 0.6  # Partially desaturate
+    arr = np.clip(arr * 0.7 + 10, 0, 255)  # Darken + slight lift
+
+    # 4. Add greenish/bluish tint (night vision / CCTV look)
+    arr[:, :, 0] *= 0.8   # Reduce red
+    arr[:, :, 1] *= 1.05   # Slight green boost
+    arr[:, :, 2] *= 0.85   # Reduce blue
+
+    # 5. Add heavy noise
+    noise = np.random.normal(0, 25, arr.shape)
+    arr = np.clip(arr + noise, 0, 255)
+
+    # 6. Scan lines
+    for y in range(0, h, 3):
+        arr[y, :, :] *= 0.7
+
+    # 7. Random horizontal distortion lines
+    for _ in range(random.randint(3, 8)):
+        y = random.randint(0, h - 4)
+        shift = random.randint(-15, 15)
+        thickness = random.randint(1, 3)
+        for dy in range(thickness):
+            if 0 <= y + dy < h:
+                arr[y + dy] = np.roll(arr[y + dy], shift, axis=0)
+
+    # 8. Vignette (dark corners)
+    Y, X = np.ogrid[:h, :w]
+    cx, cy = w / 2, h / 2
+    dist = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+    max_dist = np.sqrt(cx ** 2 + cy ** 2)
+    vignette = 1 - (dist / max_dist) ** 2 * 0.6
+    arr *= vignette[:, :, np.newaxis]
+
+    img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def generate_fallback_image(width: int = 1792, height: int = 1024) -> bytes:
     """Generate a simple dark gradient background as fallback."""
     img = Image.new("RGB", (width, height), (10, 10, 20))
@@ -141,115 +199,171 @@ def _find_cjk_font(size: int) -> ImageFont.FreeTypeFont | None:
     return None
 
 
-def create_title_card(title: str, width: int = 1792, height: int = 1024) -> bytes:
-    """Create a horror-themed title card image."""
+def _draw_text_with_outline(
+    draw: ImageDraw.Draw,
+    xy: tuple[int, int],
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    fill: tuple[int, int, int],
+    outline_fill: tuple[int, int, int] = (0, 0, 0),
+    outline_width: int = 6,
+):
+    """Draw text with thick outline for readability on busy backgrounds."""
+    x, y = xy
+    # Draw outline by rendering text at offsets
+    for dx in range(-outline_width, outline_width + 1):
+        for dy in range(-outline_width, outline_width + 1):
+            if dx * dx + dy * dy <= outline_width * outline_width:
+                draw.text((x + dx, y + dy), text, font=font, fill=outline_fill)
+    # Draw main text
+    draw.text((x, y), text, font=font, fill=fill)
+
+
+def _wrap_title(title: str, max_chars_per_line: int = 8) -> list[str]:
+    """Split title into multiple lines for dramatic layout."""
+    if len(title) <= max_chars_per_line:
+        return [title]
+
+    lines = []
+    # Try splitting at natural breakpoints
+    for sep in ["の", "を", "が", "に", "で", "と", "は", "へ", "…", "、"]:
+        if sep in title:
+            parts = title.split(sep, 1)
+            if len(parts[0]) > 0:
+                lines.append(parts[0] + sep)
+                remaining = parts[1]
+                if len(remaining) > max_chars_per_line:
+                    lines.extend(_wrap_title(remaining, max_chars_per_line))
+                elif remaining:
+                    lines.append(remaining)
+                return lines
+
+    # Hard wrap
+    for i in range(0, len(title), max_chars_per_line):
+        lines.append(title[i:i + max_chars_per_line])
+    return lines
+
+
+def create_title_card(
+    title: str,
+    width: int = 1792,
+    height: int = 1024,
+    bg_image_data: bytes | None = None,
+) -> bytes:
+    """Create a cinematic horror-themed title card.
+
+    Uses AI-generated background if provided, otherwise generates a dark procedural bg.
+    Overlays title text with thick outlines, multiple lines, and dramatic layout.
+    """
+    from PIL import ImageEnhance, ImageFilter
+
+    # --- Background ---
+    if bg_image_data:
+        bg = Image.open(BytesIO(bg_image_data)).convert("RGB")
+        bg = bg.resize((width, height), Image.LANCZOS)
+    else:
+        bg = Image.new("RGB", (width, height), (10, 5, 5))
+
+    # Darken and desaturate background so text pops
+    bg = ImageEnhance.Brightness(bg).enhance(0.35)
+    bg = ImageEnhance.Color(bg).enhance(0.4)
+    # Slight blur for depth-of-field feel
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=3))
+
+    draw = ImageDraw.Draw(bg)
+
+    # Dark vignette overlay
     import math
-    import random
-
-    img = Image.new("RGB", (width, height), (0, 0, 0))
-    draw = ImageDraw.Draw(img)
-
-    # Radial dark gradient - darkest at edges, slightly lighter at center
     cx, cy = width // 2, height // 2
-    max_dist = math.sqrt(cx**2 + cy**2)
-    for y in range(height):
-        for x in range(0, width, 2):  # Step 2 for performance
-            dist = math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+    max_dist = math.sqrt(cx ** 2 + cy ** 2)
+    vignette = Image.new("RGB", (width, height), (0, 0, 0))
+    vdraw = ImageDraw.Draw(vignette)
+    for y_pos in range(0, height, 4):
+        for x_pos in range(0, width, 4):
+            dist = math.sqrt((x_pos - cx) ** 2 + (y_pos - cy) ** 2)
             ratio = dist / max_dist
-            r = int(25 * (1 - ratio))
-            g = int(5 * (1 - ratio))
-            b = int(5 * (1 - ratio))
-            draw.rectangle([x, y, x + 1, y], fill=(r, g, b))
+            # Stronger at edges
+            alpha = int(min(255, ratio * ratio * 300))
+            vdraw.rectangle(
+                [x_pos, y_pos, x_pos + 3, y_pos + 3],
+                fill=(alpha, alpha, alpha),
+            )
+    # Blend vignette (darken edges)
+    from PIL import ImageChops
+    vignette_inv = Image.eval(vignette, lambda v: 255 - v)
+    bg = ImageChops.multiply(bg, vignette_inv.point(lambda v: v / 255.0 * 255))
 
-    # Heavy noise/grain
-    random.seed(hash(title))
-    for _ in range(8000):
-        x = random.randint(0, width - 1)
-        y = random.randint(0, height - 1)
-        v = random.randint(3, 20)
-        r_noise = v + random.randint(0, 10)
-        draw.point((x, y), fill=(r_noise, v // 2, v // 2))
+    # Top gradient overlay (darkens top 30%)
+    for y_pos in range(int(height * 0.3)):
+        alpha = int(180 * (1 - y_pos / (height * 0.3)))
+        draw.line([(0, y_pos), (width, y_pos)], fill=(0, 0, 0))
 
-    # Blood drip-like streaks from top
-    for _ in range(15):
-        sx = random.randint(width // 4, 3 * width // 4)
-        streak_len = random.randint(100, 400)
-        for sy in range(0, streak_len):
-            alpha = max(0, 40 - sy // 5)
-            wx = sx + random.randint(-1, 1)
-            draw.point((wx, sy), fill=(alpha, 0, 0))
+    draw = ImageDraw.Draw(bg)
 
-    # Title text - as large as possible
-    # Calculate max font size that fits width with padding
-    padding = width // 8
-    available_width = width - padding * 2
-    font_size = available_width // max(len(title), 1)
-    font_size = min(font_size, 280)
-    font_size = max(font_size, 100)
+    # --- Title text ---
+    lines = _wrap_title(title, max_chars_per_line=7)
+
+    # Calculate font size: fill most of the image
+    padding_x = width // 10
+    available_w = width - padding_x * 2
+    # Font size based on widest line
+    max_line_len = max(len(line) for line in lines)
+    font_size = min(available_w // max(max_line_len, 1), height // (len(lines) + 2))
+    font_size = min(font_size, 240)
+    font_size = max(font_size, 80)
+
     font = _find_cjk_font(font_size)
     if font is None:
         font = ImageFont.load_default()
 
-    bbox = draw.textbbox((0, 0), title, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    x = (width - tw) // 2
-    y = (height - th) // 2
+    # Measure all lines
+    line_heights = []
+    line_widths = []
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        line_widths.append(bbox[2] - bbox[0])
+        line_heights.append(bbox[3] - bbox[1])
 
-    # Deep shadow layers
-    for offset in range(12, 0, -1):
-        intensity = int(15 + offset * 3)
-        draw.text(
-            (x + offset, y + offset), title,
-            fill=(intensity, 0, 0), font=font,
+    line_spacing = int(font_size * 0.25)
+    total_text_height = sum(line_heights) + line_spacing * (len(lines) - 1)
+
+    # Start y: center vertically, slightly lower
+    start_y = (height - total_text_height) // 2 + int(height * 0.05)
+
+    # Draw each line
+    outline_w = max(4, font_size // 18)
+    current_y = start_y
+    for i, line in enumerate(lines):
+        lw = line_widths[i]
+        x = (width - lw) // 2
+
+        # Draw text with thick black outline + red fill
+        _draw_text_with_outline(
+            draw, (x, current_y), line, font,
+            fill=(230, 20, 20),
+            outline_fill=(0, 0, 0),
+            outline_width=outline_w,
         )
 
-    # Outer glow - dark red spread
-    for dx, dy in [(-3, -3), (3, -3), (-3, 3), (3, 3), (-2, 0), (2, 0), (0, -2), (0, 2)]:
-        draw.text((x + dx, y + dy), title, fill=(100, 5, 5), font=font)
+        current_y += line_heights[i] + line_spacing
 
-    # Inner glow
-    for dx, dy in [(-1, -1), (1, -1), (-1, 1), (1, 1)]:
-        draw.text((x + dx, y + dy), title, fill=(160, 15, 15), font=font)
-
-    # Main text - crimson red
-    draw.text((x, y), title, fill=(220, 20, 20), font=font)
-
-    # Highlight on top edge of text for 3D effect
-    small_font = _find_cjk_font(font_size)
-    if small_font:
-        draw.text((x, y - 1), title, fill=(255, 60, 40), font=small_font)
-
-    # Decorative lines
-    line_w = tw + 80
-    line_x = (width - line_w) // 2
-
-    # Top decorative line with fade
-    line_y = y - 50
-    for i in range(line_w):
-        fade = 1 - abs(i - line_w // 2) / (line_w // 2)
-        c = int(130 * fade)
-        draw.point((line_x + i, line_y), fill=(c, 5, 5))
-        draw.point((line_x + i, line_y + 1), fill=(c // 2, 2, 2))
-
-    # Bottom decorative line with fade
-    line_y2 = y + th + 50
-    for i in range(line_w):
-        fade = 1 - abs(i - line_w // 2) / (line_w // 2)
-        c = int(130 * fade)
-        draw.point((line_x + i, line_y2), fill=(c, 5, 5))
-        draw.point((line_x + i, line_y2 + 1), fill=(c // 2, 2, 2))
-
-    # Corner ornaments
-    ornament_size = 30
-    for corner_x, corner_y in [(line_x, line_y), (line_x + line_w, line_y),
-                                 (line_x, line_y2), (line_x + line_w, line_y2)]:
-        for i in range(ornament_size):
-            c = int(100 * (1 - i / ornament_size))
-            draw.point((corner_x, corner_y - i + ornament_size // 2), fill=(c, 3, 3))
-            draw.point((corner_x - i + ornament_size // 2, corner_y), fill=(c, 3, 3))
+    # --- Category badge (top-right corner) ---
+    badge_font = _find_cjk_font(28)
+    if badge_font:
+        badge_text = "怪談"
+        badge_bbox = draw.textbbox((0, 0), badge_text, font=badge_font)
+        bw = badge_bbox[2] - badge_bbox[0] + 20
+        bh = badge_bbox[3] - badge_bbox[1] + 14
+        bx = width - bw - 30
+        by = 30
+        # Semi-transparent red badge
+        draw.rectangle([bx, by, bx + bw, by + bh], fill=(180, 20, 20))
+        draw.text(
+            (bx + 10, by + 5), badge_text, font=badge_font, fill=(255, 255, 255)
+        )
 
     buf = BytesIO()
-    img.save(buf, format="PNG")
+    bg.save(buf, format="PNG", quality=95)
     return buf.getvalue()
 
 
@@ -260,10 +374,26 @@ def generate_images_for_story(
     num_scenes = cfg_get("num_scenes")
     rate_limit = cfg_get("image_rate_limit")
 
-    # Title card
+    # Generate title card background image via AI
+    title_bg_prompt = (
+        f"dark atmospheric background for Japanese horror story titled '{title}', "
+        "abandoned shrine in dark forest, foggy, ominous red sky, "
+        "no text, no letters, no words, no writing, no characters, "
+        "photorealistic, cinematic, extremely dark and moody, 8k quality"
+    )
+    title_bg_data = None
+    try:
+        title_bg_data = generate_image_ai(title_bg_prompt)
+        log.info("タイトル背景画像生成成功")
+    except Exception as e:
+        log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
+
     title_path = output_dir / "title_card.png"
-    title_path.write_bytes(create_title_card(title))
+    title_path.write_bytes(create_title_card(title, bg_image_data=title_bg_data))
     image_paths = [title_path]
+
+    if rate_limit > 0:
+        time.sleep(rate_limit)
 
     # Scene prompts
     prompts = extract_scene_prompts(text, title, num_scenes)
@@ -276,6 +406,7 @@ def generate_images_for_story(
 
         try:
             img_data = generate_image_ai(prompt)
+            img_data = degrade_to_vhs(img_data)
             img_path.write_bytes(img_data)
         except Exception as e:
             log.warning("画像生成失敗、フォールバック使用: %s", e)

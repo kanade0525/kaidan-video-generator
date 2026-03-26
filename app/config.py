@@ -16,14 +16,16 @@ _DEFAULTS = {
     "image_size": "1792x1024",
     "num_scenes": 3,
     "image_style": (
-        "photorealistic photograph, sepia toned, desaturated muted colors, "
-        "dark ominous sinister atmosphere, Japanese horror aesthetic, "
-        "heavy shadows, oppressive darkness, eerie unsettling mood, "
-        "faded washed-out colors like old photograph, warm brownish undertone, "
-        "film grain, vignette, shallow depth of field, 35mm lens, "
+        "found footage style, low quality home video camera capture, "
+        "surveillance camera footage, CCTV recording, VHS tape quality, "
+        "heavy noise and static grain, scan lines, signal distortion, "
+        "low resolution, slightly blurry, poor lighting, "
+        "infrared night vision green tint OR washed-out security camera colors, "
+        "timestamp overlay aesthetic, dark corners, lens flare artifacts, "
+        "Japanese horror atmosphere, creepy unsettling mood, "
         "dread, foreboding, supernatural horror, cursed imagery, "
         "absolutely no text, no letters, no words, no writing, no watermarks, no UI elements, "
-        "no vibrant colors, no bright saturated colors, no cheerful mood"
+        "no high quality, no professional photography, no vivid colors, no cheerful mood"
     ),
     "image_rate_limit": 15,
     "fps": 30,
