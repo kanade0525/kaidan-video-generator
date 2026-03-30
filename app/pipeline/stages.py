@@ -130,6 +130,8 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
         raise RuntimeError("YouTube未認証。設定ページから認証を実行してください。")
 
     from app.services.voice_generator import get_speaker_name
+    title_template = cfg_get("youtube_title_template")
+    yt_title = title_template.format(title=story.title)
     description_template = cfg_get("youtube_description_template")
     speaker_name = get_speaker_name()
     description = description_template.format(title=story.title, url=story.url, speaker=speaker_name)
@@ -139,7 +141,7 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
 
     result = youtube_uploader.upload_video(
         video_path=vid,
-        title=story.title,
+        title=yt_title,
         description=description,
         tags=tags if isinstance(tags, list) else [t.strip() for t in tags.split(",")],
         category_id=category_id,

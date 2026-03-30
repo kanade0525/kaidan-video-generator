@@ -179,6 +179,11 @@ def settings_page():
             label="公開状態",
         ).classes("w-48")
 
+        yt_title_tmpl = ui.input(
+            "タイトルテンプレート（{title}で怪談名に置換）",
+            value=config.get("youtube_title_template", "【怪談朗読】{title}"),
+        ).classes("w-full")
+
         yt_description = ui.textarea(
             "説明テンプレート（{title}でタイトルに置換）",
             value=config.get("youtube_description_template", ""),
@@ -250,6 +255,7 @@ def settings_page():
             "gemini_model": gemini_model.value,
             "max_chunk": int(max_chunk.value),
             "text_prompt": text_prompt.value,
+            "youtube_title_template": yt_title_tmpl.value,
             "youtube_category_id": yt_category.value,
             "youtube_privacy_status": yt_privacy.value,
             "youtube_description_template": yt_description.value,
