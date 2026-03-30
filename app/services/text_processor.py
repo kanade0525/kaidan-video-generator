@@ -17,7 +17,8 @@ def _get_gemini():
     global _gemini_client
     if _gemini_client is None:
         from google import genai
-        _gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
+        api_key = os.environ.get("GEMINI_API_KEY_TEXT_TO_TEXT") or os.environ.get("GEMINI_API_KEY", "")
+        _gemini_client = genai.Client(api_key=api_key)
     return _gemini_client
 
 
@@ -56,9 +57,32 @@ def process_text(text: str, prompt_template: str | None = None, model: str | Non
     result = re.sub(r"```[\s\S]*?```", "", result)
     result = result.strip()
 
+    # Remove repetition loops (Gemini sometimes generates infinite repeats)
+    result = _remove_repetitions(result)
+
     # Post-process: convert particle は→わ, へ→え using MeCab
     result = _fix_particles(result)
     return result
+
+
+def _remove_repetitions(text: str, min_pattern_len: int = 8, max_repeats: int = 2) -> str:
+    """Detect and remove repeated phrases that indicate LLM output loops."""
+    # Find patterns that repeat more than max_repeats times
+    for pattern_len in range(min_pattern_len, 60):
+        i = 0
+        while i < len(text) - pattern_len * 2:
+            pattern = text[i:i + pattern_len]
+            count = 1
+            j = i + pattern_len
+            while j + pattern_len <= len(text) and text[j:j + pattern_len] == pattern:
+                count += 1
+                j += pattern_len
+            if count > max_repeats:
+                # Found a loop - keep only max_repeats occurrences
+                log.warning("繰り返しパターン検出 (%d回): %s...", count, pattern[:30])
+                text = text[:i + pattern_len * max_repeats] + text[j:]
+            i += 1
+    return text
 
 
 def _fix_particles(text: str) -> str:

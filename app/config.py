@@ -12,8 +12,22 @@ _DEFAULTS = {
     "pitch": 0.0,
     "intonation": 1.0,
     "volume": 2.0,
-    "image_model": "z-image",
+    "image_model": "gemini-2.5-flash-image",
     "image_size": "1792x1024",
+    "image_aspect_ratio": "16:9",
+    "image_person_generation": "DONT_ALLOW",
+    "image_output_mime": "image/png",
+    "image_compression_quality": 90,
+    "image_negative_prompt": (
+        "text, letters, words, writing, captions, watermark, signature, logo, "
+        "title, subtitle, label, UI, numbers, symbols, typography, font, "
+        "anime, cartoon, illustration, drawing, painting, sketch, "
+        "bright colors, vibrant, cheerful, happy"
+    ),
+    "image_guidance_scale": 7.0,
+    "image_seed": 0,
+    "image_enhance_prompt": False,
+    "image_add_watermark": False,
     "num_scenes": 3,
     "image_style": (
         "found footage style, low quality home video camera capture, "

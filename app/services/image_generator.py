@@ -28,7 +28,8 @@ def _get_gemini():
     global _gemini_client
     if _gemini_client is None:
         from google import genai
-        _gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
+        api_key = os.environ.get("GEMINI_API_KEY_TEXT_TO_IMAGE") or os.environ.get("GEMINI_API_KEY_TEXT_TO_TEXT") or os.environ.get("GEMINI_API_KEY", "")
+        _gemini_client = genai.Client(api_key=api_key)
     return _gemini_client
 
 
@@ -71,14 +72,95 @@ def extract_scene_prompts(
         return [f"dark Japanese horror scene, {title}"] * num_scenes
 
 
+_imagen_client = None
+
+
+def _get_imagen_client():
+    global _imagen_client
+    if _imagen_client is None:
+        from google import genai
+        api_key = os.environ.get("GEMINI_API_KEY_TEXT_TO_IMAGE") or os.environ.get("GEMINI_API_KEY", "")
+        _imagen_client = genai.Client(api_key=api_key)
+    return _imagen_client
+
+
 @with_retry(max_attempts=2, base_delay=30.0)
 def generate_image_ai(prompt: str, model: str | None = None, size: str | None = None) -> bytes:
-    """Generate an image using AirForce API."""
+    """Generate an image using Imagen or AirForce API."""
     img_model = model or cfg_get("image_model")
-    img_size = size or cfg_get("image_size")
     style = cfg_get("image_style")
-
     full_prompt = f"{prompt}, {style}"
+
+    # Use Google API if model starts with "imagen" or "gemini"
+    if img_model.startswith("imagen") or img_model.startswith("gemini"):
+        return _generate_imagen(full_prompt, img_model)
+
+    # Fallback to AirForce
+    return _generate_airforce(full_prompt, img_model, size)
+
+
+def _generate_imagen(prompt: str, model: str) -> bytes:
+    """Generate image using Google Imagen or Gemini Image API."""
+    from google.genai import types
+
+    client = _get_imagen_client()
+
+    aspect_ratio = cfg_get("image_aspect_ratio")
+    person_gen = cfg_get("image_person_generation")
+    output_mime = cfg_get("image_output_mime")
+    compression = cfg_get("image_compression_quality")
+
+    # Gemini image generation (gemini-*-image models)
+    if model.startswith("gemini"):
+        image_config = types.ImageConfig(
+            aspectRatio=aspect_ratio,
+        )
+        response = client.models.generate_content(
+            model=model,
+            contents=f"Generate an image: {prompt}",
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE", "TEXT"],
+                imageConfig=image_config,
+            ),
+        )
+        for part in response.candidates[0].content.parts:
+            if part.inline_data:
+                return part.inline_data.data
+        raise RuntimeError("Gemini image generation returned no image")
+
+    # Imagen API (imagen-* models)
+    negative_prompt = cfg_get("image_negative_prompt")
+    guidance = cfg_get("image_guidance_scale")
+    seed = cfg_get("image_seed")
+    enhance = cfg_get("image_enhance_prompt")
+    watermark = cfg_get("image_add_watermark")
+
+    imagen_config = types.GenerateImagesConfig(
+        numberOfImages=1,
+        aspectRatio=aspect_ratio,
+        negativePrompt=negative_prompt,
+        guidanceScale=guidance,
+        enhancePrompt=enhance,
+        addWatermark=watermark,
+        outputMimeType=output_mime,
+        outputCompressionQuality=compression,
+    )
+    if seed > 0:
+        imagen_config.seed = seed
+
+    response = client.models.generate_images(
+        model=model,
+        prompt=prompt,
+        config=imagen_config,
+    )
+    if response.generated_images:
+        return response.generated_images[0].image.image_bytes
+    raise RuntimeError("Imagen returned no images")
+
+
+def _generate_airforce(prompt: str, model: str, size: str | None = None) -> bytes:
+    """Generate image using AirForce API."""
+    img_size = size or cfg_get("image_size")
     negative_prompt = (
         "text, letters, words, writing, captions, watermark, signature, logo, "
         "title, subtitle, label, UI, numbers, symbols, typography, font, "
@@ -89,8 +171,8 @@ def generate_image_ai(prompt: str, model: str | None = None, size: str | None = 
     r = requests.post(
         AIRFORCE_URL,
         json={
-            "model": img_model,
-            "prompt": full_prompt,
+            "model": model,
+            "prompt": prompt,
             "negative_prompt": negative_prompt,
             "size": img_size,
         },
@@ -348,19 +430,24 @@ def create_title_card(
         current_y += line_heights[i] + line_spacing
 
     # --- Category badge (top-right corner) ---
-    badge_font = _find_cjk_font(28)
+    badge_font = _find_cjk_font(32)
     if badge_font:
         badge_text = "怪談"
         badge_bbox = draw.textbbox((0, 0), badge_text, font=badge_font)
-        bw = badge_bbox[2] - badge_bbox[0] + 20
-        bh = badge_bbox[3] - badge_bbox[1] + 14
-        bx = width - bw - 30
-        by = 30
-        # Semi-transparent red badge
-        draw.rectangle([bx, by, bx + bw, by + bh], fill=(180, 20, 20))
-        draw.text(
-            (bx + 10, by + 5), badge_text, font=badge_font, fill=(255, 255, 255)
-        )
+        text_w = badge_bbox[2] - badge_bbox[0]
+        text_h = badge_bbox[3] - badge_bbox[1]
+        pad_x, pad_y = 16, 10
+        bw = text_w + pad_x * 2
+        bh = text_h + pad_y * 2
+        bx = width - bw - 40
+        by = 40
+        # Red badge with border
+        draw.rectangle([bx - 2, by - 2, bx + bw + 2, by + bh + 2], fill=(100, 5, 5))
+        draw.rectangle([bx, by, bx + bw, by + bh], fill=(160, 15, 15))
+        # Center text in badge
+        tx = bx + (bw - text_w) // 2 - badge_bbox[0]
+        ty = by + (bh - text_h) // 2 - badge_bbox[1]
+        draw.text((tx, ty), badge_text, font=badge_font, fill=(255, 240, 240))
 
     buf = BytesIO()
     bg.save(buf, format="PNG", quality=95)
@@ -376,10 +463,13 @@ def generate_images_for_story(
 
     # Generate title card background image via AI
     title_bg_prompt = (
-        f"dark atmospheric background for Japanese horror story titled '{title}', "
+        "dark atmospheric background, "
         "abandoned shrine in dark forest, foggy, ominous red sky, "
-        "no text, no letters, no words, no writing, no characters, "
-        "photorealistic, cinematic, extremely dark and moody, 8k quality"
+        "empty scene with no people, no objects in focus, "
+        "photorealistic, cinematic, extremely dark and moody, "
+        "absolutely no text, no letters, no words, no writing, no titles, "
+        "no watermarks, no signatures, no logos, no symbols, no characters, "
+        "no typography, no captions, no labels, pure scenery only"
     )
     title_bg_data = None
     try:
@@ -388,7 +478,7 @@ def generate_images_for_story(
     except Exception as e:
         log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
 
-    title_path = output_dir / "title_card.png"
+    title_path = output_dir / "000_title_card.png"
     title_path.write_bytes(create_title_card(title, bg_image_data=title_bg_data))
     image_paths = [title_path]
 

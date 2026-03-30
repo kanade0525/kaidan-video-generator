@@ -64,6 +64,7 @@ def stories_page():
 
             columns = [
                 {"name": "title", "label": "タイトル", "field": "title", "align": "left"},
+                {"name": "url", "label": "URL", "field": "url", "align": "left"},
                 {"name": "categories", "label": "カテゴリ", "field": "categories"},
                 {"name": "stage", "label": "ステージ", "field": "stage"},
                 {"name": "error", "label": "エラー", "field": "error"},
@@ -74,6 +75,7 @@ def stories_page():
                 rows.append({
                     "id": s.id,
                     "title": s.title[:30],
+                    "url": s.url,
                     "categories": ", ".join(s.categories),
                     "stage": STAGE_LABELS.get(s.stage, s.stage),
                     "error": (s.error or "")[:40],
@@ -81,6 +83,14 @@ def stories_page():
                 })
 
             table = ui.table(columns=columns, rows=rows, row_key="id").classes("w-full")
+
+            table.add_slot("body-cell-url", """
+                <q-td :props="props">
+                    <a :href="props.value" target="_blank" class="text-blue-500 underline">
+                        元ページ
+                    </a>
+                </q-td>
+            """)
 
             table.add_slot("body-cell-actions", """
                 <q-td :props="props">

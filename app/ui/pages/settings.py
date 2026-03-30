@@ -47,16 +47,56 @@ def settings_page():
     with ui.card().classes("w-full mb-4 p-4"):
         ui.label("画像設定").classes("text-lg font-bold mb-2")
 
-        image_model = ui.input("モデル", value=config.get("image_model", "z-image")).classes("w-64")
-        image_size = ui.select(
-            ["1792x1024", "1024x1024", "1280x720", "1024x576"],
-            value=config.get("image_size", "1792x1024"),
-            label="サイズ",
-        ).classes("w-48")
+        image_model = ui.input("モデル", value=config.get("image_model", "gemini-2.5-flash-image")).classes("w-64")
+
+        with ui.row().classes("gap-4 items-end"):
+            image_size = ui.select(
+                ["1792x1024", "1024x1024", "1280x720", "1024x576"],
+                value=config.get("image_size", "1792x1024"),
+                label="サイズ (AirForce用)",
+            ).classes("w-48")
+            image_aspect = ui.select(
+                ["16:9", "4:3", "1:1", "3:4", "9:16"],
+                value=config.get("image_aspect_ratio", "16:9"),
+                label="アスペクト比 (Gemini/Imagen用)",
+            ).classes("w-48")
+
         num_scenes = ui.number("シーン数", value=config.get("num_scenes", 3), min=1, max=10)
         image_style = ui.textarea(
             "スタイルプロンプト", value=config.get("image_style", "")
         ).classes("w-full")
+        image_negative = ui.textarea(
+            "ネガティブプロンプト", value=config.get("image_negative_prompt", "")
+        ).classes("w-full")
+
+        ui.label("Imagen専用パラメータ").classes("text-md font-bold mt-4 mb-2")
+        ui.label("以下はimagenモデル使用時のみ有効です").classes("text-xs text-gray-500 mb-2")
+
+        with ui.row().classes("gap-4 items-end flex-wrap"):
+            image_person = ui.select(
+                ["DONT_ALLOW", "ALLOW_ADULT", "ALLOW_ALL"],
+                value=config.get("image_person_generation", "DONT_ALLOW"),
+                label="人物生成",
+            ).classes("w-48")
+            image_mime = ui.select(
+                ["image/png", "image/jpeg"],
+                value=config.get("image_output_mime", "image/png"),
+                label="出力フォーマット",
+            ).classes("w-48")
+
+        with ui.row().classes("gap-4"):
+            image_compression = ui.slider(min=10, max=100, step=5, value=config.get("image_compression_quality", 90))
+            ui.label().bind_text_from(image_compression, "value", lambda v: f"圧縮品質: {int(v)}")
+
+        with ui.row().classes("gap-4"):
+            image_guidance = ui.slider(min=1.0, max=20.0, step=0.5, value=config.get("image_guidance_scale", 7.0))
+            ui.label().bind_text_from(image_guidance, "value", lambda v: f"ガイダンススケール: {v}")
+
+        with ui.row().classes("gap-4 items-end"):
+            image_seed = ui.number("シード (0=ランダム)", value=config.get("image_seed", 0), min=0)
+            image_enhance = ui.checkbox("プロンプト自動改善", value=config.get("image_enhance_prompt", False))
+            image_watermark = ui.checkbox("透かし追加", value=config.get("image_add_watermark", False))
+
         image_rate = ui.number(
             "API間隔(秒)", value=config.get("image_rate_limit", 15), min=1, max=120
         )
@@ -113,6 +153,15 @@ def settings_page():
             "volume": volume_slider.value,
             "image_model": image_model.value,
             "image_size": image_size.value,
+            "image_aspect_ratio": image_aspect.value,
+            "image_person_generation": image_person.value,
+            "image_output_mime": image_mime.value,
+            "image_compression_quality": int(image_compression.value),
+            "image_negative_prompt": image_negative.value,
+            "image_guidance_scale": image_guidance.value,
+            "image_seed": int(image_seed.value),
+            "image_enhance_prompt": image_enhance.value,
+            "image_add_watermark": image_watermark.value,
             "num_scenes": int(num_scenes.value),
             "image_style": image_style.value,
             "image_rate_limit": int(image_rate.value),

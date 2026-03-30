@@ -163,8 +163,16 @@ def _show_scrape_result(story):
     raw_path = raw_content_path(story.title)
     if raw_path.exists():
         text = raw_path.read_text(encoding="utf-8")
-        ui.label(f"文字数: {len(text)}").classes("text-sm text-gray-500")
-        ui.textarea(value=text).classes("w-full").props("readonly rows=10")
+        char_label = ui.label(f"文字数: {len(text)}").classes("text-sm text-gray-500")
+        textarea = ui.textarea(value=text).classes("w-full").props("rows=10")
+
+        def save_raw():
+            new_text = textarea.value
+            raw_path.write_text(new_text, encoding="utf-8")
+            char_label.text = f"文字数: {len(new_text)}"
+            ui.notify("スクレイピングテキストを保存しました", color="positive")
+
+        ui.button("テキストを保存", on_click=save_raw, color="green").props("size=sm")
     else:
         ui.label("未取得").classes("text-gray-500")
 
@@ -175,14 +183,27 @@ def _show_text_result(story):
     proc_path = processed_text_path(story.title)
     if proc_path.exists():
         text = proc_path.read_text(encoding="utf-8")
-        ui.label(f"文字数: {len(text)}").classes("text-sm text-gray-500")
-        ui.textarea(value=text).classes("w-full").props("readonly rows=10")
+        char_label = ui.label(f"文字数: {len(text)}").classes("text-sm text-gray-500")
+        textarea = ui.textarea(value=text).classes("w-full").props("rows=10")
 
         chunk_file = chunks_path(story.title)
         if chunk_file.exists():
             import json
             chunks = json.loads(chunk_file.read_text(encoding="utf-8"))
             ui.label(f"チャンク数: {len(chunks)}").classes("text-sm text-gray-500 mt-2")
+
+        def save_processed():
+            import json as _json
+            new_text = textarea.value
+            proc_path.write_text(new_text, encoding="utf-8")
+            # Re-split into chunks
+            new_chunks = [c.strip() for c in new_text.split("\n") if c.strip()]
+            chunk_file = chunks_path(story.title)
+            chunk_file.write_text(_json.dumps(new_chunks, ensure_ascii=False, indent=2))
+            char_label.text = f"文字数: {len(new_text)}"
+            ui.notify(f"処理済みテキストを保存（{len(new_chunks)}チャンク）", color="positive")
+
+        ui.button("テキストを保存", on_click=save_processed, color="green").props("size=sm")
     else:
         ui.label("未処理").classes("text-gray-500")
 
@@ -231,27 +252,47 @@ def _show_images_result(story):
         ui.label("スライドショー編集").classes("text-lg font-bold mt-2 mb-2")
         ui.label("表示時間0 = 自動（均等分割）。ドラッグで並び替えはできないため、順番は番号で指定してください。").classes("text-xs text-gray-500 mb-2")
 
-        slide_inputs = []
-        for i, slide in enumerate(slide_config):
-            img_file = slide["file"]
-            img_path = img_dir / img_file
-            if not img_path.exists():
-                continue
-            ts = int(img_path.stat().st_mtime)
+        slides_container = ui.column().classes("w-full")
 
-            with ui.row().classes("items-center gap-2 mb-2 w-full"):
-                ui.label(f"{i + 1}.").classes("text-sm w-6")
-                ui.image(f"{static_path}/{img_file}?t={ts}").classes("w-32 h-20 rounded object-cover")
-                ui.label(img_file).classes("text-xs text-gray-500 w-32")
-                dur_input = ui.number(
-                    "秒", value=slide.get("duration", 0),
-                    min=0, max=60, step=0.5, format="%.1f"
-                ).classes("w-20").props("dense size=sm")
-                order_input = ui.number(
-                    "順番", value=i + 1,
-                    min=1, max=len(slide_config), step=1
-                ).classes("w-16").props("dense size=sm")
-                slide_inputs.append({"file": img_file, "duration": dur_input, "order": order_input})
+        def render_slides():
+            nonlocal slide_config
+            slides_container.clear()
+            slide_inputs.clear()
+            with slides_container:
+                for i, slide in enumerate(slide_config):
+                    img_file = slide["file"]
+                    img_path = img_dir / img_file
+                    if not img_path.exists():
+                        continue
+                    ts = int(img_path.stat().st_mtime)
+
+                    with ui.row().classes("items-center gap-2 mb-2 w-full"):
+                        ui.label(f"{i + 1}.").classes("text-sm w-6")
+                        ui.image(f"{static_path}/{img_file}?t={ts}").classes("w-32 h-20 rounded object-cover")
+                        ui.label(img_file).classes("text-xs text-gray-500 w-32")
+                        dur_input = ui.number(
+                            "秒", value=slide.get("duration", 0),
+                            min=0, max=60, step=0.5, format="%.1f"
+                        ).classes("w-20").props("dense size=sm")
+                        order_input = ui.number(
+                            "順番", value=i + 1,
+                            min=1, max=len(slide_config), step=1
+                        ).classes("w-16").props("dense size=sm")
+
+                        def make_delete(f=img_file):
+                            def delete_img():
+                                nonlocal slide_config
+                                (img_dir / f).unlink(missing_ok=True)
+                                slide_config = [s for s in slide_config if s["file"] != f]
+                                ui.notify(f"{f} を削除しました", color="warning")
+                                render_slides()
+                            return delete_img
+
+                        ui.button(icon="delete", on_click=make_delete(), color="red").props("flat size=sm")
+                        slide_inputs.append({"file": img_file, "duration": dur_input, "order": order_input})
+
+        slide_inputs = []
+        render_slides()
 
         def save_slideshow():
             # Sort by order

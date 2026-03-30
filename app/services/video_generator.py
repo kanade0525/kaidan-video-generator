@@ -28,13 +28,13 @@ def create_video(
     slideshow_path = temp_dir / "slideshow_temp.mp4"
     faded_path = temp_dir / "faded_temp.mp4"
 
-    # Step 0: Boost narration volume
+    # Step 0: Add leading silence + boost narration volume
     boosted_narration = temp_dir / "narration_boosted.wav"
     from app.utils.ffmpeg import run_ffmpeg
-    log.info("ナレーション音量ブースト中...")
+    log.info("ナレーション音量ブースト + 冒頭無音追加中...")
     run_ffmpeg([
         "-i", str(narration),
-        "-filter:a", "volume=3.0",
+        "-af", "adelay=2000|2000,volume=3.0",
         str(boosted_narration),
     ])
 
