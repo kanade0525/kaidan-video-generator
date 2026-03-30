@@ -198,6 +198,27 @@ def settings_page():
         ).classes("w-64")
         ui.label("アップロード成功時にHHS図書館に使用報告を自動送信します").classes("text-xs text-gray-500")
 
+        ui.label("予約投稿").classes("text-md font-bold mt-4 mb-2")
+        yt_schedule_enabled = ui.checkbox(
+            "予約投稿を有効にする", value=config.get("youtube_schedule_enabled", True)
+        )
+        with ui.row().classes("gap-4 items-end"):
+            yt_schedule_day = ui.select(
+                {
+                    "monday": "月曜", "tuesday": "火曜", "wednesday": "水曜",
+                    "thursday": "木曜", "friday": "金曜", "saturday": "土曜", "sunday": "日曜",
+                },
+                value=config.get("youtube_schedule_day", "saturday"),
+                label="曜日",
+            ).classes("w-32")
+            yt_schedule_hour = ui.number(
+                "時", value=config.get("youtube_schedule_hour", 20), min=0, max=23
+            ).classes("w-20")
+            yt_schedule_minute = ui.number(
+                "分", value=config.get("youtube_schedule_minute", 0), min=0, max=59
+            ).classes("w-20")
+        ui.label("次の指定曜日・時間に公開されます（日本時間）").classes("text-xs text-gray-500")
+
     # Save button
     def save():
         new_config = {
@@ -235,6 +256,10 @@ def settings_page():
             "youtube_tags": yt_tags.value,
             "youtube_channel_name": yt_channel.value,
             "youtube_contact_email": yt_email.value,
+            "youtube_schedule_enabled": yt_schedule_enabled.value,
+            "youtube_schedule_day": yt_schedule_day.value,
+            "youtube_schedule_hour": int(yt_schedule_hour.value),
+            "youtube_schedule_minute": int(yt_schedule_minute.value),
         }
         save_config(new_config)
         ui.notify("設定を保存しました", color="positive")

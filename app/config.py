@@ -80,6 +80,10 @@ _DEFAULTS = {
     "youtube_tags": "怪談,ホラー,朗読,怖い話,心霊,恐怖",
     "youtube_channel_name": "",
     "youtube_contact_email": "",
+    "youtube_schedule_enabled": True,
+    "youtube_schedule_day": "saturday",
+    "youtube_schedule_hour": 20,
+    "youtube_schedule_minute": 0,
 }
 
 

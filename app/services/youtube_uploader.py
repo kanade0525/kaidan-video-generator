@@ -100,6 +100,43 @@ def reset_service():
     _youtube_service = None
 
 
+def get_next_publish_time(
+    day: str = "saturday",
+    hour: int = 20,
+    minute: int = 0,
+) -> str | None:
+    """Calculate the next scheduled publish time as RFC 3339 string.
+
+    Returns None if scheduling is disabled.
+    """
+    from datetime import datetime, timedelta
+    import zoneinfo
+
+    jst = zoneinfo.ZoneInfo("Asia/Tokyo")
+    now = datetime.now(jst)
+
+    days_map = {
+        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+        "friday": 4, "saturday": 5, "sunday": 6,
+    }
+    target_day = days_map.get(day.lower(), 5)
+
+    # Calculate days until next target day
+    days_ahead = target_day - now.weekday()
+    if days_ahead < 0:
+        days_ahead += 7
+    elif days_ahead == 0:
+        # Same day: if the time has passed, schedule for next week
+        target_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now >= target_time:
+            days_ahead = 7
+
+    next_date = now + timedelta(days=days_ahead)
+    publish_time = next_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    return publish_time.isoformat()
+
+
 @with_retry(max_attempts=3, base_delay=30.0)
 def upload_video(
     video_path: str | Path,
@@ -108,6 +145,7 @@ def upload_video(
     tags: list[str] | None = None,
     category_id: str = "24",
     privacy_status: str = "private",
+    publish_at: str | None = None,
     progress_callback=None,
 ) -> dict:
     """Upload a video to YouTube.
@@ -123,6 +161,16 @@ def upload_video(
 
     service = _get_service()
 
+    status_body = {
+        "privacyStatus": privacy_status,
+        "embeddable": True,
+        "selfDeclaredMadeForKids": False,
+    }
+    if publish_at:
+        status_body["privacyStatus"] = "private"
+        status_body["publishAt"] = publish_at
+        log.info("予約投稿: %s", publish_at)
+
     body = {
         "snippet": {
             "title": title,
@@ -131,11 +179,7 @@ def upload_video(
             "categoryId": category_id,
             "defaultLanguage": "ja",
         },
-        "status": {
-            "privacyStatus": privacy_status,
-            "embeddable": True,
-            "selfDeclaredMadeForKids": False,
-        },
+        "status": status_body,
     }
 
     media = MediaFileUpload(
@@ -166,6 +210,7 @@ def upload_video(
         "privacy_status": response.get("status", {}).get(
             "privacyStatus", privacy_status
         ),
+        "publish_at": publish_at,
     }
 
     log.info("YouTubeアップロード完了: %s", result["url"])

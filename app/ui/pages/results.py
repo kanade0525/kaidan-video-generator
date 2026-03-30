@@ -382,6 +382,22 @@ def _show_youtube_upload(story):
                 label="カテゴリ",
             ).classes("w-48")
 
+        # Schedule
+        schedule_enabled = cfg_get("youtube_schedule_enabled")
+        schedule_day = cfg_get("youtube_schedule_day")
+        schedule_hour = cfg_get("youtube_schedule_hour")
+        schedule_minute = cfg_get("youtube_schedule_minute")
+        next_publish = None
+        if schedule_enabled:
+            next_publish = youtube_uploader.get_next_publish_time(
+                schedule_day, schedule_hour, schedule_minute
+            )
+
+        yt_schedule = ui.checkbox(
+            f"予約投稿（次回: {next_publish[:16].replace('T', ' ')} JST）" if next_publish else "予約投稿",
+            value=schedule_enabled,
+        )
+
         progress = ui.linear_progress(value=0, show_value=False).classes("w-full mt-2")
         progress.visible = False
         status_label = ui.label("").classes("text-sm")
@@ -402,6 +418,13 @@ def _show_youtube_upload(story):
             def run():
                 try:
                     tags = [t.strip() for t in yt_tags.value.split(",") if t.strip()]
+                    publish_at = None
+                    if yt_schedule.value:
+                        publish_at = youtube_uploader.get_next_publish_time(
+                            cfg_get("youtube_schedule_day"),
+                            cfg_get("youtube_schedule_hour"),
+                            cfg_get("youtube_schedule_minute"),
+                        )
                     result = youtube_uploader.upload_video(
                         video_path=video_path(story.title),
                         title=yt_title.value,
@@ -409,13 +432,17 @@ def _show_youtube_upload(story):
                         tags=tags,
                         category_id=yt_category.value,
                         privacy_status=yt_privacy.value,
+                        publish_at=publish_at,
                         progress_callback=lambda cur, total: setattr(progress, 'value', cur / total),
                     )
                     db.set_youtube_video_id(story.id, result["video_id"])
                     db.update_stage(story.id, "youtube_uploaded")
                     try:
                         progress.value = 1.0
-                        status_label.text = f"完了! {result['url']}"
+                        msg = f"完了! {result['url']}"
+                        if result.get("publish_at"):
+                            msg += f"\n予約公開: {result['publish_at'][:16].replace('T', ' ')} JST"
+                        status_label.text = msg
                         status_label.classes(replace="text-sm text-green-500")
                     except Exception:
                         pass
