@@ -143,6 +143,61 @@ def settings_page():
             "テキスト処理プロンプト", value=config.get("text_prompt", "")
         ).classes("w-full")
 
+    # YouTube settings
+    with ui.card().classes("w-full mb-4 p-4"):
+        ui.label("YouTube設定").classes("text-lg font-bold mb-2")
+
+        from app.services import youtube_uploader
+
+        # Auth status
+        with ui.row().classes("gap-4 items-center mb-2"):
+            if youtube_uploader.is_authenticated():
+                ui.label("認証済み").classes("text-green-500 font-bold")
+            elif youtube_uploader.is_configured():
+                ui.label("未認証（client_secret.json あり）").classes("text-yellow-500")
+            else:
+                ui.label("未設定（data/client_secret.json を配置してください）").classes("text-red-500")
+
+            def do_auth():
+                try:
+                    youtube_uploader.authenticate()
+                    ui.notify("YouTube認証成功！", color="positive")
+                except Exception as e:
+                    ui.notify(f"認証エラー: {e}", color="negative")
+
+            ui.button("YouTube認証", on_click=do_auth, color="red").props("size=sm")
+
+        yt_category = ui.select(
+            {"24": "エンターテインメント", "22": "ブログ", "27": "教育", "1": "映画", "10": "音楽"},
+            value=config.get("youtube_category_id", "24"),
+            label="カテゴリ",
+        ).classes("w-48")
+
+        yt_privacy = ui.select(
+            {"private": "非公開", "unlisted": "限定公開", "public": "公開"},
+            value=config.get("youtube_privacy_status", "private"),
+            label="公開状態",
+        ).classes("w-48")
+
+        yt_description = ui.textarea(
+            "説明テンプレート（{title}でタイトルに置換）",
+            value=config.get("youtube_description_template", ""),
+        ).classes("w-full")
+
+        yt_tags = ui.input(
+            "タグ（カンマ区切り）",
+            value=config.get("youtube_tags", "怪談,ホラー,朗読"),
+        ).classes("w-full")
+
+        ui.label("使用報告（ホラホリ利用規約で必須）").classes("text-md font-bold mt-4 mb-2")
+        yt_channel = ui.input(
+            "チャンネル名", value=config.get("youtube_channel_name", "")
+        ).classes("w-64")
+        yt_email = ui.input(
+            "連絡先メールアドレス", value=config.get("youtube_contact_email", "")
+        ).classes("w-64")
+        ui.label("アップロード成功時にHHS図書館に使用報告を自動送信します").classes("text-xs text-gray-500")
+
     # Save button
     def save():
         new_config = {
@@ -174,6 +229,12 @@ def settings_page():
             "gemini_model": gemini_model.value,
             "max_chunk": int(max_chunk.value),
             "text_prompt": text_prompt.value,
+            "youtube_category_id": yt_category.value,
+            "youtube_privacy_status": yt_privacy.value,
+            "youtube_description_template": yt_description.value,
+            "youtube_tags": yt_tags.value,
+            "youtube_channel_name": yt_channel.value,
+            "youtube_contact_email": yt_email.value,
         }
         save_config(new_config)
         ui.notify("設定を保存しました", color="positive")

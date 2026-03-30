@@ -110,7 +110,62 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
     video_generator.create_video(images, narration, output, durations=durations, progress_callback=progress_callback)
 
 
+def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) -> None:
+    """Stage: Upload video to YouTube."""
+    from app.config import get as cfg_get
+    from app.services import youtube_uploader
+
+    log.info("[youtube] %s", story.title)
+
+    # Skip if already uploaded
+    if story.youtube_video_id:
+        log.info("既にアップロード済み: %s", story.youtube_video_id)
+        return
+
+    vid = video_path(story.title)
+    if not vid.exists():
+        raise RuntimeError("動画ファイルが見つかりません")
+
+    if not youtube_uploader.is_authenticated():
+        raise RuntimeError("YouTube未認証。設定ページから認証を実行してください。")
+
+    from app.services.voice_generator import get_speaker_name
+    description_template = cfg_get("youtube_description_template")
+    speaker_name = get_speaker_name()
+    description = description_template.format(title=story.title, url=story.url, speaker=speaker_name)
+    tags = cfg_get("youtube_tags")
+    category_id = cfg_get("youtube_category_id")
+    privacy = cfg_get("youtube_privacy_status")
+
+    result = youtube_uploader.upload_video(
+        video_path=vid,
+        title=story.title,
+        description=description,
+        tags=tags if isinstance(tags, list) else [t.strip() for t in tags.split(",")],
+        category_id=category_id,
+        privacy_status=privacy,
+        progress_callback=progress_callback,
+    )
+
+    db.set_youtube_video_id(story.id, result["video_id"])
+
+    # Submit usage report to HHS Library
+    channel_name = cfg_get("youtube_channel_name")
+    contact_email = cfg_get("youtube_contact_email")
+    if channel_name and contact_email:
+        try:
+            youtube_uploader.submit_usage_report(
+                story_title=story.title,
+                video_url=result["url"],
+                channel_name=channel_name,
+                email=contact_email,
+            )
+        except Exception as e:
+            log.warning("使用報告送信失敗（アップロードは成功）: %s", e)
+
+
 # Stage function registry: maps output stage -> processing function
+# youtube_uploaded is excluded - only triggered manually via UI approval
 STAGE_FUNCTIONS = {
     "scraped": do_scrape,
     "text_processed": do_text,

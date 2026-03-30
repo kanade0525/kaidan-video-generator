@@ -64,6 +64,22 @@ _DEFAULTS = {
         "・説明や注釈は不要。変換結果のテキストのみ出力"
     ),
     "scrape_delay": 2.0,
+    "youtube_category_id": "24",
+    "youtube_privacy_status": "private",
+    "youtube_description_template": (
+        "【怪談朗読】{title}\n\n"
+        "怪談朗読チャンネルです。\n"
+        "チャンネル登録・高評価よろしくお願いします。\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "引用元:HHS図書館より\n"
+        "「{title}」{url}\n\n"
+        "音声: VOICEVOX:{speaker}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "#怪談 #ホラー #朗読 #怖い話 #ホラホリ"
+    ),
+    "youtube_tags": "怪談,ホラー,朗読,怖い話,心霊,恐怖",
+    "youtube_channel_name": "",
+    "youtube_contact_email": "",
 }
 
 

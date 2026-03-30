@@ -321,3 +321,118 @@ def _show_video_result(story):
         ui.label("未生成").classes("text-gray-500")
 
     _retry_button(story, "video_complete", "動画再生成")
+
+    # YouTube upload section
+    if vid_path.exists():
+        ui.separator().classes("my-4")
+        _show_youtube_upload(story)
+
+
+def _show_youtube_upload(story):
+    """YouTube upload UI with approval flow and duplicate prevention."""
+    from app.config import get as cfg_get
+    from app.services import youtube_uploader
+
+    ui.label("YouTubeアップロード").classes("text-lg font-bold mt-2")
+
+    # Check if already uploaded
+    fresh_story = db.get_story_by_id(story.id)
+    if fresh_story and fresh_story.youtube_video_id:
+        vid_id = fresh_story.youtube_video_id
+        with ui.row().classes("items-center gap-2"):
+            ui.label("アップロード済み").classes("text-green-500 font-bold")
+            ui.link(
+                f"https://youtube.com/watch?v={vid_id}",
+                f"https://youtube.com/watch?v={vid_id}",
+                new_tab=True,
+            ).classes("text-blue-500 underline")
+
+        with ui.row().classes("gap-2 mt-2"):
+            ui.label("再アップロードしますか？").classes("text-sm text-gray-500")
+            reupload_check = ui.checkbox("はい、再アップロードする")
+        show_form = reupload_check
+    else:
+        show_form = None
+
+    if not youtube_uploader.is_authenticated():
+        ui.label("YouTube未認証。設定ページから認証してください。").classes("text-red-500")
+        return
+
+    # Upload form
+    with ui.card().classes("w-full p-4 mt-2"):
+        yt_title = ui.input("タイトル", value=story.title).classes("w-full")
+        description_template = cfg_get("youtube_description_template")
+        from app.services.voice_generator import get_speaker_name
+        speaker_name = get_speaker_name()
+        yt_desc = ui.textarea(
+            "説明", value=description_template.format(title=story.title, url=story.url, speaker=speaker_name)
+        ).classes("w-full")
+        tags_str = cfg_get("youtube_tags")
+        yt_tags = ui.input("タグ（カンマ区切り）", value=tags_str).classes("w-full")
+
+        with ui.row().classes("gap-4"):
+            yt_privacy = ui.select(
+                {"private": "非公開", "unlisted": "限定公開", "public": "公開"},
+                value=cfg_get("youtube_privacy_status"),
+                label="公開状態",
+            ).classes("w-48")
+            yt_category = ui.select(
+                {"24": "エンターテインメント", "22": "ブログ", "27": "教育"},
+                value=cfg_get("youtube_category_id"),
+                label="カテゴリ",
+            ).classes("w-48")
+
+        progress = ui.linear_progress(value=0, show_value=False).classes("w-full mt-2")
+        progress.visible = False
+        status_label = ui.label("").classes("text-sm")
+
+        def do_upload():
+            # Duplicate check
+            if show_form is not None and not show_form.value:
+                ui.notify("再アップロードを確認してください", color="warning")
+                return
+
+            import threading
+
+            btn.disable()
+            progress.visible = True
+            progress.value = 0
+            status_label.text = "アップロード中..."
+
+            def run():
+                try:
+                    tags = [t.strip() for t in yt_tags.value.split(",") if t.strip()]
+                    result = youtube_uploader.upload_video(
+                        video_path=video_path(story.title),
+                        title=yt_title.value,
+                        description=yt_desc.value,
+                        tags=tags,
+                        category_id=yt_category.value,
+                        privacy_status=yt_privacy.value,
+                        progress_callback=lambda cur, total: setattr(progress, 'value', cur / total),
+                    )
+                    db.set_youtube_video_id(story.id, result["video_id"])
+                    db.update_stage(story.id, "youtube_uploaded")
+                    try:
+                        progress.value = 1.0
+                        status_label.text = f"完了! {result['url']}"
+                        status_label.classes(replace="text-sm text-green-500")
+                    except Exception:
+                        pass
+                except Exception as e:
+                    try:
+                        status_label.text = f"エラー: {e}"
+                        status_label.classes(replace="text-sm text-red-500")
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        btn.enable()
+                    except Exception:
+                        pass
+
+            threading.Thread(target=run, daemon=True).start()
+
+        btn = ui.button(
+            "承認してYouTubeにアップロード", on_click=do_upload, color="red"
+        ).props("size=sm").classes("mt-2")

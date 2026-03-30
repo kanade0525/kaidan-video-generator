@@ -10,6 +10,7 @@ STAGES = [
     "voice_generated",
     "images_generated",
     "video_complete",
+    "youtube_uploaded",
 ]
 
 STAGE_LABELS = {
@@ -19,6 +20,7 @@ STAGE_LABELS = {
     "voice_generated": "音声生成済",
     "images_generated": "画像生成済",
     "video_complete": "動画生成済",
+    "youtube_uploaded": "YouTube投稿済",
 }
 
 
@@ -52,3 +54,4 @@ class Story:
     updated_at: str = ""
     categories: list[str] = field(default_factory=list)
     stages_completed: dict[str, str] = field(default_factory=dict)
+    youtube_video_id: str | None = None

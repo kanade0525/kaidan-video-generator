@@ -64,6 +64,11 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_logs_story ON logs(story_id);
     """)
+    # Add youtube_video_id column if missing (migration)
+    try:
+        conn.execute("ALTER TABLE stories ADD COLUMN youtube_video_id TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     conn.commit()
 
 
@@ -95,6 +100,7 @@ def _row_to_story(row: sqlite3.Row) -> Story:
         updated_at=row["updated_at"],
         categories=[c["category"] for c in cats],
         stages_completed={c["stage"]: c["completed_at"] for c in completions},
+        youtube_video_id=row["youtube_video_id"] if "youtube_video_id" in row.keys() else None,
     )
 
 
@@ -231,6 +237,16 @@ def update_stage(story_id: int, stage: str, error: str | None = None) -> None:
             "VALUES (?, ?, ?)",
             (story_id, stage, now),
         )
+    conn.commit()
+
+
+def set_youtube_video_id(story_id: int, video_id: str) -> None:
+    """Store the YouTube video ID for a story."""
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE stories SET youtube_video_id = ?, updated_at = ? WHERE id = ?",
+        (video_id, _now(), story_id),
+    )
     conn.commit()
 
 

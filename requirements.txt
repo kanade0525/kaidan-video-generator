@@ -7,5 +7,8 @@ python-dotenv>=1.0
 numpy>=1.26
 lxml
 nicegui>=2.0
+google-api-python-client>=2.0
+google-auth-oauthlib>=1.0
+google-auth-httplib2>=0.2
 mecab-python3>=1.0
 unidic-lite>=1.0
