@@ -451,7 +451,7 @@ def create_title_card(
         current_y += line_heights[i] + line_spacing
 
     # --- Category badge (top-right corner) ---
-    badge_font = _find_cjk_font(32)
+    badge_font = _find_cjk_font(112, use_koin=True)
     if badge_font:
         badge_text = "怪談"
         badge_bbox = draw.textbbox((0, 0), badge_text, font=badge_font)
