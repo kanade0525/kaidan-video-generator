@@ -264,8 +264,24 @@ def generate_fallback_image(width: int = 1792, height: int = 1024) -> bytes:
     return buf.getvalue()
 
 
-def _find_cjk_font(size: int) -> ImageFont.FreeTypeFont | None:
-    """Find a CJK font on the system."""
+def _find_cjk_font(size: int, use_koin: bool = False) -> ImageFont.FreeTypeFont | None:
+    """Find a CJK font on the system.
+
+    Args:
+        use_koin: If True, prefer g_コミック古印体 for horror-style text.
+    """
+    if use_koin:
+        koin_paths = [
+            "fonts/Zomzi.TTF",
+            "/app/fonts/Zomzi.TTF",
+        ]
+        for fp in koin_paths:
+            if Path(fp).exists():
+                try:
+                    return ImageFont.truetype(fp, size)
+                except Exception:
+                    continue
+
     font_paths = [
         "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
@@ -394,34 +410,39 @@ def create_title_card(
     font_size = min(font_size, 240)
     font_size = max(font_size, 80)
 
-    font = _find_cjk_font(font_size)
+    font = _find_cjk_font(font_size, use_koin=True)
     if font is None:
         font = ImageFont.load_default()
 
-    # Measure all lines
+    # Measure all lines (accounting for bbox offset)
     line_heights = []
     line_widths = []
+    line_offsets_x = []
+    line_offsets_y = []
     for line in lines:
         bbox = draw.textbbox((0, 0), line, font=font)
         line_widths.append(bbox[2] - bbox[0])
         line_heights.append(bbox[3] - bbox[1])
+        line_offsets_x.append(bbox[0])
+        line_offsets_y.append(bbox[1])
 
     line_spacing = int(font_size * 0.25)
     total_text_height = sum(line_heights) + line_spacing * (len(lines) - 1)
 
-    # Start y: center vertically, slightly lower
-    start_y = (height - total_text_height) // 2 + int(height * 0.05)
+    # Start y: center vertically
+    start_y = (height - total_text_height) // 2
 
     # Draw each line
     outline_w = max(4, font_size // 18)
     current_y = start_y
     for i, line in enumerate(lines):
         lw = line_widths[i]
-        x = (width - lw) // 2
+        x = (width - lw) // 2 - line_offsets_x[i]
+        y = current_y - line_offsets_y[i]
 
         # Draw text with thick black outline + red fill
         _draw_text_with_outline(
-            draw, (x, current_y), line, font,
+            draw, (x, y), line, font,
             fill=(230, 20, 20),
             outline_fill=(0, 0, 0),
             outline_width=outline_w,
