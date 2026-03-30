@@ -51,7 +51,7 @@ def authenticate() -> bool:
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_PATH, SCOPES)
-    credentials = flow.run_local_server(port=0, open_browser=True)
+    credentials = flow.run_local_server(port=0, open_browser=False)
 
     Path(TOKEN_PATH).parent.mkdir(parents=True, exist_ok=True)
     with open(TOKEN_PATH, "w") as f:

@@ -66,6 +66,7 @@ _DEFAULTS = {
     "scrape_delay": 2.0,
     "youtube_category_id": "24",
     "youtube_privacy_status": "private",
+    "youtube_title_template": "【怪談朗読】{title}｜怖い話・睡眠用・作業用BGM",
     "youtube_description_template": (
         "【怪談朗読】{title}\n\n"
         "百鬼朗読へようこそ。\n"
@@ -75,6 +76,8 @@ _DEFAULTS = {
         "引用元:HHS図書館より\n"
         "「{title}」{url}\n\n"
         "音声: VOICEVOX:{speaker}\n"
+        "BGM: 「Where the Light Never Speaks」松浦洋介\n"
+        "(DOVA-SYNDROME: https://dova-s.jp/bgm/play22758.html)\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "#怪談 #ホラー #朗読 #怖い話 #ホラホリ #百鬼朗読"
     ),
