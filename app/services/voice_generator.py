@@ -24,6 +24,20 @@ def get_speakers() -> list[dict]:
     return r.json()
 
 
+def get_speaker_name(speaker_id: int | None = None) -> str:
+    """Get the character name and style for a speaker ID."""
+    sid = speaker_id if speaker_id is not None else cfg_get("speaker_id")
+    try:
+        speakers = get_speakers()
+        for speaker in speakers:
+            for style in speaker.get("styles", []):
+                if style["id"] == sid:
+                    return f'{speaker["name"]}（{style["name"]}）'
+    except Exception:
+        pass
+    return f"speaker_id={sid}"
+
+
 @with_retry(max_attempts=3, base_delay=2.0)
 def text_to_speech(
     text: str,
