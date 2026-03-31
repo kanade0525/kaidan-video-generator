@@ -79,9 +79,10 @@ def create_slideshow(
         safe_path = str(img.resolve()).replace("'", "'\\''")
         lines.append(f"file '{safe_path}'")
         lines.append(f"duration {dur:.3f}")
-    # Repeat last image to avoid ffmpeg truncation
+    # Last image needs duration too, then repeat for ffmpeg concat demuxer
     safe_last = str(images[-1].resolve()).replace("'", "'\\''")
     lines.append(f"file '{safe_last}'")
+    lines.append("duration 0.001")
     concat_file.write_text("\n".join(lines))
 
     run_ffmpeg([
@@ -94,7 +95,7 @@ def create_slideshow(
         "-r", str(fps),
         "-c:a", "aac",
         "-b:a", "192k",
-        "-shortest",
+        "-t", f"{total_duration:.3f}",
         "-movflags", "+faststart",
         str(output_path),
     ])
@@ -161,4 +162,78 @@ def mix_bgm(
         "-shortest",
         str(output_path),
     ])
+    return output_path
+
+
+def add_fade_to_clip(
+    input_path: Path,
+    output_path: Path,
+    fade_out: float = 1.0,
+) -> Path:
+    """Add fade-out to a video clip (for OP)."""
+    duration = get_audio_duration(input_path)
+    fade_start = max(0, duration - fade_out)
+
+    run_ffmpeg([
+        "-i", str(input_path),
+        "-vf", f"fade=out:st={fade_start:.2f}:d={fade_out}",
+        "-af", f"afade=out:st={fade_start:.2f}:d={fade_out}",
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        str(output_path),
+    ])
+    return output_path
+
+
+def _normalize_video(input_path: Path, output_path: Path, width: int = 1920, height: int = 1080, fps: int = 30) -> Path:
+    """Re-encode a video to exactly match target format for safe concat."""
+    run_ffmpeg([
+        "-i", str(input_path),
+        "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={fps}",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-ar", "44100",
+        "-ac", "2",
+        "-b:a", "192k",
+        str(output_path),
+    ])
+    return output_path
+
+
+def concat_videos(
+    parts: list[Path],
+    output_path: Path,
+) -> Path:
+    """Concatenate multiple video files, normalizing format first."""
+    temp_dir = output_path.parent
+    normalized_parts = []
+
+    for i, part in enumerate(parts):
+        norm_path = temp_dir / f"norm_{i}.ts"
+        # Encode to MPEG-TS for safe concat
+        _normalize_video(part, norm_path)
+        normalized_parts.append(norm_path)
+
+    # Use concat protocol with intermediate TS files
+    concat_file = temp_dir / "concat_parts.txt"
+    lines = []
+    for part in normalized_parts:
+        safe_path = str(part.resolve()).replace("'", "'\\''")
+        lines.append(f"file '{safe_path}'")
+    concat_file.write_text("\n".join(lines))
+
+    run_ffmpeg([
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(concat_file),
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(output_path),
+    ])
+
+    concat_file.unlink(missing_ok=True)
+    for p in normalized_parts:
+        p.unlink(missing_ok=True)
     return output_path

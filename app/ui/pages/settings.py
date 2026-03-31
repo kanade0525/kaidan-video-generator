@@ -128,6 +128,23 @@ def settings_page():
             )
             ui.label().bind_text_from(bgm_volume, "value", lambda v: f"BGM音量: {v}")
 
+        # OP/ED selection
+        op_files = _get_video_files("op")
+        op_options = {"": "なし", **{str(f): f.name for f in op_files}}
+        op_select = ui.select(
+            op_options, value=config.get("op_path", ""), label="OP動画"
+        ).classes("w-64")
+
+        with ui.row().classes("gap-4"):
+            op_fade = ui.slider(min=0.0, max=3.0, step=0.5, value=config.get("op_fade_out", 1.0))
+            ui.label().bind_text_from(op_fade, "value", lambda v: f"OPフェードアウト: {v}s")
+
+        ed_files = _get_video_files("ed")
+        ed_options = {"": "なし", **{str(f): f.name for f in ed_files}}
+        ed_select = ui.select(
+            ed_options, value=config.get("ed_path", ""), label="ED動画"
+        ).classes("w-64")
+
     # Text settings
     with ui.card().classes("w-full mb-4 p-4"):
         ui.label("テキスト設定").classes("text-lg font-bold mb-2")
@@ -251,6 +268,9 @@ def settings_page():
             "fade_out": fade_out.value,
             "bgm_path": bgm_select.value,
             "bgm_volume": bgm_volume.value,
+            "op_path": op_select.value,
+            "op_fade_out": op_fade.value,
+            "ed_path": ed_select.value,
             "text_model": text_model_input.value,
             "gemini_model": gemini_model.value,
             "max_chunk": int(max_chunk.value),
@@ -288,7 +308,15 @@ def _get_speakers() -> list[dict]:
 
 def _get_bgm_files() -> list[Path]:
     """List available BGM files."""
-    bgm_dir = Path("bgm")
-    if not bgm_dir.exists():
+    for d in [Path("assets/bgm"), Path("bgm")]:
+        if d.exists():
+            return sorted(d.glob("*.*"))
+    return []
+
+
+def _get_video_files(subdir: str) -> list[Path]:
+    """List available video files in assets subdirectory."""
+    d = Path(f"assets/{subdir}")
+    if not d.exists():
         return []
-    return sorted(bgm_dir.glob("*.*"))
+    return sorted(d.glob("*.mp4"))

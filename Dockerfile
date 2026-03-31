@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p output data bgm
+RUN mkdir -p output data assets/bgm assets/op assets/ed
 
 EXPOSE 8080
 

@@ -3,7 +3,7 @@ __pycache__/
 .env
 output/
 data/
-bgm/
+assets/
 .git/
 .claude/
 .ruff_cache/

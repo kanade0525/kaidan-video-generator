@@ -119,13 +119,24 @@ def _fix_particles(text: str) -> str:
 def split_into_chunks(text: str, max_length: int | None = None) -> list[str]:
     """Split text into chunks by sentence boundaries."""
     max_len = max_length or cfg_get("max_chunk")
-    sentences = re.split(r"(?<=[。！？])", text)
+    # Split on sentence-ending punctuation, or fall back to commas/newlines
+    sentences = re.split(r"(?<=[。！？\n])", text)
+    if len(sentences) <= 1 and len(text) > max_len:
+        # No sentence-ending punctuation found; split on commas or periods
+        sentences = re.split(r"(?<=[、，,.])", text)
     sentences = [s.strip() for s in sentences if s.strip()]
 
     chunks = []
     current = ""
     for sentence in sentences:
-        if len(current) + len(sentence) > max_len and current:
+        if len(sentence) > max_len:
+            # Force-split oversized sentences
+            if current:
+                chunks.append(current)
+                current = ""
+            for i in range(0, len(sentence), max_len):
+                chunks.append(sentence[i:i + max_len])
+        elif len(current) + len(sentence) > max_len and current:
             chunks.append(current)
             current = sentence
         else:

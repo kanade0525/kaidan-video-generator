@@ -47,6 +47,9 @@ _DEFAULTS = {
     "fade_out": 1.0,
     "bgm_path": "",
     "bgm_volume": 0.1,
+    "op_path": "",
+    "op_fade_out": 1.0,
+    "ed_path": "",
     "text_model": "gemini-2.5-flash",
     "gemini_model": "gemini-2.5-flash-lite",
     "max_chunk": 200,
@@ -78,6 +81,8 @@ _DEFAULTS = {
         "音声: VOICEVOX:{speaker}\n"
         "BGM: 「Where the Light Never Speaks」松浦洋介\n"
         "(DOVA-SYNDROME: https://dova-s.jp/bgm/play22758.html)\n"
+        "SE: 「オカルト系タイトルコール」Causality Sound\n"
+        "(DOVA-SYNDROME: https://dova-s.jp/se/detail/1489)\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "#怪談 #ホラー #朗読 #怖い話 #ホラホリ #百鬼朗読"
     ),

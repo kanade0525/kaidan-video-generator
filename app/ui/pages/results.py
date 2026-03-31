@@ -5,6 +5,9 @@ from pathlib import Path
 from nicegui import app, ui
 
 from app import database as db
+from app.utils.log import get_logger
+
+log = get_logger("kaidan.ui.results")
 from app.models import STAGE_LABELS, STAGES, next_stage
 from app.pipeline.executor import pipeline
 from app.utils.paths import (
@@ -184,7 +187,8 @@ def _show_text_result(story):
     if proc_path.exists():
         text = proc_path.read_text(encoding="utf-8")
         char_label = ui.label(f"文字数: {len(text)}").classes("text-sm text-gray-500")
-        textarea = ui.textarea(value=text).classes("w-full").props("rows=10")
+        edited = {"text": text}
+        textarea = ui.textarea(value=text, on_change=lambda e: edited.update(text=e.value)).classes("w-full").props("rows=10")
 
         chunk_file = chunks_path(story.title)
         if chunk_file.exists():
@@ -194,12 +198,15 @@ def _show_text_result(story):
 
         def save_processed():
             import json as _json
-            new_text = textarea.value
+            from app.services.text_processor import split_into_chunks
+            new_text = edited["text"]
+            log.info("テキスト保存: %d文字, 先頭50文字: %s", len(new_text), new_text[:50])
             proc_path.write_text(new_text, encoding="utf-8")
-            # Re-split into chunks
-            new_chunks = [c.strip() for c in new_text.split("\n") if c.strip()]
+            # Re-split into chunks using the proper splitter
+            new_chunks = split_into_chunks(new_text)
             chunk_file = chunks_path(story.title)
             chunk_file.write_text(_json.dumps(new_chunks, ensure_ascii=False, indent=2))
+            log.info("チャンク保存: %d チャンク", len(new_chunks))
             char_label.text = f"文字数: {len(new_text)}"
             ui.notify(f"処理済みテキストを保存（{len(new_chunks)}チャンク）", color="positive")
 
@@ -438,6 +445,21 @@ def _show_youtube_upload(story):
                     )
                     db.set_youtube_video_id(story.id, result["video_id"])
                     db.update_stage(story.id, "youtube_uploaded")
+
+                    # Submit usage report to HHS Library
+                    channel_name = cfg_get("youtube_channel_name")
+                    contact_email = cfg_get("youtube_contact_email")
+                    if channel_name and contact_email:
+                        try:
+                            youtube_uploader.submit_usage_report(
+                                story_title=story.title,
+                                video_url=result["url"],
+                                channel_name=channel_name,
+                                email=contact_email,
+                            )
+                        except Exception as e:
+                            log.warning("使用報告送信失敗（アップロードは成功）: %s", e)
+
                     try:
                         progress.value = 1.0
                         msg = f"完了! {result['url']}"

@@ -129,24 +129,31 @@ def _generate_imagen(prompt: str, model: str) -> bytes:
         raise RuntimeError("Gemini image generation returned no image")
 
     # Imagen API (imagen-* models)
-    negative_prompt = cfg_get("image_negative_prompt")
-    guidance = cfg_get("image_guidance_scale")
-    seed = cfg_get("image_seed")
-    enhance = cfg_get("image_enhance_prompt")
-    watermark = cfg_get("image_add_watermark")
+    # Imagen 4 only supports: numberOfImages, aspectRatio, personGeneration, imageSize
+    if model.startswith("imagen-4"):
+        imagen_config = types.GenerateImagesConfig(
+            numberOfImages=1,
+            aspectRatio=aspect_ratio,
+        )
+    else:
+        negative_prompt = cfg_get("image_negative_prompt")
+        guidance = cfg_get("image_guidance_scale")
+        seed = cfg_get("image_seed")
+        enhance = cfg_get("image_enhance_prompt")
+        watermark = cfg_get("image_add_watermark")
 
-    imagen_config = types.GenerateImagesConfig(
-        numberOfImages=1,
-        aspectRatio=aspect_ratio,
-        negativePrompt=negative_prompt,
-        guidanceScale=guidance,
-        enhancePrompt=enhance,
-        addWatermark=watermark,
-        outputMimeType=output_mime,
-        outputCompressionQuality=compression,
-    )
-    if seed > 0:
-        imagen_config.seed = seed
+        imagen_config = types.GenerateImagesConfig(
+            numberOfImages=1,
+            aspectRatio=aspect_ratio,
+            negativePrompt=negative_prompt,
+            guidanceScale=guidance,
+            enhancePrompt=enhance,
+            addWatermark=watermark,
+            outputMimeType=output_mime,
+            outputCompressionQuality=compression,
+        )
+        if seed > 0:
+            imagen_config.seed = seed
 
     response = client.models.generate_images(
         model=model,
