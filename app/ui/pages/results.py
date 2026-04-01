@@ -368,7 +368,8 @@ def _show_youtube_upload(story):
     # Upload form
     with ui.card().classes("w-full p-4 mt-2"):
         title_template = cfg_get("youtube_title_template")
-        yt_title = ui.input("タイトル", value=title_template.format(title=story.title)).classes("w-full")
+        category = story.categories[0] if story.categories else "怪談"
+        yt_title = ui.input("タイトル", value=title_template.format(title=story.title, category=category)).classes("w-full")
         description_template = cfg_get("youtube_description_template")
         from app.services.voice_generator import get_speaker_name
         speaker_name = get_speaker_name()

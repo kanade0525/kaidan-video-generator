@@ -69,8 +69,9 @@ def do_images(story: Story, progress_callback: ProgressCallback = None) -> None:
     """Stage: Generate images for the story."""
     log.info("[images] %s", story.title)
     raw = raw_content_path(story.title).read_text(encoding="utf-8")
+    category = story.categories[0] if story.categories else "怪談"
     paths = image_generator.generate_images_for_story(
-        raw, story.title, images_dir(story.title), progress_callback=progress_callback
+        raw, story.title, images_dir(story.title), category=category, progress_callback=progress_callback
     )
     log.info("[images] %d 画像生成", len(paths))
 
@@ -131,7 +132,8 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
 
     from app.services.voice_generator import get_speaker_name
     title_template = cfg_get("youtube_title_template")
-    yt_title = title_template.format(title=story.title)
+    category = story.categories[0] if story.categories else "怪談"
+    yt_title = title_template.format(title=story.title, category=category)
     description_template = cfg_get("youtube_description_template")
     speaker_name = get_speaker_name()
     description = description_template.format(title=story.title, url=story.url, speaker=speaker_name)

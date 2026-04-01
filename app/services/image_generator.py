@@ -72,6 +72,35 @@ def extract_scene_prompts(
         return [f"dark Japanese horror scene, {title}"] * num_scenes
 
 
+def _generate_title_bg_prompt(text: str, title: str) -> str:
+    """Use Gemini to generate a title card background prompt based on story content."""
+    fallback = (
+        "dark atmospheric background, abandoned place, foggy, ominous sky, "
+        "empty scene with no people, photorealistic, cinematic, extremely dark and moody, "
+        "no text, no letters, no words, no writing, pure scenery only"
+    )
+    try:
+        client = _get_gemini()
+        model_name = cfg_get("gemini_model")
+        prompt = (
+            f"以下の怪談「{title}」の内容を読み、タイトルカードの背景画像用プロンプトを英語で1つだけ作ってください。\n\n"
+            f"要件:\n"
+            f"・物語の舞台や象徴的な場所を描写（人物は入れない）\n"
+            f"・ダークで不気味な雰囲気、ホラー映画のワンシーンのように\n"
+            f"・50〜80語程度で具体的に\n"
+            f"・テキストや文字は絶対に含めない\n"
+            f"・プロンプトのみ出力、説明不要\n\n"
+            f"物語:\n{text[:1000]}"
+        )
+        response = client.models.generate_content(model=model_name, contents=prompt)
+        result = (response.text or "").strip().split("\n")[0].strip()
+        if len(result) > 20:
+            return result
+    except Exception as e:
+        log.warning("タイトル背景プロンプト生成失敗: %s", e)
+    return fallback
+
+
 _imagen_client = None
 
 
@@ -354,6 +383,7 @@ def create_title_card(
     width: int = 1792,
     height: int = 1024,
     bg_image_data: bytes | None = None,
+    category: str = "怪談",
 ) -> bytes:
     """Create a cinematic horror-themed title card.
 
@@ -460,7 +490,7 @@ def create_title_card(
     # --- Category badge (top-right corner) ---
     badge_font = _find_cjk_font(112, use_koin=True)
     if badge_font:
-        badge_text = "怪談"
+        badge_text = category
         badge_bbox = draw.textbbox((0, 0), badge_text, font=badge_font)
         text_w = badge_bbox[2] - badge_bbox[0]
         text_h = badge_bbox[3] - badge_bbox[1]
@@ -483,22 +513,14 @@ def create_title_card(
 
 
 def generate_images_for_story(
-    text: str, title: str, output_dir: Path, progress_callback=None
+    text: str, title: str, output_dir: Path, category: str = "怪談", progress_callback=None
 ) -> list[Path]:
     """Generate all images for a story."""
     num_scenes = cfg_get("num_scenes")
     rate_limit = cfg_get("image_rate_limit")
 
-    # Generate title card background image via AI
-    title_bg_prompt = (
-        "dark atmospheric background, "
-        "abandoned shrine in dark forest, foggy, ominous red sky, "
-        "empty scene with no people, no objects in focus, "
-        "photorealistic, cinematic, extremely dark and moody, "
-        "absolutely no text, no letters, no words, no writing, no titles, "
-        "no watermarks, no signatures, no logos, no symbols, no characters, "
-        "no typography, no captions, no labels, pure scenery only"
-    )
+    # Generate title card background image via AI (content-aware)
+    title_bg_prompt = _generate_title_bg_prompt(text, title)
     title_bg_data = None
     try:
         title_bg_data = generate_image_ai(title_bg_prompt)
@@ -507,7 +529,7 @@ def generate_images_for_story(
         log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
 
     title_path = output_dir / "000_title_card.png"
-    title_path.write_bytes(create_title_card(title, bg_image_data=title_bg_data))
+    title_path.write_bytes(create_title_card(title, bg_image_data=title_bg_data, category=category))
     image_paths = [title_path]
 
     if rate_limit > 0:
