@@ -393,19 +393,42 @@ def _show_youtube_upload(story):
 
         # Schedule
         schedule_enabled = cfg_get("youtube_schedule_enabled")
-        schedule_day = cfg_get("youtube_schedule_day")
-        schedule_hour = cfg_get("youtube_schedule_hour")
-        schedule_minute = cfg_get("youtube_schedule_minute")
         next_publish = None
         if schedule_enabled:
             next_publish = youtube_uploader.get_next_publish_time(
-                schedule_day, schedule_hour, schedule_minute
+                cfg_get("youtube_schedule_day"),
+                cfg_get("youtube_schedule_hour"),
+                cfg_get("youtube_schedule_minute"),
             )
 
-        yt_schedule = ui.checkbox(
-            f"予約投稿（次回: {next_publish[:16].replace('T', ' ')} JST）" if next_publish else "予約投稿",
-            value=schedule_enabled,
-        )
+        yt_schedule = ui.checkbox("予約投稿", value=schedule_enabled)
+
+        # Date/time picker for scheduled publish
+        schedule_row = ui.row().classes("gap-2 items-end")
+        with schedule_row:
+            default_date = next_publish[:10] if next_publish else ""
+            default_time = next_publish[11:16] if next_publish else "20:00"
+            yt_pub_date = ui.input(label="公開日", value=default_date).classes("w-40")
+            with yt_pub_date:
+                with ui.menu() as date_menu:
+                    ui.date(value=default_date).bind_value(yt_pub_date).on(
+                        "update:model-value", lambda: date_menu.close()
+                    )
+                with yt_pub_date.add_slot("append"):
+                    ui.icon("edit_calendar").on("click", date_menu.open).classes("cursor-pointer")
+
+            yt_pub_time = ui.input(label="公開時間", value=default_time).classes("w-32")
+            with yt_pub_time:
+                with ui.menu() as time_menu:
+                    ui.time(value=default_time).bind_value(yt_pub_time).on(
+                        "update:model-value", lambda: time_menu.close()
+                    )
+                with yt_pub_time.add_slot("append"):
+                    ui.icon("access_time").on("click", time_menu.open).classes("cursor-pointer")
+
+            ui.label("JST").classes("text-sm text-gray-500")
+
+        schedule_row.bind_visibility_from(yt_schedule, "value")
 
         progress = ui.linear_progress(value=0, show_value=False).classes("w-full mt-2")
         progress.visible = False
@@ -428,12 +451,14 @@ def _show_youtube_upload(story):
                 try:
                     tags = [t.strip() for t in yt_tags.value.split(",") if t.strip()]
                     publish_at = None
-                    if yt_schedule.value:
-                        publish_at = youtube_uploader.get_next_publish_time(
-                            cfg_get("youtube_schedule_day"),
-                            cfg_get("youtube_schedule_hour"),
-                            cfg_get("youtube_schedule_minute"),
-                        )
+                    if yt_schedule.value and yt_pub_date.value and yt_pub_time.value:
+                        import zoneinfo
+                        from datetime import datetime
+                        jst = zoneinfo.ZoneInfo("Asia/Tokyo")
+                        dt = datetime.strptime(
+                            f"{yt_pub_date.value} {yt_pub_time.value}", "%Y-%m-%d %H:%M"
+                        ).replace(tzinfo=jst)
+                        publish_at = dt.isoformat()
                     result = youtube_uploader.upload_video(
                         video_path=video_path(story.title),
                         title=yt_title.value,
