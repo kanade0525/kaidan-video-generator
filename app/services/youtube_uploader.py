@@ -42,11 +42,7 @@ def is_authenticated() -> bool:
 
 
 def authenticate() -> bool:
-    """Run OAuth flow. Returns True if successful.
-
-    This opens a browser window for the user to authorize.
-    Must be run where a browser is available (not inside Docker).
-    """
+    """Run OAuth flow via local server."""
     if not is_configured():
         raise RuntimeError(
             f"client_secret.json が見つかりません: {CLIENT_SECRET_PATH}"

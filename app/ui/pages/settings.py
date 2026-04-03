@@ -177,6 +177,7 @@ def settings_page():
 
             def do_auth():
                 try:
+                    youtube_uploader.reset_service()
                     youtube_uploader.authenticate()
                     ui.notify("YouTube認証成功！", color="positive")
                 except Exception as e:
