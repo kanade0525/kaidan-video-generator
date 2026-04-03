@@ -63,6 +63,32 @@ def init_db() -> None:
             message TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_logs_story ON logs(story_id);
+
+        CREATE TABLE IF NOT EXISTS analytics_channel_daily (
+            date TEXT PRIMARY KEY,
+            views INTEGER DEFAULT 0,
+            estimated_minutes_watched REAL DEFAULT 0,
+            subscribers_gained INTEGER DEFAULT 0,
+            subscribers_lost INTEGER DEFAULT 0,
+            likes INTEGER DEFAULT 0,
+            comments INTEGER DEFAULT 0,
+            shares INTEGER DEFAULT 0,
+            fetched_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS analytics_video (
+            video_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            views INTEGER DEFAULT 0,
+            estimated_minutes_watched REAL DEFAULT 0,
+            average_view_duration REAL DEFAULT 0,
+            likes INTEGER DEFAULT 0,
+            comments INTEGER DEFAULT 0,
+            shares INTEGER DEFAULT 0,
+            title TEXT DEFAULT '',
+            fetched_at TEXT NOT NULL,
+            PRIMARY KEY (video_id, date)
+        );
     """)
     # Add youtube_video_id column if missing (migration)
     try:
@@ -365,4 +391,78 @@ def get_logs(
     params.append(limit)
 
     rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Analytics ──────────────────────────────────────
+
+
+def upsert_channel_daily(records: list[dict]) -> None:
+    """Insert or update daily channel analytics records."""
+    conn = _get_conn()
+    now = _now()
+    for r in records:
+        conn.execute(
+            """INSERT OR REPLACE INTO analytics_channel_daily
+               (date, views, estimated_minutes_watched,
+                subscribers_gained, subscribers_lost, likes, comments, shares, fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                r.get("day", ""),
+                r.get("views", 0),
+                r.get("estimatedMinutesWatched", 0),
+                r.get("subscribersGained", 0),
+                r.get("subscribersLost", 0),
+                r.get("likes", 0),
+                r.get("comments", 0),
+                r.get("shares", 0),
+                now,
+            ),
+        )
+    conn.commit()
+
+
+def get_channel_daily(days: int = 28) -> list[dict]:
+    """Get recent channel daily analytics from cache."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM analytics_channel_daily ORDER BY date DESC LIMIT ?",
+        (days,),
+    ).fetchall()
+    return [dict(r) for r in reversed(rows)]
+
+
+def upsert_video_analytics(records: list[dict], period_date: str = "") -> None:
+    """Insert or update per-video analytics records."""
+    conn = _get_conn()
+    now = _now()
+    for r in records:
+        conn.execute(
+            """INSERT OR REPLACE INTO analytics_video
+               (video_id, date, views, estimated_minutes_watched,
+                average_view_duration, likes, comments, shares, title, fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                r.get("video", ""),
+                period_date,
+                r.get("views", 0),
+                r.get("estimatedMinutesWatched", 0),
+                r.get("averageViewDuration", 0),
+                r.get("likes", 0),
+                r.get("comments", 0),
+                r.get("shares", 0),
+                r.get("title", ""),
+                now,
+            ),
+        )
+    conn.commit()
+
+
+def get_video_analytics_cached(period_date: str = "") -> list[dict]:
+    """Get cached per-video analytics for a period."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM analytics_video WHERE date = ? ORDER BY views DESC",
+        (period_date,),
+    ).fetchall()
     return [dict(r) for r in rows]

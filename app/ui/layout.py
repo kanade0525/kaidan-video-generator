@@ -21,6 +21,9 @@ def create_layout():
             ui.link("生成結果", "/results").classes(
                 "text-white no-underline px-3 py-2 rounded hover:bg-gray-700 block"
             )
+            ui.link("YouTube分析", "/analytics").classes(
+                "text-white no-underline px-3 py-2 rounded hover:bg-gray-700 block"
+            )
             ui.link("設定", "/settings").classes(
                 "text-white no-underline px-3 py-2 rounded hover:bg-gray-700 block"
             )

@@ -8,6 +8,7 @@ from nicegui import app, ui
 
 from app.database import init_db
 from app.ui.layout import create_layout
+from app.ui.pages.analytics import analytics_page
 from app.ui.pages.pipeline import pipeline_page
 from app.ui.pages.results import results_page
 from app.ui.pages.settings import settings_page
@@ -35,6 +36,12 @@ def stories():
 def results():
     create_layout()
     results_page()
+
+
+@ui.page("/analytics")
+def analytics():
+    create_layout()
+    analytics_page()
 
 
 @ui.page("/settings")

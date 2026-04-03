@@ -10,7 +10,11 @@ from app.utils.log import get_logger
 
 log = get_logger("kaidan.youtube")
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
+]
 CLIENT_SECRET_PATH = os.environ.get(
     "YOUTUBE_CLIENT_SECRET_PATH", "data/client_secret.json"
 )
