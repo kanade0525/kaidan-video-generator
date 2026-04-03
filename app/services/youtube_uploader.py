@@ -257,8 +257,8 @@ def submit_usage_report(
     wpcf7_id = hidden_fields.get("_wpcf7", "")
     unit_tag = hidden_fields.get("_wpcf7_unit_tag", "")
 
-    # Submit via REST API
-    api_url = f"https://hhs.parasite.jp/hhslibrary/wp-json/contact-form-7/v1/contact-forms/{wpcf7_id}/feedback"
+    # Submit via REST API (site uses index.php?rest_route= format)
+    api_url = f"https://hhs.parasite.jp/hhslibrary/index.php?rest_route=/contact-form-7/v1/contact-forms/{wpcf7_id}/feedback"
 
     data = {
         "_wpcf7": wpcf7_id,
@@ -274,7 +274,7 @@ def submit_usage_report(
         "your-message": note or f"{channel_name}で使わせていただきました。",
     }
 
-    resp = req.post(api_url, data=data, timeout=30)
+    resp = req.post(api_url, files={k: (None, v) for k, v in data.items()}, timeout=30)
 
     if resp.status_code == 200:
         result = resp.json()

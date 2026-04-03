@@ -329,10 +329,76 @@ def _show_video_result(story):
 
     _retry_button(story, "video_complete", "動画再生成")
 
+    # Shorts generation section
+    if vid_path.exists():
+        ui.separator().classes("my-4")
+        _show_shorts_section(story)
+
     # YouTube upload section
     if vid_path.exists():
         ui.separator().classes("my-4")
         _show_youtube_upload(story)
+
+
+def _show_shorts_section(story):
+    """Shorts generation UI."""
+    import threading
+
+    from app.services import shorts_generator
+    from app.utils.paths import short_video_path
+
+    ui.label("YouTube Shorts").classes("text-lg font-bold mt-2")
+
+    short_path = short_video_path(story.title)
+    if short_path.exists():
+        import time as _time
+        ts = int(short_path.stat().st_mtime)
+        static_path = f"/short/{story.id}"
+        app.add_static_files(static_path, str(short_path.parent))
+        ui.video(f"{static_path}/{short_path.name}?t={ts}").classes("w-full max-w-sm")
+
+    progress = ui.linear_progress(value=0, show_value=False).classes("w-full").props("rounded")
+    progress.visible = False
+    status_label = ui.label("").classes("text-sm text-gray-500")
+
+    def generate():
+        status_label.text = "ショート生成中..."
+        status_label.classes(replace="text-sm text-blue-500")
+        progress.visible = True
+        progress.value = 0
+        btn.disable()
+
+        def progress_cb(current, total):
+            try:
+                progress.value = current / total if total > 0 else 0
+                status_label.text = f"生成中... ({current}/{total})"
+            except Exception:
+                pass
+
+        def run():
+            try:
+                shorts_generator.generate_short(story.title, progress_callback=progress_cb)
+                try:
+                    status_label.text = "ショート生成完了！"
+                    status_label.classes(replace="text-sm text-green-500")
+                    progress.value = 1.0
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    status_label.text = f"エラー: {e}"
+                    status_label.classes(replace="text-sm text-red-500")
+                except Exception:
+                    pass
+            finally:
+                try:
+                    btn.enable()
+                except Exception:
+                    pass
+
+        threading.Thread(target=run, daemon=True).start()
+
+    btn = ui.button("ショート生成", on_click=generate, color="purple").props("size=sm")
 
 
 def _show_youtube_upload(story):

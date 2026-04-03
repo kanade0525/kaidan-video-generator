@@ -54,3 +54,7 @@ def images_dir(title: str) -> Path:
 
 def video_path(title: str) -> Path:
     return story_dir(title) / f"{safe_dirname(title)}.mp4"
+
+
+def short_video_path(title: str) -> Path:
+    return story_dir(title) / "short.mp4"
