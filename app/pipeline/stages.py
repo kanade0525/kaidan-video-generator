@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Callable
 
 from app import database as db
@@ -76,6 +77,37 @@ def do_images(story: Story, progress_callback: ProgressCallback = None) -> None:
     log.info("[images] %d 画像生成", len(paths))
 
 
+TITLE_CARD_FILENAME = "000_title_card.png"
+
+
+def load_scene_images(
+    img_dir: Path, slideshow_config_path: Path
+) -> tuple[list[Path], list[float] | None]:
+    """Load scene images excluding title card. Returns (images, durations)."""
+    images: list[Path] = []
+    durations: list[float] | None = None
+
+    if slideshow_config_path.exists():
+        slide_config = json.loads(slideshow_config_path.read_text())
+        if slide_config:
+            durations = []
+            for slide in slide_config:
+                if slide["file"] == TITLE_CARD_FILENAME:
+                    continue
+                img_path = img_dir / slide["file"]
+                if img_path.exists():
+                    images.append(img_path)
+                    durations.append(slide.get("duration", 0))
+
+    if not images:
+        images = sorted(
+            p for p in img_dir.glob("*.png") if p.name != TITLE_CARD_FILENAME
+        )
+        durations = None
+
+    return images, durations
+
+
 def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
     """Stage: Create final video."""
     log.info("[video] %s", story.title)
@@ -84,25 +116,8 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
     img_dir = images_dir(story.title)
     sdir = story_dir(story.title)
 
-    # Load slideshow config if exists
-    slideshow_config_path = sdir / "slideshow.json"
-    images = []
-    durations = None
-    if slideshow_config_path.exists():
-        import json as _json
-        slide_config = _json.loads(slideshow_config_path.read_text())
-        if slide_config:
-            images = []
-            durations = []
-            for slide in slide_config:
-                img_path = img_dir / slide["file"]
-                if img_path.exists():
-                    images.append(img_path)
-                    durations.append(slide.get("duration", 0))
-
-    if not images:
-        images = sorted(img_dir.glob("*.png"))
-        durations = None
+    title_card = img_dir / TITLE_CARD_FILENAME
+    images, durations = load_scene_images(img_dir, sdir / "slideshow.json")
 
     if not images:
         raise RuntimeError("No images found")
@@ -111,8 +126,20 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
     if not narration.exists():
         raise RuntimeError("Narration file not found")
 
+    # Generate title narration audio
+    title_audio = None
+    if title_card.exists():
+        title_audio = sdir / "title_narration.wav"
+        voice_generator.generate_title_audio(story.title, title_audio)
+
     output = video_path(story.title)
-    video_generator.create_video(images, narration, output, durations=durations, progress_callback=progress_callback)
+    video_generator.create_video(
+        images, narration, output,
+        durations=durations,
+        title_card=title_card if title_card.exists() else None,
+        title_audio=title_audio,
+        progress_callback=progress_callback,
+    )
 
 
 def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) -> None:

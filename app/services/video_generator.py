@@ -3,7 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.config import get as cfg_get
-from app.utils.ffmpeg import add_fade, add_fade_to_clip, concat_videos, create_slideshow, mix_bgm
+from app.utils.ffmpeg import (
+    add_fade,
+    add_fade_to_clip,
+    concat_videos,
+    create_slideshow,
+    create_title_clip,
+    mix_bgm,
+)
 from app.utils.log import get_logger
 
 log = get_logger("kaidan.video")
@@ -15,6 +22,8 @@ def create_video(
     output_path: Path,
     bgm_path: str | None = None,
     durations: list[float] | None = None,
+    title_card: Path | None = None,
+    title_audio: Path | None = None,
     progress_callback=None,
 ) -> Path:
     """Create the final video from images, narration, and optional BGM."""
@@ -76,7 +85,7 @@ def create_video(
     else:
         faded_path.rename(bgm_path)
 
-    # Step 4: Concat OP + main + ED
+    # Step 4: Concat OP + title clip + main + ED
     if progress_callback:
         progress_callback(4, 5)
     op_path = cfg_get("op_path")
@@ -91,6 +100,13 @@ def create_video(
         op_faded = temp_dir / "op_faded.mp4"
         add_fade_to_clip(Path(op_path), op_faded, fade_out=op_fade)
         parts.append(op_faded)
+
+    # Title clip (title card image + title narration with pauses)
+    title_clip_path = temp_dir / "title_clip.mp4"
+    if title_card and title_card.exists() and title_audio and title_audio.exists():
+        log.info("タイトルクリップ作成中...")
+        create_title_clip(title_card, title_audio, title_clip_path, fps=fps)
+        parts.append(title_clip_path)
 
     parts.append(bgm_path)
 
@@ -113,6 +129,7 @@ def create_video(
     bgm_path.unlink(missing_ok=True)
     op_faded_path = temp_dir / "op_faded.mp4"
     op_faded_path.unlink(missing_ok=True)
+    title_clip_path.unlink(missing_ok=True)
 
     log.info("動画生成完了: %s", output_path)
     return output_path

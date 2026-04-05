@@ -95,6 +95,15 @@ def text_to_speech(
     return r.content
 
 
+def generate_title_audio(title: str, output_path: Path) -> Path:
+    """Generate title narration audio via VOICEVOX."""
+    log.info("タイトル読み上げ音声生成中: %s", title)
+    audio_data = text_to_speech(title)
+    output_path.write_bytes(audio_data)
+    log.info("タイトル音声保存: %s", output_path.name)
+    return output_path
+
+
 def generate_narration(chunks: list[str], output_dir: Path, progress_callback=None) -> Path:
     """Generate narration for all chunks and concatenate."""
     audio_files = []

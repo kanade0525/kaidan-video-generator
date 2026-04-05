@@ -61,6 +61,24 @@ def create_slideshow(
     """
     total_duration = get_audio_duration(audio_path)
 
+    # Single image: use -loop 1 (concat demuxer produces broken keyframes for
+    # a single long-duration image)
+    if len(images) == 1:
+        run_ffmpeg([
+            "-loop", "1",
+            "-i", str(images[0]),
+            "-i", str(audio_path),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-r", str(fps),
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-t", f"{total_duration:.3f}",
+            "-movflags", "+faststart",
+            str(output_path),
+        ])
+        return output_path
+
     # Calculate per-image durations
     if durations and len(durations) == len(images):
         # Fill in auto (0) durations
@@ -101,6 +119,43 @@ def create_slideshow(
     ])
 
     concat_file.unlink(missing_ok=True)
+    return output_path
+
+
+def create_title_clip(
+    image: Path,
+    audio: Path,
+    output_path: Path,
+    silence_before: float = 1.0,
+    silence_after: float = 1.0,
+    fade_in: float = 0.5,
+    fade_out: float = 0.5,
+    fps: int = 30,
+) -> Path:
+    """Create a title clip: still image + title narration with silence padding and fades."""
+    audio_dur = get_audio_duration(audio)
+    total_dur = silence_before + audio_dur + silence_after
+    fade_out_start = max(0, total_dur - fade_out)
+
+    run_ffmpeg([
+        "-loop", "1",
+        "-i", str(image),
+        "-i", str(audio),
+        "-filter_complex",
+        f"[0:v]fade=in:st=0:d={fade_in},fade=out:st={fade_out_start:.2f}:d={fade_out}[v];"
+        f"[1:a]adelay={int(silence_before * 1000)}|{int(silence_before * 1000)},"
+        f"apad=pad_dur={silence_after}[a]",
+        "-map", "[v]",
+        "-map", "[a]",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-r", str(fps),
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-t", f"{total_dur:.3f}",
+        "-movflags", "+faststart",
+        str(output_path),
+    ])
     return output_path
 
 
