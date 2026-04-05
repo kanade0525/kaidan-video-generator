@@ -6,6 +6,7 @@ from app.config import get as cfg_get
 from app.utils.ffmpeg import (
     add_fade,
     add_fade_to_clip,
+    clear_duration_cache,
     concat_videos,
     create_slideshow,
     create_title_clip,
@@ -135,5 +136,6 @@ def create_video(
     op_faded_path.unlink(missing_ok=True)
     title_clip_path.unlink(missing_ok=True)
 
+    clear_duration_cache()
     log.info("動画生成完了: %s", output_path)
     return output_path

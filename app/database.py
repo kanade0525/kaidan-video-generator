@@ -63,6 +63,9 @@ def init_db() -> None:
             message TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_logs_story ON logs(story_id);
+        CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_story_categories_story ON story_categories(story_id);
+        CREATE INDEX IF NOT EXISTS idx_stage_completions_story ON stage_completions(story_id);
     """)
     # Add youtube_video_id column if missing (migration)
     try:
@@ -76,18 +79,27 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _row_to_story(row: sqlite3.Row) -> Story:
-    conn = _get_conn()
-    story_id = row["id"]
-
-    cats = conn.execute(
-        "SELECT category FROM story_categories WHERE story_id = ?", (story_id,)
-    ).fetchall()
-
-    completions = conn.execute(
-        "SELECT stage, completed_at FROM stage_completions WHERE story_id = ?",
-        (story_id,),
-    ).fetchall()
+def _row_to_story(
+    row: sqlite3.Row,
+    categories: list[str] | None = None,
+    stages_completed: dict[str, str] | None = None,
+) -> Story:
+    """Convert a DB row to Story. Accepts pre-loaded relations to avoid N+1."""
+    if categories is None or stages_completed is None:
+        conn = _get_conn()
+        story_id = row["id"]
+        if categories is None:
+            cats = conn.execute(
+                "SELECT category FROM story_categories WHERE story_id = ?",
+                (story_id,),
+            ).fetchall()
+            categories = [c["category"] for c in cats]
+        if stages_completed is None:
+            comps = conn.execute(
+                "SELECT stage, completed_at FROM stage_completions WHERE story_id = ?",
+                (story_id,),
+            ).fetchall()
+            stages_completed = {c["stage"]: c["completed_at"] for c in comps}
 
     return Story(
         id=row["id"],
@@ -98,10 +110,46 @@ def _row_to_story(row: sqlite3.Row) -> Story:
         error=row["error"],
         added_at=row["added_at"],
         updated_at=row["updated_at"],
-        categories=[c["category"] for c in cats],
-        stages_completed={c["stage"]: c["completed_at"] for c in completions},
-        youtube_video_id=row["youtube_video_id"] if "youtube_video_id" in row.keys() else None,
+        categories=categories,
+        stages_completed=stages_completed,
+        youtube_video_id=(
+            row["youtube_video_id"] if "youtube_video_id" in row.keys() else None
+        ),
     )
+
+
+def _rows_to_stories(rows: list[sqlite3.Row]) -> list[Story]:
+    """Batch convert rows to Stories, loading relations in 2 queries instead of N*2."""
+    if not rows:
+        return []
+
+    conn = _get_conn()
+    ids = [r["id"] for r in rows]
+    placeholders = ",".join("?" * len(ids))
+
+    # Batch load categories
+    cats_rows = conn.execute(
+        f"SELECT story_id, category FROM story_categories WHERE story_id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    cats_by_id: dict[int, list[str]] = {}
+    for c in cats_rows:
+        cats_by_id.setdefault(c["story_id"], []).append(c["category"])
+
+    # Batch load stage completions
+    comp_rows = conn.execute(
+        "SELECT story_id, stage, completed_at FROM stage_completions"
+        f" WHERE story_id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    comps_by_id: dict[int, dict[str, str]] = {}
+    for c in comp_rows:
+        comps_by_id.setdefault(c["story_id"], {})[c["stage"]] = c["completed_at"]
+
+    return [
+        _row_to_story(r, cats_by_id.get(r["id"], []), comps_by_id.get(r["id"], {}))
+        for r in rows
+    ]
 
 
 # ── CRUD ────────────────────────────────────────────
@@ -192,7 +240,7 @@ def get_stories(
     query += " ORDER BY s.id DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     rows = conn.execute(query, params).fetchall()
-    return [_row_to_story(r) for r in rows]
+    return _rows_to_stories(rows)
 
 
 def count_stories(stage: str | None = None, category: str | None = None) -> int:
@@ -301,7 +349,7 @@ def get_stories_at_stage(stage: str, limit: int = 1) -> list[Story]:
         "SELECT * FROM stories WHERE stage = ? ORDER BY id ASC LIMIT ?",
         (stage, limit),
     ).fetchall()
-    return [_row_to_story(r) for r in rows]
+    return _rows_to_stories(rows)
 
 
 def mark_running(story_id: int, stage: str) -> None:

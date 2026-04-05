@@ -30,8 +30,14 @@ def run_ffmpeg(args: list[str], timeout: int = 600) -> subprocess.CompletedProce
     return result
 
 
+_duration_cache: dict[str, float] = {}
+
+
 def get_audio_duration(audio_path: Path) -> float:
-    """Get duration of an audio file in seconds using ffprobe."""
+    """Get duration of an audio/video file in seconds using ffprobe (cached)."""
+    key = str(audio_path)
+    if key in _duration_cache:
+        return _duration_cache[key]
     result = subprocess.run(
         [
             "ffprobe",
@@ -44,7 +50,14 @@ def get_audio_duration(audio_path: Path) -> float:
         text=True,
         timeout=30,
     )
-    return float(result.stdout.strip())
+    duration = float(result.stdout.strip())
+    _duration_cache[key] = duration
+    return duration
+
+
+def clear_duration_cache() -> None:
+    """Clear cached durations (call after temp files are deleted)."""
+    _duration_cache.clear()
 
 
 def create_slideshow(
