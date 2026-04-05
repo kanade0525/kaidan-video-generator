@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import random
 import re
 import time
@@ -13,34 +12,19 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from app.config import get as cfg_get
 from app.pipeline.retry import with_retry
+from app.services.clients import get_gemini_image
 from app.utils.log import get_logger
 
 log = get_logger("kaidan.image")
 
 AIRFORCE_URL = "https://api.airforce/v1/images/generations"
 
-# Gemini client (shared with text_processor)
-_gemini_client = None
-
-
-def _get_gemini():
-    global _gemini_client
-    if _gemini_client is None:
-        from google import genai
-        api_key = (
-            os.environ.get("GEMINI_API_KEY_TEXT_TO_IMAGE")
-            or os.environ.get("GEMINI_API_KEY_TEXT_TO_TEXT")
-            or os.environ.get("GEMINI_API_KEY", "")
-        )
-        _gemini_client = genai.Client(api_key=api_key)
-    return _gemini_client
-
 
 def extract_scene_prompts(
     text: str, title: str, num_scenes: int = 3, model: str | None = None
 ) -> list[str]:
     """Use Gemini to generate image prompts from story text."""
-    client = _get_gemini()
+    client = get_gemini_image()
     model_name = model or cfg_get("gemini_model")
 
     prompt = (
@@ -83,7 +67,7 @@ def _generate_title_bg_prompt(text: str, title: str) -> str:
         "no text, no letters, no words, no writing, pure scenery only"
     )
     try:
-        client = _get_gemini()
+        client = get_gemini_image()
         model_name = cfg_get("gemini_model")
         prompt = (
             f"以下の怪談「{title}」の内容を読み、タイトルカードの背景画像用プロンプトを英語で1つだけ作ってください。\n\n"
@@ -104,19 +88,6 @@ def _generate_title_bg_prompt(text: str, title: str) -> str:
     return fallback
 
 
-_imagen_client = None
-
-
-def _get_imagen_client():
-    global _imagen_client
-    if _imagen_client is None:
-        from google import genai
-        api_key = (
-            os.environ.get("GEMINI_API_KEY_TEXT_TO_IMAGE")
-            or os.environ.get("GEMINI_API_KEY", "")
-        )
-        _imagen_client = genai.Client(api_key=api_key)
-    return _imagen_client
 
 
 @with_retry(max_attempts=2, base_delay=30.0)
@@ -138,7 +109,7 @@ def _generate_imagen(prompt: str, model: str) -> bytes:
     """Generate image using Google Imagen or Gemini Image API."""
     from google.genai import types
 
-    client = _get_imagen_client()
+    client = get_gemini_image()
 
     aspect_ratio = cfg_get("image_aspect_ratio")
     output_mime = cfg_get("image_output_mime")

@@ -1,6 +1,5 @@
 """Tests for path utility functions."""
 
-from unittest.mock import patch
 
 from app.utils.paths import safe_dirname
 

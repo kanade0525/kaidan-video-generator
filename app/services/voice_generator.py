@@ -18,7 +18,7 @@ VOICEVOX_HOST = os.environ.get("VOICEVOX_HOST", "http://localhost:50021")
 @with_retry(max_attempts=5, base_delay=3.0)
 def get_speakers() -> list[dict]:
     """Get available speakers from VOICEVOX."""
-    host = os.environ.get("VOICEVOX_HOST", VOICEVOX_HOST)
+    host = VOICEVOX_HOST
     r = requests.get(f"{host}/speakers", timeout=10)
     r.raise_for_status()
     return r.json()
@@ -49,7 +49,7 @@ def text_to_speech(
 ) -> bytes:
     """Convert text to speech via VOICEVOX API."""
     sid = speaker_id if speaker_id is not None else cfg_get("speaker_id")
-    host = os.environ.get("VOICEVOX_HOST", VOICEVOX_HOST)
+    host = VOICEVOX_HOST
 
     # Clean text for VOICEVOX (remove newlines)
     clean_text = text.replace("\n", "。").replace("\r", "").strip()

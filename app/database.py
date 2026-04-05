@@ -147,16 +147,14 @@ def get_story_by_url(url: str) -> Story | None:
     return _row_to_story(row) if row else None
 
 
-def get_stories(
+def _build_story_filter(
+    select: str,
     stage: str | None = None,
     category: str | None = None,
     keyword: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
-) -> list[Story]:
-    """Query stories with optional filters."""
-    conn = _get_conn()
-    query = "SELECT DISTINCT s.* FROM stories s"
+) -> tuple[str, list]:
+    """Build a filtered query for stories. Returns (query, params)."""
+    query = f"{select} FROM stories s"
     params: list = []
 
     if category:
@@ -176,32 +174,32 @@ def get_stories(
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
 
+    return query, params
+
+
+def get_stories(
+    stage: str | None = None,
+    category: str | None = None,
+    keyword: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Story]:
+    """Query stories with optional filters."""
+    conn = _get_conn()
+    query, params = _build_story_filter(
+        "SELECT DISTINCT s.*", stage=stage, category=category, keyword=keyword,
+    )
     query += " ORDER BY s.id DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
-
     rows = conn.execute(query, params).fetchall()
     return [_row_to_story(r) for r in rows]
 
 
 def count_stories(stage: str | None = None, category: str | None = None) -> int:
     conn = _get_conn()
-    query = "SELECT COUNT(DISTINCT s.id) FROM stories s"
-    params: list = []
-
-    if category:
-        query += " JOIN story_categories sc ON s.id = sc.story_id"
-
-    conditions = []
-    if stage:
-        conditions.append("s.stage = ?")
-        params.append(stage)
-    if category:
-        conditions.append("sc.category = ?")
-        params.append(category)
-
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
-
+    query, params = _build_story_filter(
+        "SELECT COUNT(DISTINCT s.id)", stage=stage, category=category,
+    )
     return conn.execute(query, params).fetchone()[0]
 
 

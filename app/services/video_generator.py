@@ -15,6 +15,10 @@ from app.utils.log import get_logger
 
 log = get_logger("kaidan.video")
 
+# Silence padding (seconds) added before/after narration for smooth transitions
+LEADING_SILENCE = 2.0
+TRAILING_SILENCE = 2.0
+
 
 def create_video(
     images: list[Path],
@@ -29,7 +33,6 @@ def create_video(
     """Create the final video from images, narration, and optional BGM."""
     fps = cfg_get("fps")
     fade_in = cfg_get("fade_in")
-    cfg_get("fade_out")
     bgm = bgm_path or cfg_get("bgm_path")
     bgm_volume = cfg_get("bgm_volume")
 
@@ -49,14 +52,15 @@ def create_video(
         str(normalized),
     ])
 
-    # 0b: Add 2s leading silence + 2s trailing silence (for ED transition)
+    # 0b: Add leading/trailing silence (for ED transition)
     boosted_narration = temp_dir / "narration_boosted.wav"
     narr_dur = get_audio_duration(normalized)
-    total_dur = 2.0 + narr_dur + 2.0
+    total_dur = LEADING_SILENCE + narr_dur + TRAILING_SILENCE
     log.info("前後無音追加中（計%.1fs）...", total_dur)
+    lead_ms = int(LEADING_SILENCE * 1000)
     run_ffmpeg([
         "-i", str(normalized),
-        "-af", "adelay=2000|2000",
+        "-af", f"adelay={lead_ms}|{lead_ms}",
         "-t", f"{total_dur:.3f}",
         str(boosted_narration),
     ])
