@@ -11,6 +11,7 @@ STAGES = [
     "images_generated",
     "video_complete",
     "youtube_uploaded",
+    "report_submitted",
 ]
 
 STAGE_LABELS = {
@@ -21,6 +22,7 @@ STAGE_LABELS = {
     "images_generated": "画像生成済",
     "video_complete": "動画生成済",
     "youtube_uploaded": "YouTube投稿済",
+    "report_submitted": "使用報告済",
 }
 
 

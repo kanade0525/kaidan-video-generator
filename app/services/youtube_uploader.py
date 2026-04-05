@@ -220,32 +220,45 @@ def upload_video(
 REPORT_FORM_URL = "https://hhs.parasite.jp/hhslibrary/?p=6590"
 
 
+class UsageReportError(RuntimeError):
+    """Raised when usage report submission fails with details."""
+
+
+@with_retry(max_attempts=3, base_delay=5.0)
 def submit_usage_report(
     story_title: str,
     video_url: str,
     channel_name: str,
     email: str,
     note: str = "",
-) -> bool:
+) -> None:
     """Submit usage report to HHS Library (ホラホリ) as required by their terms.
 
-    Returns True if submission was successful.
+    Raises UsageReportError with details on failure.
     """
     if not channel_name or not email:
-        log.warning("使用報告スキップ: チャンネル名またはメールアドレスが未設定")
-        return False
+        raise UsageReportError(
+            "チャンネル名またはメールアドレスが未設定です。設定ページから設定してください。"
+        )
 
     import requests as req
 
     # Get the form page to extract wpcf7 hidden fields
-    page = req.get(REPORT_FORM_URL, timeout=30)
+    try:
+        page = req.get(REPORT_FORM_URL, timeout=30)
+        page.raise_for_status()
+    except req.RequestException as e:
+        raise UsageReportError(f"フォームページの取得に失敗: {e}") from e
+
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(page.content, "html.parser")
     form = soup.select_one("form.wpcf7-form")
     if not form:
-        log.error("使用報告フォームが見つかりません")
-        return False
+        raise UsageReportError(
+            f"使用報告フォームが見つかりません (URL: {REPORT_FORM_URL}, "
+            f"status: {page.status_code}, content_length: {len(page.content)})"
+        )
 
     # Extract hidden fields
     hidden_fields = {}
@@ -255,10 +268,33 @@ def submit_usage_report(
             hidden_fields[name] = inp.get("value", "")
 
     wpcf7_id = hidden_fields.get("_wpcf7", "")
+    if not wpcf7_id:
+        raise UsageReportError("フォームのwpcf7 IDが取得できません")
+
     unit_tag = hidden_fields.get("_wpcf7_unit_tag", "")
 
-    # Submit via REST API
-    api_url = f"https://hhs.parasite.jp/hhslibrary/wp-json/contact-form-7/v1/contact-forms/{wpcf7_id}/feedback"
+    # Extract REST API root from wpcf7 JS config on the page
+    import json as _json
+    import re
+
+    api_root = None
+    for script in soup.find_all("script"):
+        text = script.string or ""
+        m = re.search(r'var\s+wpcf7\s*=\s*(\{.*?\})\s*;', text, re.DOTALL)
+        if m:
+            try:
+                cfg = _json.loads(m.group(1))
+                api_root = cfg.get("api", {}).get("root", "")
+                api_ns = cfg.get("api", {}).get("namespace", "contact-form-7/v1")
+            except _json.JSONDecodeError:
+                pass
+            break
+
+    if api_root:
+        api_url = f"{api_root.rstrip('/')}/{api_ns}/contact-forms/{wpcf7_id}/feedback"
+    else:
+        # Fallback: standard WP REST API path
+        api_url = f"https://hhs.parasite.jp/hhslibrary/wp-json/contact-form-7/v1/contact-forms/{wpcf7_id}/feedback"
 
     data = {
         "_wpcf7": wpcf7_id,
@@ -274,15 +310,46 @@ def submit_usage_report(
         "your-message": note or f"{channel_name}で使わせていただきました。",
     }
 
-    resp = req.post(api_url, data=data, timeout=30)
+    # CF7 5.8+ requires multipart/form-data
+    multipart = {k: (None, v) for k, v in data.items()}
 
-    if resp.status_code == 200:
+    try:
+        resp = req.post(api_url, files=multipart, timeout=30)
+    except req.RequestException as e:
+        raise UsageReportError(f"フォーム送信リクエスト失敗: {e}") from e
+
+    if resp.status_code != 200:
+        # HTMLレスポンスからtitleを抽出して読みやすいエラーにする
+        detail = _extract_error_detail(resp.text)
+        raise UsageReportError(
+            f"フォーム送信エラー: HTTP {resp.status_code} - {detail} "
+            f"(API URL: {api_url})"
+        )
+
+    try:
         result = resp.json()
-        if result.get("status") == "mail_sent":
-            log.info("使用報告送信成功: %s", story_title)
-            return True
-        log.warning("使用報告送信失敗: %s", result.get("message", ""))
-        return False
+    except ValueError:
+        detail = _extract_error_detail(resp.text)
+        raise UsageReportError(f"レスポンスがJSONではありません: {detail}")
 
-    log.error("使用報告送信エラー: HTTP %d", resp.status_code)
-    return False
+    if result.get("status") == "mail_sent":
+        log.info("使用報告送信成功: %s", story_title)
+        return
+
+    raise UsageReportError(
+        f"フォーム送信失敗: status={result.get('status')}, "
+        f"message={result.get('message', '不明')}"
+    )
+
+
+def _extract_error_detail(html: str) -> str:
+    """Extract readable error detail from an HTML error page."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    title = soup.find("title")
+    if title and title.string:
+        return title.string.strip()
+    # titleがなければbodyのテキスト先頭を返す
+    text = soup.get_text(separator=" ", strip=True)
+    return text[:100] if text else "(空のレスポンス)"

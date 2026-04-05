@@ -84,6 +84,8 @@ def results_page(keyword: str = "", story_id: int = 0):
                 voice_tab = ui.tab("音声")
                 images_tab = ui.tab("画像")
                 video_tab = ui.tab("動画")
+                youtube_tab = ui.tab("YouTube")
+                report_tab = ui.tab("HHS使用報告")
 
             with ui.tab_panels(tabs, value=scrape_tab).classes("w-full"):
                 with ui.tab_panel(scrape_tab):
@@ -100,6 +102,12 @@ def results_page(keyword: str = "", story_id: int = 0):
 
                 with ui.tab_panel(video_tab):
                     _show_video_result(story)
+
+                with ui.tab_panel(youtube_tab):
+                    _show_youtube_upload_tab(story)
+
+                with ui.tab_panel(report_tab):
+                    _show_usage_report_tab(story)
 
     def update_story_list():
         s = stage_filter.value or None
@@ -341,10 +349,14 @@ def _show_video_result(story):
 
     _retry_button(story, "video_complete", "動画再生成")
 
-    # YouTube upload section
+
+def _show_youtube_upload_tab(story):
+    """YouTube upload tab."""
+    vid_path = video_path(story.title)
     if vid_path.exists():
-        ui.separator().classes("my-4")
         _show_youtube_upload(story)
+    else:
+        ui.label("動画が未生成のため、アップロードできません。").classes("text-gray-500")
 
 
 def _show_youtube_upload(story):
@@ -484,20 +496,6 @@ def _show_youtube_upload(story):
                     db.set_youtube_video_id(story.id, result["video_id"])
                     db.update_stage(story.id, "youtube_uploaded")
 
-                    # Submit usage report to HHS Library
-                    channel_name = cfg_get("youtube_channel_name")
-                    contact_email = cfg_get("youtube_contact_email")
-                    if channel_name and contact_email:
-                        try:
-                            youtube_uploader.submit_usage_report(
-                                story_title=story.title,
-                                video_url=result["url"],
-                                channel_name=channel_name,
-                                email=contact_email,
-                            )
-                        except Exception as e:
-                            log.warning("使用報告送信失敗（アップロードは成功）: %s", e)
-
                     try:
                         progress.value = 1.0
                         msg = f"完了! {result['url']}"
@@ -524,3 +522,102 @@ def _show_youtube_upload(story):
         btn = ui.button(
             "承認してYouTubeにアップロード", on_click=do_upload, color="red"
         ).props("size=sm").classes("mt-2")
+
+
+def _show_usage_report_tab(story):
+    """HHS Library usage report tab with content preview, retry and error details."""
+    import threading
+
+    from app.config import get as cfg_get
+    from app.services import youtube_uploader
+    from app.services.youtube_uploader import UsageReportError
+
+    fresh = db.get_story_by_id(story.id)
+    already_reported = fresh and fresh.stage == "report_submitted"
+
+    if already_reported:
+        ui.label("報告済み").classes("text-green-500 font-bold mb-2")
+
+    if not fresh or not fresh.youtube_video_id:
+        ui.label("YouTube未アップロードのため、使用報告はできません。").classes("text-gray-500")
+        return
+
+    # Show error from previous attempt
+    if fresh.error and "使用報告" in (fresh.error or ""):
+        with ui.card().classes("w-full p-3 mt-2 mb-4 bg-red-50"):
+            ui.label("前回のエラー:").classes("text-sm font-bold text-red-600")
+            ui.label(fresh.error).classes("text-sm text-red-500 break-all")
+
+    # Preview: show what will be submitted
+    video_url = f"https://youtube.com/watch?v={fresh.youtube_video_id}"
+    channel_name = cfg_get("youtube_channel_name") or ""
+    contact_email = cfg_get("youtube_contact_email") or ""
+    message = f"{channel_name}で使わせていただきました。" if channel_name else ""
+
+    ui.label("送信内容プレビュー").classes("text-sm font-bold mt-2 mb-1")
+    with ui.card().classes("w-full p-4 mb-4"):
+        with ui.grid(columns=2).classes("gap-x-4 gap-y-1"):
+            ui.label("チャンネル名:").classes("text-sm text-gray-500")
+            ui.label(channel_name or "未設定").classes(
+                "text-sm " + ("text-red-500 font-bold" if not channel_name else "")
+            )
+            ui.label("メールアドレス:").classes("text-sm text-gray-500")
+            ui.label(contact_email or "未設定").classes(
+                "text-sm " + ("text-red-500 font-bold" if not contact_email else "")
+            )
+            ui.label("タイトル:").classes("text-sm text-gray-500")
+            ui.label(story.title).classes("text-sm")
+            ui.label("動画URL:").classes("text-sm text-gray-500")
+            ui.link(video_url, video_url, new_tab=True).classes("text-sm text-blue-500")
+            ui.label("メッセージ:").classes("text-sm text-gray-500")
+            ui.label(message or "未設定").classes("text-sm")
+        ui.label(f"送信先: {youtube_uploader.REPORT_FORM_URL}").classes(
+            "text-xs text-gray-400 mt-2"
+        )
+
+    status_label = ui.label("").classes("text-sm")
+    progress = ui.linear_progress(value=0, show_value=False).classes("w-full")
+    progress.visible = False
+
+    def do_report():
+        btn.disable()
+        progress.visible = True
+        progress.value = 0
+        status_label.text = "使用報告送信中（最大3回リトライ）..."
+        status_label.classes(replace="text-sm text-blue-500")
+
+        def run():
+            try:
+                youtube_uploader.submit_usage_report(
+                    story_title=story.title,
+                    video_url=video_url,
+                    channel_name=channel_name,
+                    email=contact_email,
+                )
+                db.update_stage(story.id, "report_submitted")
+
+                try:
+                    progress.value = 1.0
+                    status_label.text = "使用報告送信完了!"
+                    status_label.classes(replace="text-sm text-green-500")
+                except Exception:
+                    pass
+            except (UsageReportError, Exception) as e:
+                error_msg = f"使用報告失敗: {e}"
+                db.update_stage(story.id, "youtube_uploaded", error=error_msg)
+                try:
+                    progress.value = 0
+                    status_label.text = error_msg
+                    status_label.classes(replace="text-sm text-red-500")
+                except Exception:
+                    pass
+            finally:
+                try:
+                    btn.enable()
+                except Exception:
+                    pass
+
+        threading.Thread(target=run, daemon=True).start()
+
+    label = "再送信" if already_reported else "使用報告を送信"
+    btn = ui.button(label, on_click=do_report, color="purple").props("size=sm")

@@ -184,23 +184,44 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
 
     db.set_youtube_video_id(story.id, result["video_id"])
 
-    # Submit usage report to HHS Library
+
+def do_submit_report(story: Story, progress_callback: ProgressCallback = None) -> None:
+    """Stage: Submit usage report to HHS Library."""
+    from app.config import get as cfg_get
+    from app.services import youtube_uploader
+
+    log.info("[report] %s", story.title)
+    if progress_callback:
+        progress_callback(0, 1)
+
+    if not story.youtube_video_id:
+        raise RuntimeError("YouTube動画IDが見つかりません。先にYouTubeアップロードを実行してください。")
+
+    video_url = f"https://youtube.com/watch?v={story.youtube_video_id}"
     channel_name = cfg_get("youtube_channel_name")
     contact_email = cfg_get("youtube_contact_email")
-    if channel_name and contact_email:
-        try:
-            youtube_uploader.submit_usage_report(
-                story_title=story.title,
-                video_url=result["url"],
-                channel_name=channel_name,
-                email=contact_email,
-            )
-        except Exception as e:
-            log.warning("使用報告送信失敗（アップロードは成功）: %s", e)
+
+    if not channel_name or not contact_email:
+        raise RuntimeError(
+            "使用報告に必要な設定が不足しています。"
+            f"チャンネル名: {'設定済' if channel_name else '未設定'}, "
+            f"メールアドレス: {'設定済' if contact_email else '未設定'}"
+        )
+
+    youtube_uploader.submit_usage_report(
+        story_title=story.title,
+        video_url=video_url,
+        channel_name=channel_name,
+        email=contact_email,
+    )
+
+    if progress_callback:
+        progress_callback(1, 1)
+    log.info("[report] 使用報告送信完了: %s", story.title)
 
 
 # Stage function registry: maps output stage -> processing function
-# youtube_uploaded is excluded - only triggered manually via UI approval
+# youtube_uploaded and report_submitted are excluded - triggered manually via UI
 STAGE_FUNCTIONS = {
     "scraped": do_scrape,
     "text_processed": do_text,
