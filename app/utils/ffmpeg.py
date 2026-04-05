@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
 from app.utils.log import get_logger
 
 log = get_logger("kaidan.ffmpeg")
-
-
-def check_ffmpeg() -> bool:
-    """Check if ffmpeg is available."""
-    return shutil.which("ffmpeg") is not None
 
 
 def run_ffmpeg(args: list[str], timeout: int = 600) -> subprocess.CompletedProcess:
