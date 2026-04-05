@@ -86,17 +86,21 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
 
     # Load slideshow config if exists
     slideshow_config_path = sdir / "slideshow.json"
+    images = []
+    durations = None
     if slideshow_config_path.exists():
         import json as _json
         slide_config = _json.loads(slideshow_config_path.read_text())
-        images = []
-        durations = []
-        for slide in slide_config:
-            img_path = img_dir / slide["file"]
-            if img_path.exists():
-                images.append(img_path)
-                durations.append(slide.get("duration", 0))
-    else:
+        if slide_config:
+            images = []
+            durations = []
+            for slide in slide_config:
+                img_path = img_dir / slide["file"]
+                if img_path.exists():
+                    images.append(img_path)
+                    durations.append(slide.get("duration", 0))
+
+    if not images:
         images = sorted(img_dir.glob("*.png"))
         durations = None
 
