@@ -26,15 +26,15 @@ def index():
 
 
 @ui.page("/stories")
-def stories():
+def stories(stage: str = "", category: str = "", page: int = 0):
     create_layout()
-    stories_page()
+    stories_page(stage=stage, category=category, page=page)
 
 
 @ui.page("/results")
-def results():
+def results(stage: str = "", keyword: str = "", id: int = 0):
     create_layout()
-    results_page()
+    results_page(stage=stage, keyword=keyword, story_id=id)
 
 
 @ui.page("/settings")

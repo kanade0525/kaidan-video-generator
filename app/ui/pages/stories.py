@@ -8,7 +8,7 @@ from app.pipeline.executor import pipeline
 from app.services.scraper import fetch_rss_stories
 
 
-def stories_page():
+def stories_page(stage: str = "", category: str = "", page: int = 0):
     """Story management page."""
     ui.label("ストーリー管理").classes("text-2xl font-bold mb-4")
 
@@ -18,17 +18,17 @@ def stories_page():
         ui.button("追加", on_click=lambda: _add_url(url_input)).props("size=sm")
         ui.button("RSSインポート", on_click=lambda: _import_rss(), color="blue").props("size=sm")
 
-    # Filters
+    # Filters (restore from query params)
     with ui.row().classes("gap-2 mb-4 items-end"):
         stage_filter = ui.select(
             {"": "全て", **{s: STAGE_LABELS.get(s, s) for s in STAGES}},
-            value="",
+            value=stage,
             label="ステージ",
         ).classes("w-48")
 
         categories = db.get_categories()
         cat_options = {"": "全て", **{c: c for c in categories}}
-        cat_filter = ui.select(cat_options, value="", label="カテゴリ").classes("w-48")
+        cat_filter = ui.select(cat_options, value=category, label="カテゴリ").classes("w-48")
 
         ui.button("検索", on_click=lambda: refresh()).props("size=sm")
 
@@ -36,23 +36,34 @@ def stories_page():
     table_container = ui.column().classes("w-full")
 
     # Pagination
-    page_state = {"current": 0, "per_page": 20}
+    page_state = {"current": page, "per_page": 20}
 
     with ui.row().classes("gap-2 mt-4"):
         ui.button("前", on_click=lambda: _prev_page()).props("size=sm")
         page_label = ui.label("1")
         ui.button("次", on_click=lambda: _next_page()).props("size=sm")
 
+    def _update_url():
+        """Update URL query params to preserve filter state."""
+        from app.ui.url_state import build_stories_url
+        url = build_stories_url(
+            stage=stage_filter.value or "",
+            category=cat_filter.value or "",
+            page=page_state["current"],
+        )
+        ui.run_javascript(f'window.history.replaceState(null, "", "{url}")')
+
     def refresh():
-        stage = stage_filter.value or None
-        category = cat_filter.value or None
+        st = stage_filter.value or None
+        cat = cat_filter.value or None
         offset = page_state["current"] * page_state["per_page"]
+        _update_url()
 
         stories = db.get_stories(
-            stage=stage, category=category,
+            stage=st, category=cat,
             limit=page_state["per_page"], offset=offset,
         )
-        total = db.count_stories(stage=stage, category=category)
+        total = db.count_stories(stage=st, category=cat)
         total_pages = max(1, (total + page_state["per_page"] - 1) // page_state["per_page"])
         page_label.text = f"{page_state['current'] + 1} / {total_pages} ({total}件)"
 

@@ -22,19 +22,19 @@ from app.utils.paths import (
 )
 
 
-def results_page():
+def results_page(stage: str = "", keyword: str = "", story_id: int = 0):
     """Results viewer page."""
     ui.label("生成結果").classes("text-2xl font-bold mb-4")
 
-    # Filters
+    # Filters (restore from query params)
     with ui.row().classes("gap-2 mb-4 items-end"):
         stage_filter = ui.select(
             {"": "全て", **{s: STAGE_LABELS.get(s, s) for s in STAGES[1:]}},
-            value="",
+            value=stage,
             label="ステージ",
         ).classes("w-48")
 
-        search_input = ui.input("タイトル検索").classes("w-64")
+        search_input = ui.input("タイトル検索", value=keyword).classes("w-64")
         ui.button("検索", on_click=lambda: update_story_list()).props("size=sm")
 
     select_container = ui.column().classes("w-full mb-4")
@@ -43,36 +43,25 @@ def results_page():
     # Keep reference to current select widget
     state = {"select": None}
 
-    def update_story_list():
-        stage = stage_filter.value or None
-        keyword = search_input.value.strip() if search_input.value else None
-        stories = db.get_stories(stage=stage, keyword=keyword, limit=200)
+    def _update_url(selected_id=None):
+        """Update URL query params to preserve search state."""
+        from app.ui.url_state import build_results_url
+        url = build_results_url(
+            stage=stage_filter.value or "",
+            keyword=search_input.value or "",
+            story_id=selected_id,
+        )
+        ui.run_javascript(f'window.history.replaceState(null, "", "{url}")')
 
-        select_container.clear()
-        detail_container.clear()
-
-        with select_container:
-            if not stories:
-                ui.label("該当なし").classes("text-gray-500")
-                return
-            options = {s.id: f"{s.title} [{STAGE_LABELS.get(s.stage, s.stage)}]" for s in stories}
-            sel = ui.select(options, label="ストーリー選択").classes("w-96")
-            sel.on_value_change(lambda e: show_detail(e.value))
-            state["select"] = sel
-
-    stage_filter.on_value_change(lambda _: update_story_list())
-    search_input.on("keydown.enter", lambda _: update_story_list())
-
-    selected = None
-    update_story_list()
-
-    def show_detail(story_id):
-        if not story_id:
+    def show_detail(sid):
+        if not sid:
             return
 
-        story = db.get_story_by_id(story_id)
+        story = db.get_story_by_id(sid)
         if not story:
             return
+
+        _update_url(selected_id=sid)
 
         detail_container.clear()
         with detail_container:
@@ -113,7 +102,31 @@ def results_page():
                 with ui.tab_panel(video_tab):
                     _show_video_result(story)
 
-    # (event binding is done inside update_story_list)
+    def update_story_list():
+        s = stage_filter.value or None
+        kw = search_input.value.strip() if search_input.value else None
+        stories = db.get_stories(stage=s, keyword=kw, limit=200)
+        _update_url()
+
+        select_container.clear()
+        detail_container.clear()
+
+        with select_container:
+            if not stories:
+                ui.label("該当なし").classes("text-gray-500")
+                return
+            options = {s.id: f"{s.title} [{STAGE_LABELS.get(s.stage, s.stage)}]" for s in stories}
+            initial = story_id if story_id and story_id in options else None
+            sel = ui.select(options, label="ストーリー選択", value=initial).classes("w-96")
+            sel.on_value_change(lambda e: show_detail(e.value))
+            state["select"] = sel
+            if initial:
+                show_detail(initial)
+
+    stage_filter.on_value_change(lambda _: update_story_list())
+    search_input.on("keydown.enter", lambda _: update_story_list())
+
+    update_story_list()
 
 
 def _retry_button(story, target_stage: str, label: str = "再処理"):
