@@ -1,7 +1,6 @@
 """Tests for title narration feature: image filtering and video assembly args."""
 
 import json
-from pathlib import Path
 
 import pytest
 

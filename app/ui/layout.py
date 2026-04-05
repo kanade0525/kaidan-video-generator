@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nicegui import app, ui
+from nicegui import ui
 
 
 def create_layout():

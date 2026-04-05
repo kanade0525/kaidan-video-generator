@@ -4,7 +4,6 @@ from nicegui import ui
 
 from app import database as db
 from app.models import STAGE_LABELS, STAGES
-from app.pipeline.executor import pipeline
 from app.services.scraper import fetch_rss_stories
 
 

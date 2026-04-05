@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from nicegui import app, ui
+from nicegui import ui
 
 from app.database import init_db
 from app.ui.layout import create_layout

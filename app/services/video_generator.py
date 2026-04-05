@@ -29,7 +29,7 @@ def create_video(
     """Create the final video from images, narration, and optional BGM."""
     fps = cfg_get("fps")
     fade_in = cfg_get("fade_in")
-    fade_out = cfg_get("fade_out")
+    cfg_get("fade_out")
     bgm = bgm_path or cfg_get("bgm_path")
     bgm_volume = cfg_get("bgm_volume")
 
@@ -38,7 +38,7 @@ def create_video(
     faded_path = temp_dir / "faded_temp.mp4"
 
     # Step 0: Normalize volume + add leading/trailing silence
-    from app.utils.ffmpeg import run_ffmpeg, get_audio_duration
+    from app.utils.ffmpeg import get_audio_duration, run_ffmpeg
 
     # 0a: Normalize
     normalized = temp_dir / "narration_normalized.wav"
@@ -66,7 +66,7 @@ def create_video(
     if progress_callback:
         progress_callback(1, 4)
     log.info("スライドショー作成中...")
-    audio_dur = get_audio_duration(boosted_narration)
+    get_audio_duration(boosted_narration)
     create_slideshow(images, boosted_narration, slideshow_path, fps=fps, durations=durations)
 
     # Step 2: Add fade-in only (no fade-out, ED handles the ending)

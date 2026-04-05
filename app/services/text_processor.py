@@ -17,7 +17,10 @@ def _get_gemini():
     global _gemini_client
     if _gemini_client is None:
         from google import genai
-        api_key = os.environ.get("GEMINI_API_KEY_TEXT_TO_TEXT") or os.environ.get("GEMINI_API_KEY", "")
+        api_key = (
+            os.environ.get("GEMINI_API_KEY_TEXT_TO_TEXT")
+            or os.environ.get("GEMINI_API_KEY", "")
+        )
         _gemini_client = genai.Client(api_key=api_key)
     return _gemini_client
 

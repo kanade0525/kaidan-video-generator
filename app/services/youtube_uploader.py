@@ -109,8 +109,8 @@ def get_next_publish_time(
 
     Returns None if scheduling is disabled.
     """
-    from datetime import datetime, timedelta
     import zoneinfo
+    from datetime import datetime, timedelta
 
     jst = zoneinfo.ZoneInfo("Asia/Tokyo")
     now = datetime.now(jst)
@@ -328,9 +328,9 @@ def submit_usage_report(
 
     try:
         result = resp.json()
-    except ValueError:
+    except ValueError as e:
         detail = _extract_error_detail(resp.text)
-        raise UsageReportError(f"レスポンスがJSONではありません: {detail}")
+        raise UsageReportError(f"レスポンスがJSONではありません: {detail}") from e
 
     if result.get("status") == "mail_sent":
         log.info("使用報告送信成功: %s", story_title)

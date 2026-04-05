@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import tomllib
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+import tomllib
 
 CONFIG_PATH = Path("data/config.toml")
 

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.models import STAGES, STAGE_LABELS, Story
+from app.models import STAGE_LABELS, STAGES, Story
 from app.services.youtube_uploader import UsageReportError
 
 

@@ -101,8 +101,10 @@ def pipeline_page():
                 for entry in logs:
                     color = "text-red-400" if entry["level"] == "ERROR" else "text-gray-300"
                     ts = entry["timestamp"][:19]
+                    stage = entry.get('stage', '')
+                    msg = entry['message'][:100]
                     ui.label(
-                        f"[{ts}] [{entry['level']}] {entry.get('stage', '')} - {entry['message'][:100]}"
+                        f"[{ts}] [{entry['level']}] {stage} - {msg}"
                     ).classes(f"text-xs font-mono {color}")
             else:
                 ui.label("ログなし").classes("text-gray-500")

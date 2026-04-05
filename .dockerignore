@@ -8,6 +8,8 @@ assets/
 .claude/
 .ruff_cache/
 .venv/
+.pytest_cache/
+tests/
 stories.json
 config.json
 *.md

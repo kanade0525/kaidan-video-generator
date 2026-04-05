@@ -19,6 +19,7 @@ services:
     environment:
       - VOICEVOX_HOST=http://voicevox:50021
     volumes:
+      - ./app:/app/app
       - ./output:/app/output
       - ./data:/app/data
       - ./assets:/app/assets

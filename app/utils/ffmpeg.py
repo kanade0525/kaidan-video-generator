@@ -93,7 +93,7 @@ def create_slideshow(
     # Write concat file
     concat_file = output_path.parent / "concat.txt"
     lines = []
-    for img, dur in zip(images, final_durations):
+    for img, dur in zip(images, final_durations, strict=False):
         safe_path = str(img.resolve()).replace("'", "'\\''")
         lines.append(f"file '{safe_path}'")
         lines.append(f"duration {dur:.3f}")
@@ -240,11 +240,18 @@ def add_fade_to_clip(
     return output_path
 
 
-def _normalize_video(input_path: Path, output_path: Path, width: int = 1920, height: int = 1080, fps: int = 30) -> Path:
+def _normalize_video(
+    input_path: Path, output_path: Path,
+    width: int = 1920, height: int = 1080, fps: int = 30,
+) -> Path:
     """Re-encode a video to exactly match target format for safe concat."""
+    vf = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={fps}"
+    )
     run_ffmpeg([
         "-i", str(input_path),
-        "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={fps}",
+        "-vf", vf,
         "-c:v", "libx264",
         "-preset", "fast",
         "-pix_fmt", "yuv420p",

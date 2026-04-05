@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from nicegui import app, ui
 
 from app import database as db
 from app.utils.log import get_logger
 
 log = get_logger("kaidan.ui.results")
-from app.models import STAGE_LABELS, STAGES, next_stage
+from app.models import STAGE_LABELS, STAGES
 from app.pipeline.executor import pipeline
 from app.utils.paths import (
     audio_dir,
@@ -219,7 +217,7 @@ def _show_text_result(story):
         text = proc_path.read_text(encoding="utf-8")
         char_label = ui.label(f"文字数: {len(text)}").classes("text-sm text-gray-500")
         edited = {"text": text}
-        textarea = ui.textarea(value=text, on_change=lambda e: edited.update(text=e.value)).classes("w-full").props("rows=10")
+        ui.textarea(value=text, on_change=lambda e: edited.update(text=e.value)).classes("w-full").props("rows=10")
 
         chunk_file = chunks_path(story.title)
         if chunk_file.exists():
@@ -229,6 +227,7 @@ def _show_text_result(story):
 
         def save_processed():
             import json as _json
+
             from app.services.text_processor import split_into_chunks
             new_text = edited["text"]
             log.info("テキスト保存: %d文字, 先頭50文字: %s", len(new_text), new_text[:50])
@@ -252,7 +251,6 @@ def _show_voice_result(story):
     narr_path = narration_path(story.title)
     if narr_path.exists():
         # Serve audio file with cache-busting timestamp
-        import time
         ts = int(narr_path.stat().st_mtime)
         static_path = f"/audio/{story.id}"
         app.add_static_files(static_path, str(narr_path.parent))
@@ -350,7 +348,6 @@ def _show_images_result(story):
 def _show_video_result(story):
     vid_path = video_path(story.title)
     if vid_path.exists():
-        import time
         ts = int(vid_path.stat().st_mtime)
         static_path = f"/video/{story.id}"
         app.add_static_files(static_path, str(vid_path.parent))

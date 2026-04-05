@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 from app import database as db
@@ -113,7 +112,12 @@ class StageExecutor:
             error_msg = str(e)[:500]
             db.mark_failed(story.id, self.target_stage, error_msg)
             db.add_log("ERROR", error_msg, self.target_stage, story.id)
-            bus.publish(STAGE_FAILED, {"stage": self.target_stage, "story_id": story.id, "error": error_msg})
+            fail_data = {
+                "stage": self.target_stage,
+                "story_id": story.id,
+                "error": error_msg,
+            }
+            bus.publish(STAGE_FAILED, fail_data)
             log.error("✗ %s: %s - %s", self.target_stage, story.title, error_msg)
         finally:
             with self._lock:

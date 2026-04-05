@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import os
+import random
 import re
 import time
 from io import BytesIO
 from pathlib import Path
-
-import random
 
 import numpy as np
 import requests
@@ -28,7 +27,11 @@ def _get_gemini():
     global _gemini_client
     if _gemini_client is None:
         from google import genai
-        api_key = os.environ.get("GEMINI_API_KEY_TEXT_TO_IMAGE") or os.environ.get("GEMINI_API_KEY_TEXT_TO_TEXT") or os.environ.get("GEMINI_API_KEY", "")
+        api_key = (
+            os.environ.get("GEMINI_API_KEY_TEXT_TO_IMAGE")
+            or os.environ.get("GEMINI_API_KEY_TEXT_TO_TEXT")
+            or os.environ.get("GEMINI_API_KEY", "")
+        )
         _gemini_client = genai.Client(api_key=api_key)
     return _gemini_client
 
@@ -108,7 +111,10 @@ def _get_imagen_client():
     global _imagen_client
     if _imagen_client is None:
         from google import genai
-        api_key = os.environ.get("GEMINI_API_KEY_TEXT_TO_IMAGE") or os.environ.get("GEMINI_API_KEY", "")
+        api_key = (
+            os.environ.get("GEMINI_API_KEY_TEXT_TO_IMAGE")
+            or os.environ.get("GEMINI_API_KEY", "")
+        )
         _imagen_client = genai.Client(api_key=api_key)
     return _imagen_client
 
@@ -135,7 +141,6 @@ def _generate_imagen(prompt: str, model: str) -> bytes:
     client = _get_imagen_client()
 
     aspect_ratio = cfg_get("image_aspect_ratio")
-    person_gen = cfg_get("image_person_generation")
     output_mime = cfg_get("image_output_mime")
     compression = cfg_get("image_compression_quality")
 

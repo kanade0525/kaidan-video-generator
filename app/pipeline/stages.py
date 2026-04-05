@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from app import database as db
 from app.models import Story
@@ -63,7 +63,10 @@ def do_voice(story: Story, progress_callback: ProgressCallback = None) -> None:
     """Stage: Generate voice narration via VOICEVOX."""
     log.info("[voice] %s", story.title)
     chunks = json.loads(chunks_path(story.title).read_text(encoding="utf-8"))
-    voice_generator.generate_narration(chunks, audio_dir(story.title), progress_callback=progress_callback)
+    voice_generator.generate_narration(
+        chunks, audio_dir(story.title),
+        progress_callback=progress_callback,
+    )
 
 
 def do_images(story: Story, progress_callback: ProgressCallback = None) -> None:
@@ -72,7 +75,8 @@ def do_images(story: Story, progress_callback: ProgressCallback = None) -> None:
     raw = raw_content_path(story.title).read_text(encoding="utf-8")
     category = story.categories[0] if story.categories else "怪談"
     paths = image_generator.generate_images_for_story(
-        raw, story.title, images_dir(story.title), category=category, progress_callback=progress_callback
+        raw, story.title, images_dir(story.title),
+        category=category, progress_callback=progress_callback,
     )
     log.info("[images] %d 画像生成", len(paths))
 
@@ -167,7 +171,9 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
     yt_title = title_template.format(title=story.title, category=category)
     description_template = cfg_get("youtube_description_template")
     speaker_name = get_speaker_name()
-    description = description_template.format(title=story.title, url=story.url, speaker=speaker_name)
+    description = description_template.format(
+        title=story.title, url=story.url, speaker=speaker_name,
+    )
     tags = cfg_get("youtube_tags")
     category_id = cfg_get("youtube_category_id")
     privacy = cfg_get("youtube_privacy_status")
@@ -195,7 +201,10 @@ def do_submit_report(story: Story, progress_callback: ProgressCallback = None) -
         progress_callback(0, 1)
 
     if not story.youtube_video_id:
-        raise RuntimeError("YouTube動画IDが見つかりません。先にYouTubeアップロードを実行してください。")
+        raise RuntimeError(
+            "YouTube動画IDが見つかりません。"
+            "先にYouTubeアップロードを実行してください。"
+        )
 
     video_url = f"https://youtube.com/watch?v={story.youtube_video_id}"
     channel_name = cfg_get("youtube_channel_name")
