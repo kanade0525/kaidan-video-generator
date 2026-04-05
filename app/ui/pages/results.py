@@ -144,7 +144,11 @@ def _retry_button(story, target_stage: str, label: str = "再処理"):
     progress.visible = False
     status_label = ui.label("").classes("text-sm text-gray-500")
 
+    # Thread-safe state shared between worker thread and UI timer
+    state = {"running": False, "progress": 0.0, "progress_text": "", "done": False, "error": None}
+
     def do_retry():
+        state.update(running=True, done=False, error=None, progress=0.0, progress_text="")
         status_label.text = "処理中..."
         status_label.classes(replace="text-sm text-blue-500")
         progress.visible = True
@@ -152,32 +156,39 @@ def _retry_button(story, target_stage: str, label: str = "再処理"):
         btn.disable()
 
         def progress_callback(current, total):
-            try:
-                progress.value = current / total if total > 0 else 0
-                status_label.text = f"処理中... ({current}/{total})"
-            except Exception:
-                pass
+            state["progress"] = current / total if total > 0 else 0
+            state["progress_text"] = f"処理中... ({current}/{total})"
 
         def run():
             try:
                 pipeline.run_single(story.id, target_stage, progress_callback=progress_callback)
-                error = None
             except Exception as e:
-                error = str(e)
-
-            try:
-                progress.value = 1.0 if not error else 0
-                if error:
-                    status_label.text = f"エラー: {error[:100]}"
-                    status_label.classes(replace="text-sm text-red-500")
-                else:
-                    status_label.text = "完了! (ページを再読み込みで結果を確認)"
-                    status_label.classes(replace="text-sm text-green-500")
-                btn.enable()
-            except Exception:
-                pass
+                state["error"] = str(e)
+            state["done"] = True
 
         threading.Thread(target=run, daemon=True).start()
+
+    def poll():
+        """Timer callback to safely update UI from main thread."""
+        if not state["running"]:
+            return
+        progress.value = state["progress"]
+        if state["progress_text"]:
+            status_label.text = state["progress_text"]
+        if state["done"]:
+            state["running"] = False
+            error = state["error"]
+            if error:
+                progress.value = 0
+                status_label.text = f"エラー: {error[:100]}"
+                status_label.classes(replace="text-sm text-red-500")
+            else:
+                progress.value = 1.0
+                status_label.text = "完了! (ページを再読み込みで結果を確認)"
+                status_label.classes(replace="text-sm text-green-500")
+            btn.enable()
+
+    ui.timer(0.5, poll)
 
     btn = ui.button(label, on_click=do_retry, color="orange").props("size=sm")
 
@@ -458,6 +469,8 @@ def _show_youtube_upload(story):
         progress.visible = False
         status_label = ui.label("").classes("text-sm")
 
+        upload_state = {"running": False, "done": False, "progress": 0.0, "msg": "", "error": None}
+
         def do_upload():
             # Duplicate check
             if show_form is not None and not show_form.value:
@@ -466,6 +479,7 @@ def _show_youtube_upload(story):
 
             import threading
 
+            upload_state.update(running=True, done=False, error=None, progress=0.0, msg="")
             btn.disable()
             progress.visible = True
             progress.value = 0
@@ -483,6 +497,10 @@ def _show_youtube_upload(story):
                             f"{yt_pub_date.value} {yt_pub_time.value}", "%Y-%m-%d %H:%M"
                         ).replace(tzinfo=jst)
                         publish_at = dt.isoformat()
+
+                    def on_progress(cur, total):
+                        upload_state["progress"] = cur / total if total > 0 else 0
+
                     result = youtube_uploader.upload_video(
                         video_path=video_path(story.title),
                         title=yt_title.value,
@@ -491,33 +509,37 @@ def _show_youtube_upload(story):
                         category_id=yt_category.value,
                         privacy_status=yt_privacy.value,
                         publish_at=publish_at,
-                        progress_callback=lambda cur, total: setattr(progress, 'value', cur / total),
+                        progress_callback=on_progress,
                     )
                     db.set_youtube_video_id(story.id, result["video_id"])
                     db.update_stage(story.id, "youtube_uploaded")
 
-                    try:
-                        progress.value = 1.0
-                        msg = f"完了! {result['url']}"
-                        if result.get("publish_at"):
-                            msg += f"\n予約公開: {result['publish_at'][:16].replace('T', ' ')} JST"
-                        status_label.text = msg
-                        status_label.classes(replace="text-sm text-green-500")
-                    except Exception:
-                        pass
+                    msg = f"完了! {result['url']}"
+                    if result.get("publish_at"):
+                        msg += f"\n予約公開: {result['publish_at'][:16].replace('T', ' ')} JST"
+                    upload_state["msg"] = msg
                 except Exception as e:
-                    try:
-                        status_label.text = f"エラー: {e}"
-                        status_label.classes(replace="text-sm text-red-500")
-                    except Exception:
-                        pass
-                finally:
-                    try:
-                        btn.enable()
-                    except Exception:
-                        pass
+                    upload_state["error"] = str(e)
+                upload_state["done"] = True
 
             threading.Thread(target=run, daemon=True).start()
+
+        def poll_upload():
+            if not upload_state["running"]:
+                return
+            progress.value = upload_state["progress"]
+            if upload_state["done"]:
+                upload_state["running"] = False
+                if upload_state["error"]:
+                    status_label.text = f"エラー: {upload_state['error']}"
+                    status_label.classes(replace="text-sm text-red-500")
+                else:
+                    status_label.text = upload_state["msg"]
+                    status_label.classes(replace="text-sm text-green-500")
+                    progress.value = 1.0
+                btn.enable()
+
+        ui.timer(0.5, poll_upload)
 
         btn = ui.button(
             "承認してYouTubeにアップロード", on_click=do_upload, color="red"
@@ -579,7 +601,10 @@ def _show_usage_report_tab(story):
     progress = ui.linear_progress(value=0, show_value=False).classes("w-full")
     progress.visible = False
 
+    report_state = {"running": False, "done": False, "error": None}
+
     def do_report():
+        report_state.update(running=True, done=False, error=None)
         btn.disable()
         progress.visible = True
         progress.value = 0
@@ -595,29 +620,30 @@ def _show_usage_report_tab(story):
                     email=contact_email,
                 )
                 db.update_stage(story.id, "report_submitted")
-
-                try:
-                    progress.value = 1.0
-                    status_label.text = "使用報告送信完了!"
-                    status_label.classes(replace="text-sm text-green-500")
-                except Exception:
-                    pass
             except (UsageReportError, Exception) as e:
                 error_msg = f"使用報告失敗: {e}"
                 db.update_stage(story.id, "youtube_uploaded", error=error_msg)
-                try:
-                    progress.value = 0
-                    status_label.text = error_msg
-                    status_label.classes(replace="text-sm text-red-500")
-                except Exception:
-                    pass
-            finally:
-                try:
-                    btn.enable()
-                except Exception:
-                    pass
+                report_state["error"] = error_msg
+            report_state["done"] = True
 
         threading.Thread(target=run, daemon=True).start()
+
+    def poll_report():
+        if not report_state["running"]:
+            return
+        if report_state["done"]:
+            report_state["running"] = False
+            if report_state["error"]:
+                progress.value = 0
+                status_label.text = report_state["error"]
+                status_label.classes(replace="text-sm text-red-500")
+            else:
+                progress.value = 1.0
+                status_label.text = "使用報告送信完了!"
+                status_label.classes(replace="text-sm text-green-500")
+            btn.enable()
+
+    ui.timer(0.5, poll_report)
 
     label = "再送信" if already_reported else "使用報告を送信"
     btn = ui.button(label, on_click=do_report, color="purple").props("size=sm")
