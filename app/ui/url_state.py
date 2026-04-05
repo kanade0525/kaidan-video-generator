@@ -17,11 +17,9 @@ def build_query_string(params: dict[str, str | int | None]) -> str:
     return "&".join(f"{k}={quote(str(v))}" for k, v in filtered.items())
 
 
-def build_results_url(stage: str = "", keyword: str = "", story_id: int | None = None) -> str:
-    """Build /results URL with current filter state."""
+def build_results_url(keyword: str = "", story_id: int | None = None) -> str:
+    """Build /results URL with current filter state (stage excluded intentionally)."""
     params: dict[str, str | int | None] = {}
-    if stage:
-        params["stage"] = stage
     if keyword and keyword.strip():
         params["keyword"] = keyword.strip()
     if story_id:
@@ -30,11 +28,9 @@ def build_results_url(stage: str = "", keyword: str = "", story_id: int | None =
     return f"/results?{qs}" if qs else "/results"
 
 
-def build_stories_url(stage: str = "", category: str = "", page: int = 0) -> str:
-    """Build /stories URL with current filter state."""
+def build_stories_url(category: str = "", page: int = 0) -> str:
+    """Build /stories URL with current filter state (stage excluded intentionally)."""
     params: dict[str, str | int | None] = {}
-    if stage:
-        params["stage"] = stage
     if category:
         params["category"] = category
     if page > 0:

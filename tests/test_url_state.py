@@ -42,12 +42,10 @@ class TestBuildQueryString:
 
 
 class TestBuildResultsUrl:
+    """Stage is intentionally excluded from URL to avoid stale filter after processing."""
+
     def test_no_params(self):
         assert build_results_url() == "/results"
-
-    def test_stage_only(self):
-        url = build_results_url(stage="voice_generated")
-        assert url == "/results?stage=voice_generated"
 
     def test_keyword_only(self):
         url = build_results_url(keyword="怪談")
@@ -58,15 +56,15 @@ class TestBuildResultsUrl:
         url = build_results_url(story_id=42)
         assert url == "/results?id=42"
 
-    def test_all_params(self):
-        url = build_results_url(stage="scraped", keyword="test", story_id=10)
-        assert "stage=scraped" in url
+    def test_keyword_and_story_id(self):
+        url = build_results_url(keyword="test", story_id=10)
         assert "keyword=test" in url
         assert "id=10" in url
+        assert "stage" not in url
 
     def test_empty_keyword_ignored(self):
-        url = build_results_url(stage="scraped", keyword="")
-        assert "keyword" not in url
+        url = build_results_url(keyword="")
+        assert url == "/results"
 
     def test_zero_story_id_ignored(self):
         url = build_results_url(story_id=0)
@@ -82,16 +80,15 @@ class TestBuildResultsUrl:
 
 
 class TestBuildStoriesUrl:
+    """Stage is intentionally excluded from URL to avoid stale filter after processing."""
+
     def test_no_params(self):
         assert build_stories_url() == "/stories"
-
-    def test_stage_only(self):
-        url = build_stories_url(stage="pending")
-        assert url == "/stories?stage=pending"
 
     def test_category_only(self):
         url = build_stories_url(category="怪談")
         assert "category=" in url
+        assert "stage" not in url
 
     def test_page_only(self):
         url = build_stories_url(page=2)
@@ -101,8 +98,8 @@ class TestBuildStoriesUrl:
         url = build_stories_url(page=0)
         assert url == "/stories"
 
-    def test_all_params(self):
-        url = build_stories_url(stage="scraped", category="怪談", page=3)
-        assert "stage=scraped" in url
+    def test_category_and_page(self):
+        url = build_stories_url(category="怪談", page=3)
         assert "category=" in url
         assert "page=3" in url
+        assert "stage" not in url

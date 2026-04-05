@@ -8,7 +8,7 @@ from app.pipeline.executor import pipeline
 from app.services.scraper import fetch_rss_stories
 
 
-def stories_page(stage: str = "", category: str = "", page: int = 0):
+def stories_page(category: str = "", page: int = 0):
     """Story management page."""
     ui.label("ストーリー管理").classes("text-2xl font-bold mb-4")
 
@@ -18,11 +18,11 @@ def stories_page(stage: str = "", category: str = "", page: int = 0):
         ui.button("追加", on_click=lambda: _add_url(url_input)).props("size=sm")
         ui.button("RSSインポート", on_click=lambda: _import_rss(), color="blue").props("size=sm")
 
-    # Filters (restore from query params)
+    # Filters (stage resets on reload so updated stories always appear)
     with ui.row().classes("gap-2 mb-4 items-end"):
         stage_filter = ui.select(
             {"": "全て", **{s: STAGE_LABELS.get(s, s) for s in STAGES}},
-            value=stage,
+            value="",
             label="ステージ",
         ).classes("w-48")
 
@@ -47,7 +47,6 @@ def stories_page(stage: str = "", category: str = "", page: int = 0):
         """Update URL query params to preserve filter state."""
         from app.ui.url_state import build_stories_url
         url = build_stories_url(
-            stage=stage_filter.value or "",
             category=cat_filter.value or "",
             page=page_state["current"],
         )

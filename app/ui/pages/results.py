@@ -22,15 +22,15 @@ from app.utils.paths import (
 )
 
 
-def results_page(stage: str = "", keyword: str = "", story_id: int = 0):
+def results_page(keyword: str = "", story_id: int = 0):
     """Results viewer page."""
     ui.label("生成結果").classes("text-2xl font-bold mb-4")
 
-    # Filters (restore from query params)
+    # Filters (stage resets on reload so updated stories always appear)
     with ui.row().classes("gap-2 mb-4 items-end"):
         stage_filter = ui.select(
             {"": "全て", **{s: STAGE_LABELS.get(s, s) for s in STAGES[1:]}},
-            value=stage,
+            value="",
             label="ステージ",
         ).classes("w-48")
 
@@ -47,7 +47,6 @@ def results_page(stage: str = "", keyword: str = "", story_id: int = 0):
         """Update URL query params to preserve search state."""
         from app.ui.url_state import build_results_url
         url = build_results_url(
-            stage=stage_filter.value or "",
             keyword=search_input.value or "",
             story_id=selected_id,
         )
