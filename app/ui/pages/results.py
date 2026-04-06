@@ -111,22 +111,25 @@ def results_page(keyword: str = "", story_id: int = 0):
         s = stage_filter.value or None
         kw = search_input.value.strip() if search_input.value else None
         stories = db.get_stories(stage=s, keyword=kw, limit=200)
-        _update_url()
 
         select_container.clear()
         detail_container.clear()
 
         with select_container:
             if not stories:
+                _update_url()
                 ui.label("該当なし").classes("text-gray-500")
                 return
+            from app.ui.url_state import resolve_initial_story
             options = {s.id: f"{s.title} [{STAGE_LABELS.get(s.stage, s.stage)}]" for s in stories}
-            initial = story_id if story_id and story_id in options else None
+            initial = resolve_initial_story(story_id, options)
             sel = ui.select(options, label="ストーリー選択", value=initial).classes("w-96")
             sel.on_value_change(lambda e: show_detail(e.value))
             state["select"] = sel
             if initial:
                 show_detail(initial)
+            else:
+                _update_url()
 
     stage_filter.on_value_change(lambda _: update_story_list())
     search_input.on("keydown.enter", lambda _: update_story_list())

@@ -28,6 +28,17 @@ def build_results_url(keyword: str = "", story_id: int | None = None) -> str:
     return f"/results?{qs}" if qs else "/results"
 
 
+def resolve_initial_story(story_id: int, options: dict[int, str]) -> int | None:
+    """Determine which story to auto-select on page load.
+
+    Returns story_id if it exists in the options dict, otherwise None.
+    This is used to restore story selection from URL query params on reload.
+    """
+    if story_id and story_id in options:
+        return story_id
+    return None
+
+
 def build_stories_url(category: str = "", page: int = 0) -> str:
     """Build /stories URL with current filter state (stage excluded intentionally)."""
     params: dict[str, str | int | None] = {}

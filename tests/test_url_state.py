@@ -1,6 +1,11 @@
 """Tests for URL state preservation logic."""
 
-from app.ui.url_state import build_query_string, build_results_url, build_stories_url
+from app.ui.url_state import (
+    build_query_string,
+    build_results_url,
+    build_stories_url,
+    resolve_initial_story,
+)
 
 
 class TestBuildQueryString:
@@ -77,6 +82,33 @@ class TestBuildResultsUrl:
     def test_whitespace_keyword_ignored(self):
         url = build_results_url(keyword="   ")
         assert url == "/results"
+
+
+class TestResolveInitialStory:
+    """Story selection must survive page reload via URL ?id= param."""
+
+    def test_id_in_options_returns_id(self):
+        options = {10: "Story A", 20: "Story B", 30: "Story C"}
+        assert resolve_initial_story(20, options) == 20
+
+    def test_id_not_in_options_returns_none(self):
+        options = {10: "Story A", 20: "Story B"}
+        assert resolve_initial_story(99, options) is None
+
+    def test_zero_id_returns_none(self):
+        options = {10: "Story A"}
+        assert resolve_initial_story(0, options) is None
+
+    def test_none_id_returns_none(self):
+        options = {10: "Story A"}
+        assert resolve_initial_story(None, options) is None
+
+    def test_empty_options_returns_none(self):
+        assert resolve_initial_story(10, {}) is None
+
+    def test_first_item_in_options(self):
+        options = {1: "First"}
+        assert resolve_initial_story(1, options) == 1
 
 
 class TestBuildStoriesUrl:
