@@ -20,7 +20,7 @@ from app.utils.paths import (
 )
 
 
-def results_page(keyword: str = "", story_id: int = 0):
+def results_page(keyword: str = "", story_id: int = 0, content_type: str | None = None):
     """Results viewer page."""
     ui.label("生成結果").classes("text-2xl font-bold mb-4")
 
@@ -114,7 +114,7 @@ def results_page(keyword: str = "", story_id: int = 0):
     def update_story_list():
         s = stage_filter.value or None
         kw = search_input.value.strip() if search_input.value else None
-        stories = db.get_stories(stage=s, keyword=kw, limit=200, content_type=None)
+        stories = db.get_stories(stage=s, keyword=kw, limit=200, content_type=content_type)
 
         select_container.clear()
         detail_container.clear()

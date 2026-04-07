@@ -24,6 +24,7 @@ def create_layout():
             ui.label("ショート動画").classes("text-xs text-gray-400 px-3 mt-2")
             ui.link("Shortsパイプライン", "/shorts").classes(link_cls)
             ui.link("Shortsストーリー", "/shorts/stories").classes(link_cls)
+            ui.link("Shorts生成結果", "/shorts/results").classes(link_cls)
 
             ui.separator().classes("my-2 bg-gray-600")
 

@@ -36,7 +36,7 @@ def stories(category: str = "", page: int = 0):
 @ui.page("/results")
 def results(keyword: str = "", id: int = 0):
     create_layout()
-    results_page(keyword=keyword, story_id=id)
+    results_page(keyword=keyword, story_id=id, content_type="long")
 
 
 @ui.page("/settings")
@@ -55,6 +55,12 @@ def shorts():
 def shorts_stories(page: int = 0):
     create_layout()
     shorts_stories_page(page=page)
+
+
+@ui.page("/shorts/results")
+def shorts_results(keyword: str = "", id: int = 0):
+    create_layout()
+    results_page(keyword=keyword, story_id=id, content_type="short")
 
 
 def main():
