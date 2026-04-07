@@ -60,7 +60,7 @@ def shorts_stories(page: int = 0):
 @ui.page("/shorts/results")
 def shorts_results(keyword: str = "", id: int = 0):
     create_layout()
-    results_page(keyword=keyword, story_id=id, content_type="short")
+    results_page(keyword=keyword, story_id=id, content_type="short", base_path="/shorts/results")
 
 
 def main():

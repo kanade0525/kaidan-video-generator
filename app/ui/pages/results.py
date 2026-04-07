@@ -20,7 +20,10 @@ from app.utils.paths import (
 )
 
 
-def results_page(keyword: str = "", story_id: int = 0, content_type: str | None = None):
+def results_page(
+    keyword: str = "", story_id: int = 0, content_type: str | None = None,
+    base_path: str = "/results",
+):
     """Results viewer page."""
     ui.label("生成結果").classes("text-2xl font-bold mb-4")
 
@@ -47,6 +50,7 @@ def results_page(keyword: str = "", story_id: int = 0, content_type: str | None 
         url = build_results_url(
             keyword=search_input.value or "",
             story_id=selected_id,
+            base_path=base_path,
         )
         ui.run_javascript(f'window.history.replaceState(null, "", "{url}")')
 
