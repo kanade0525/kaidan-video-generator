@@ -43,12 +43,17 @@ def fetch_tag_list() -> list[dict]:
 
 
 @with_retry(max_attempts=3, base_delay=2.0)
-def _fetch_tag_page(tag: str, page: int = 1) -> tuple[list[dict], bool]:
-    """Fetch a single page of stories for a tag. Returns (stories, has_next_page)."""
+def _fetch_listing_page(base_path: str, page: int = 1) -> tuple[list[dict], bool]:
+    """Fetch a single page of stories from a listing URL.
+
+    Args:
+        base_path: Path relative to BASE_URL, e.g. "/tags/shinrei" or "/category/scary_story_s"
+    """
+    base_path = base_path.rstrip("/")
     if page == 1:
-        url = f"{BASE_URL}/tags/{tag}/"
+        url = f"{BASE_URL}{base_path}/"
     else:
-        url = f"{BASE_URL}/tags/{tag}/page/{page}/"
+        url = f"{BASE_URL}{base_path}/page/{page}/"
 
     r = requests.get(url, timeout=30)
     if r.status_code == 404:
@@ -87,25 +92,39 @@ def _fetch_tag_page(tag: str, page: int = 1) -> tuple[list[dict], bool]:
         })
 
     # Check for next page
-    has_next = bool(soup.select(f'a[href*="/tags/{tag}/page/{page + 1}"]'))
+    has_next = bool(soup.select(f'a[href*="{base_path}/page/{page + 1}"]'))
 
     return stories, has_next
 
 
-def fetch_stories_from_tag(tag: str, max_pages: int = 5) -> list[dict]:
-    """Crawl tag pages and return story metadata list."""
+def _fetch_pages(base_path: str, max_pages: int = 5, label: str = "") -> list[dict]:
+    """Crawl listing pages and return story metadata list."""
     delay = cfg_get("shorts_scrape_delay")
     all_stories: list[dict] = []
 
     for page in range(1, max_pages + 1):
-        stories, has_next = _fetch_tag_page(tag, page)
+        stories, has_next = _fetch_listing_page(base_path, page)
         all_stories.extend(stories)
-        log.info("[kikikaikai] tag=%s page=%d: %d stories", tag, page, len(stories))
+        log.info("[kikikaikai] %s page=%d: %d stories", label or base_path, page, len(stories))
         if not has_next:
             break
-        time.sleep(delay)
+        if page < max_pages:
+            time.sleep(delay)
 
     return all_stories
+
+
+def fetch_stories_from_tag(tag: str, max_pages: int = 5) -> list[dict]:
+    """Crawl tag pages and return story metadata list."""
+    return _fetch_pages(f"/tags/{tag}", max_pages, label=f"tag={tag}")
+
+
+def fetch_stories_from_category(category: str, max_pages: int = 5) -> list[dict]:
+    """Crawl category pages and return story metadata list.
+
+    Example: fetch_stories_from_category("scary_story_s") for short stories.
+    """
+    return _fetch_pages(f"/category/{category}", max_pages, label=f"category={category}")
 
 
 @with_retry(max_attempts=3, base_delay=2.0)

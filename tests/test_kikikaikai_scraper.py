@@ -94,12 +94,12 @@ class TestFetchTagList:
         assert slugs.count("shinrei") == 1
 
 
-class TestFetchTagPage:
+class TestFetchListingPage:
     @patch("app.services.kikikaikai_scraper.requests.get")
     def test_extracts_stories(self, mock_get):
         mock_get.return_value = _mock_response(SAMPLE_TAG_PAGE_HTML)
 
-        stories, has_next = kikikaikai_scraper._fetch_tag_page("shinrei", page=1)
+        stories, has_next = kikikaikai_scraper._fetch_listing_page("/tags/shinrei", page=1)
         assert len(stories) == 2
         assert stories[0]["title"] == "テスト怪談その1"
         assert stories[0]["author"] == "太郎"
@@ -109,13 +109,13 @@ class TestFetchTagPage:
     @patch("app.services.kikikaikai_scraper.requests.get")
     def test_has_next_page(self, mock_get):
         mock_get.return_value = _mock_response(SAMPLE_TAG_PAGE_HTML)
-        _, has_next = kikikaikai_scraper._fetch_tag_page("shinrei", page=1)
+        _, has_next = kikikaikai_scraper._fetch_listing_page("/tags/shinrei", page=1)
         assert has_next is True
 
     @patch("app.services.kikikaikai_scraper.requests.get")
     def test_no_next_page(self, mock_get):
         mock_get.return_value = _mock_response(SAMPLE_TAG_PAGE_LAST_HTML)
-        stories, has_next = kikikaikai_scraper._fetch_tag_page("shinrei", page=2)
+        stories, has_next = kikikaikai_scraper._fetch_listing_page("/tags/shinrei", page=2)
         assert len(stories) == 1
         assert has_next is False
 
@@ -125,9 +125,15 @@ class TestFetchTagPage:
         resp.status_code = 404
         resp.raise_for_status = MagicMock()
         mock_get.return_value = resp
-        stories, has_next = kikikaikai_scraper._fetch_tag_page("nonexistent", page=1)
+        stories, has_next = kikikaikai_scraper._fetch_listing_page("/tags/nonexistent", page=1)
         assert stories == []
         assert has_next is False
+
+    @patch("app.services.kikikaikai_scraper.requests.get")
+    def test_category_page(self, mock_get):
+        mock_get.return_value = _mock_response(SAMPLE_TAG_PAGE_HTML)
+        stories, has_next = kikikaikai_scraper._fetch_listing_page("/category/scary_story_s", page=1)
+        assert len(stories) == 2
 
 
 class TestFetchStoryContent:
@@ -172,7 +178,7 @@ class TestFetchStoryContent:
 
 
 class TestFetchStoriesFromTag:
-    @patch("app.services.kikikaikai_scraper._fetch_tag_page")
+    @patch("app.services.kikikaikai_scraper._fetch_listing_page")
     @patch("app.services.kikikaikai_scraper.cfg_get", return_value=0)
     def test_single_page(self, mock_cfg, mock_fetch):
         mock_fetch.return_value = ([{"title": "Test", "url": "https://a.com"}], False)
@@ -181,7 +187,7 @@ class TestFetchStoriesFromTag:
         assert len(stories) == 1
         mock_fetch.assert_called_once()
 
-    @patch("app.services.kikikaikai_scraper._fetch_tag_page")
+    @patch("app.services.kikikaikai_scraper._fetch_listing_page")
     @patch("app.services.kikikaikai_scraper.cfg_get", return_value=0)
     def test_multi_page(self, mock_cfg, mock_fetch):
         mock_fetch.side_effect = [
@@ -193,10 +199,21 @@ class TestFetchStoriesFromTag:
         assert len(stories) == 15
         assert mock_fetch.call_count == 2
 
-    @patch("app.services.kikikaikai_scraper._fetch_tag_page")
+    @patch("app.services.kikikaikai_scraper._fetch_listing_page")
     @patch("app.services.kikikaikai_scraper.cfg_get", return_value=0)
     def test_respects_max_pages(self, mock_cfg, mock_fetch):
         mock_fetch.return_value = ([{"title": "Story"}], True)
 
         stories = kikikaikai_scraper.fetch_stories_from_tag("shinrei", max_pages=2)
         assert mock_fetch.call_count == 2
+
+
+class TestFetchStoriesFromCategory:
+    @patch("app.services.kikikaikai_scraper._fetch_listing_page")
+    @patch("app.services.kikikaikai_scraper.cfg_get", return_value=0)
+    def test_category_crawl(self, mock_cfg, mock_fetch):
+        mock_fetch.return_value = ([{"title": "Short1"}, {"title": "Short2"}], False)
+
+        stories = kikikaikai_scraper.fetch_stories_from_category("scary_story_s", max_pages=3)
+        assert len(stories) == 2
+        mock_fetch.assert_called_once_with("/category/scary_story_s", 1)

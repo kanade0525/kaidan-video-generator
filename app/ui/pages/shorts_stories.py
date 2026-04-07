@@ -20,6 +20,11 @@ def shorts_stories_page(category: str = "", page: int = 0):
         url_input.props('placeholder="https://kikikaikai.kusuguru.co.jp/12345"')
         ui.button("追加", on_click=lambda: _add_url(url_input)).props("size=sm")
         ui.button(
+            "短編一括インポート",
+            on_click=lambda: _import_category(),
+            color="blue",
+        ).props("size=sm")
+        ui.button(
             "タグインポート",
             on_click=lambda: _show_tag_import_dialog(),
             color="blue",
@@ -142,6 +147,51 @@ def _add_url(url_input):
             ui.notify("このURLは既に登録されています", color="warning")
     except Exception as e:
         ui.notify(f"取得エラー: {e}", color="negative")
+
+
+def _import_category():
+    """Import stories from the scary_story_s (短編) category."""
+    with ui.dialog() as dialog, ui.card().classes("w-96"):
+        ui.label("短編カテゴリからインポート").classes("text-lg font-bold mb-2")
+        ui.label("奇々怪々の「怖い話短編」カテゴリから一括取得します").classes(
+            "text-sm text-gray-500 mb-4"
+        )
+
+        max_pages_input = ui.number("最大ページ数", value=3, min=1, max=50).classes("w-full")
+        result_label = ui.label("").classes("text-sm mt-2")
+
+        async def do_import():
+            max_pages = int(max_pages_input.value or 3)
+            result_label.text = "取得中..."
+
+            try:
+                stories = kikikaikai_scraper.fetch_stories_from_category(
+                    "scary_story_s", max_pages=max_pages,
+                )
+                added = 0
+                skipped = 0
+                for s in stories:
+                    result = db.add_story(
+                        url=s["url"],
+                        title=s["title"],
+                        content_type="short",
+                        author=s.get("author", ""),
+                    )
+                    if result:
+                        added += 1
+                    else:
+                        skipped += 1
+                result_label.text = f"完了: {added}件追加 ({skipped}件スキップ)"
+                ui.notify(f"短編カテゴリ: {added}件追加", color="positive")
+            except Exception as e:
+                result_label.text = f"エラー: {e}"
+                ui.notify(f"インポートエラー: {e}", color="negative")
+
+        with ui.row().classes("gap-2 mt-4"):
+            ui.button("インポート", on_click=do_import, color="green")
+            ui.button("閉じる", on_click=dialog.close)
+
+    dialog.open()
 
 
 def _show_tag_import_dialog():
