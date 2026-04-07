@@ -66,14 +66,23 @@ def create_video(
     boosted_narration = temp_dir / "narration_boosted.wav"
     narr_dur = get_audio_duration(normalized)
     total_dur = lead_sil + narr_dur + trail_sil
-    log.info("前後無音追加中（計%.1fs）...", total_dur)
+    log.info("前後無音追加中（lead=%.1fs, narr=%.1fs, trail=%.1fs → 計%.1fs）...",
+             lead_sil, narr_dur, trail_sil, total_dur)
     lead_ms = int(lead_sil * 1000)
+    trail_ms = trail_sil
     run_ffmpeg([
         "-i", str(normalized),
-        "-af", f"adelay={lead_ms}|{lead_ms}",
+        "-af", f"adelay={lead_ms}|{lead_ms},apad=pad_dur={trail_ms}",
         "-t", f"{total_dur:.3f}",
         str(boosted_narration),
     ])
+    # Verify duration matches expectation
+    actual_dur = get_audio_duration(boosted_narration)
+    if abs(actual_dur - total_dur) > 0.5:
+        log.warning("⚠ 音声尺ズレ: 期待=%.2fs, 実際=%.2fs (差=%.2fs)",
+                     total_dur, actual_dur, actual_dur - total_dur)
+    else:
+        log.info("音声尺OK: %.2fs", actual_dur)
     normalized.unlink(missing_ok=True)
 
     # Step 1: Create slideshow
@@ -151,5 +160,11 @@ def create_video(
     title_clip_path.unlink(missing_ok=True)
 
     clear_duration_cache()
-    log.info("動画生成完了: %s", output_path)
+    # Verify final video duration
+    final_dur = get_audio_duration(output_path)
+    expected_min = total_dur  # At minimum, slideshow duration
+    log.info("動画生成完了: %s (尺: %.1fs, ナレーション部: %.1fs)", output_path, final_dur, total_dur)
+    if final_dur < total_dur - 1.0:
+        log.warning("⚠ 動画尺不足: 期待≥%.1fs, 実際=%.1fs (%.1fs不足)",
+                     total_dur, final_dur, total_dur - final_dur)
     return output_path

@@ -384,9 +384,13 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         srt_path = sdir / "subtitles.srt"
         # Subtitle timing offset = title clip duration + leading silence
         subtitle_offset = title_clip_duration + lead
-        generate_srt(chunks, a_dir, srt_path, leading_silence=subtitle_offset)
+        log.info("[video:short] 字幕オフセット: title=%.2fs + lead=%.2fs = %.2fs",
+                 title_clip_duration, lead, subtitle_offset)
+        generate_srt(chunks, a_dir, srt_path, leading_silence=subtitle_offset,
+                     max_subtitle_chars=40)
         log.info("[video:short] 字幕焼き込み中...")
-        burn_subtitles(raw_output, srt_path, subtitled_output, font_size=44, margin_v=120)
+        burn_subtitles(raw_output, srt_path, subtitled_output,
+                       font_size=52, margin_v=220)
         raw_output.unlink(missing_ok=True)
     else:
         subtitled_output = raw_output

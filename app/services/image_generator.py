@@ -426,9 +426,13 @@ def create_title_card(
     # Font size based on widest line
     max_line_len = max(len(line) for line in lines)
     font_size = min(available_w // max(max_line_len, 1), height // (len(lines) + 2))
-    max_font = 360 if is_vertical else 240
+    # Short titles (1-3 chars) get larger max for dramatic impact
+    if is_vertical:
+        max_font = 500 if max_line_len <= 3 else (420 if max_line_len <= 5 else 360)
+    else:
+        max_font = 300 if max_line_len <= 3 else 240
     font_size = min(font_size, max_font)
-    font_size = max(font_size, 100 if is_vertical else 80)
+    font_size = max(font_size, 120 if is_vertical else 80)
 
     font = _find_cjk_font(font_size, use_koin=True)
     if font is None:

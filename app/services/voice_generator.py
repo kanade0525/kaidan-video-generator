@@ -106,6 +106,13 @@ def generate_title_audio(title: str, output_path: Path) -> Path:
 
 def generate_narration(chunks: list[str], output_dir: Path, progress_callback=None) -> Path:
     """Generate narration for all chunks and concatenate."""
+    # Clean up stale narration files from previous runs to prevent data corruption
+    existing = sorted(output_dir.glob("narration_*.wav"))
+    if existing:
+        log.info("既存ナレーションファイル %d 個を削除", len(existing))
+        for old_file in existing:
+            old_file.unlink(missing_ok=True)
+
     audio_files = []
 
     for i, chunk in enumerate(chunks):

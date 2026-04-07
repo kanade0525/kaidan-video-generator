@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -297,10 +298,29 @@ CJK_FONT_PATHS = [
     "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
 ]
 
+# Readable fonts for subtitles (Zomzi is horror display font, bad for body text)
+SUBTITLE_FONT_PATHS = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+    "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
+    # Fallback to Zomzi only if nothing else available
+    "/app/fonts/Zomzi.TTF",
+    "fonts/Zomzi.TTF",
+]
+
 
 def _find_ffmpeg_font() -> str:
-    """Find a CJK font usable by FFmpeg drawtext."""
+    """Find a CJK font usable by FFmpeg drawtext (prefers horror-style for titles/credits)."""
     for fp in CJK_FONT_PATHS:
+        if Path(fp).exists():
+            return fp
+    return ""
+
+
+def _find_subtitle_font() -> str:
+    """Find a readable CJK font for subtitles (prefers clean sans-serif over display fonts)."""
+    for fp in SUBTITLE_FONT_PATHS:
         if Path(fp).exists():
             return fp
     return ""
@@ -344,44 +364,113 @@ def add_credit_overlay(
     return output_path
 
 
+def _split_subtitle_text(text: str, max_chars: int = 40) -> list[str]:
+    """Split long subtitle text into shorter display segments.
+
+    Splits at sentence-ending punctuation (。！？」) first, then at commas (、),
+    and finally force-splits if still too long. This ensures each subtitle entry
+    shows at most 2 lines on a vertical 1080px screen.
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    segments: list[str] = []
+
+    # First split at sentence boundaries
+    parts = re.split(r"(?<=[。！？」])", text)
+    parts = [p for p in parts if p]
+
+    current = ""
+    for part in parts:
+        if len(current) + len(part) <= max_chars:
+            current += part
+        elif not current:
+            # Single part exceeds max_chars, split further at commas
+            sub_parts = re.split(r"(?<=[、，])", part)
+            for sp in sub_parts:
+                if len(current) + len(sp) <= max_chars:
+                    current += sp
+                elif not current:
+                    # Force-split at max_chars
+                    for j in range(0, len(sp), max_chars):
+                        chunk = sp[j : j + max_chars]
+                        if chunk:
+                            segments.append(chunk)
+                else:
+                    segments.append(current)
+                    current = sp
+        else:
+            segments.append(current)
+            current = part
+
+    if current:
+        segments.append(current)
+
+    # Final pass: force-split any remaining oversized segments
+    final: list[str] = []
+    for seg in segments:
+        if len(seg) <= max_chars:
+            final.append(seg)
+        else:
+            for j in range(0, len(seg), max_chars):
+                chunk = seg[j : j + max_chars]
+                if chunk:
+                    final.append(chunk)
+
+    return final if final else [text]
+
+
 def generate_srt(
     chunks: list[str],
     audio_dir: Path,
     output_path: Path,
     leading_silence: float = 0.0,
+    max_subtitle_chars: int = 40,
 ) -> Path:
     """Generate an SRT subtitle file from narration chunks.
 
-    Reads individual chunk audio files to determine timing.
+    Each chunk is split into shorter display segments (max_subtitle_chars) so
+    subtitles remain readable on vertical video. Timing is distributed
+    proportionally by character count within each chunk.
     """
-    srt_lines = []
+    srt_lines: list[str] = []
     current_time = leading_silence
+    entry_index = 1
+
+    def fmt(t: float) -> str:
+        h = int(t // 3600)
+        m = int((t % 3600) // 60)
+        s = int(t % 60)
+        ms = int((t % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
     for i, chunk_text in enumerate(chunks):
         chunk_audio = audio_dir / f"narration_{i:04d}.wav"
         if not chunk_audio.exists():
             continue
 
-        duration = get_audio_duration(chunk_audio)
-        start = current_time
-        end = current_time + duration
+        chunk_duration = get_audio_duration(chunk_audio)
 
-        # Format SRT timestamps (HH:MM:SS,mmm)
-        def fmt(t: float) -> str:
-            h = int(t // 3600)
-            m = int((t % 3600) // 60)
-            s = int(t % 60)
-            ms = int((t % 1) * 1000)
-            return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+        # Split into subtitle-friendly segments
+        segments = _split_subtitle_text(chunk_text, max_chars=max_subtitle_chars)
+        total_chars = sum(len(seg) for seg in segments)
 
-        srt_lines.append(str(i + 1))
-        srt_lines.append(f"{fmt(start)} --> {fmt(end)}")
-        srt_lines.append(chunk_text)
-        srt_lines.append("")
+        for seg in segments:
+            # Proportional duration based on character count
+            seg_duration = chunk_duration * (len(seg) / total_chars) if total_chars > 0 else chunk_duration
+            start = current_time
+            end = current_time + seg_duration
 
-        current_time = end
+            srt_lines.append(str(entry_index))
+            srt_lines.append(f"{fmt(start)} --> {fmt(end)}")
+            srt_lines.append(seg)
+            srt_lines.append("")
+
+            entry_index += 1
+            current_time = end
 
     output_path.write_text("\n".join(srt_lines), encoding="utf-8")
+    log.info("SRT生成: %d エントリ (from %d chunks)", entry_index - 1, len(chunks))
     return output_path
 
 
@@ -389,11 +478,15 @@ def burn_subtitles(
     input_path: Path,
     subtitle_path: Path,
     output_path: Path,
-    font_size: int = 44,
-    margin_v: int = 120,
+    font_size: int = 52,
+    margin_v: int = 220,
 ) -> Path:
-    """Burn SRT subtitles into video with large dramatic styling."""
-    font_path = _find_ffmpeg_font()
+    """Burn SRT subtitles into video with dramatic styling.
+
+    Uses a readable CJK font (not horror display font) for subtitle legibility.
+    Default font_size=52 and margin_v=220 are tuned for vertical 1080x1920 shorts.
+    """
+    font_path = _find_subtitle_font()
     # Escape path for FFmpeg filter (colons and backslashes)
     sub_escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
 
