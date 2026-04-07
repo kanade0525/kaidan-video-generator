@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 
 import requests
@@ -42,6 +43,66 @@ def fetch_tag_list() -> list[dict]:
     return unique
 
 
+_STORY_TEXT_RE = re.compile(
+    r"^(?:\d+)?(?:短編|長編)(.+?)投稿者：(.+?)(\d+)$"
+)
+
+
+def _parse_story_link(link, href: str) -> dict | None:
+    """Parse a story link element into a story dict.
+
+    Handles both structured HTML (tag pages with <h3>) and flat text
+    (category pages where JS-rendered DOM is flattened).
+    """
+    href = href.rstrip("/")
+    match = re.search(r"/(\d+)/?$", href)
+    if not match:
+        return None
+    story_id = match.group(1)
+
+    # Normalize relative URLs
+    if not href.startswith("http"):
+        href = f"{BASE_URL}/{story_id}"
+
+    # Try structured HTML first (tag pages)
+    h3 = link.select_one("h3")
+    if h3:
+        title = h3.get_text(strip=True)
+        author_el = link.select_one("p.author")
+        author = ""
+        if author_el:
+            author = author_el.get_text(strip=True).replace("投稿者：", "")
+        category_el = link.select_one("span.category")
+        category = category_el.get_text(strip=True) if category_el else ""
+        return {
+            "url": href,
+            "title": title,
+            "author": author,
+            "category": category,
+            "story_id": story_id,
+        }
+
+    # Fallback: parse flat text (category pages)
+    # Pattern: "短編タイトル投稿者：著者名数字" or "4短編タイトル投稿者：著者名数字"
+    raw_text = link.get_text(strip=True)
+    if not raw_text or "投稿者：" not in raw_text:
+        return None
+
+    m = _STORY_TEXT_RE.match(raw_text)
+    if m:
+        title = m.group(1).strip()
+        author = m.group(2).strip()
+        return {
+            "url": href,
+            "title": title,
+            "author": author,
+            "category": "短編",
+            "story_id": story_id,
+        }
+
+    return None
+
+
 @with_retry(max_attempts=3, base_delay=2.0)
 def _fetch_listing_page(base_path: str, page: int = 1) -> tuple[list[dict], bool]:
     """Fetch a single page of stories from a listing URL.
@@ -62,37 +123,22 @@ def _fetch_listing_page(base_path: str, page: int = 1) -> tuple[list[dict], bool
     soup = BeautifulSoup(r.content, "html.parser")
 
     stories: list[dict] = []
-    # Each story is an <a> linking to /{story_id} containing <h3> title
-    for link in soup.select(f'a[href^="{BASE_URL}/"]'):
-        href = link["href"].rstrip("/")
-        # Story URLs are BASE_URL/{numeric_id}
-        path = href.replace(BASE_URL, "").strip("/")
-        if not path.isdigit():
-            continue
+    seen_ids: set[str] = set()
 
-        h3 = link.select_one("h3")
-        if not h3:
-            continue
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        # Normalize relative URLs
+        if href.startswith("/") and not href.startswith("//"):
+            href = BASE_URL + href
 
-        title = h3.get_text(strip=True)
-        author_el = link.select_one("p.author")
-        author = ""
-        if author_el:
-            author = author_el.get_text(strip=True).replace("投稿者：", "")
-
-        category_el = link.select_one("span.category")
-        category = category_el.get_text(strip=True) if category_el else ""
-
-        stories.append({
-            "url": href,
-            "title": title,
-            "author": author,
-            "category": category,
-            "story_id": path,
-        })
+        story = _parse_story_link(link, href)
+        if story and story["story_id"] not in seen_ids:
+            seen_ids.add(story["story_id"])
+            stories.append(story)
 
     # Check for next page
-    has_next = bool(soup.select(f'a[href*="{base_path}/page/{page + 1}"]'))
+    next_page_pattern = f"{base_path}/page/{page + 1}"
+    has_next = bool(soup.find("a", href=re.compile(re.escape(next_page_pattern))))
 
     return stories, has_next
 
