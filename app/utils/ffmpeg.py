@@ -288,6 +288,8 @@ def _normalize_video(
 
 
 CJK_FONT_PATHS = [
+    "/app/fonts/Zomzi.TTF",
+    "fonts/Zomzi.TTF",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
