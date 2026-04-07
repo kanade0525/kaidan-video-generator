@@ -39,6 +39,10 @@ def chunks_path(title: str, content_type: str = "long") -> Path:
     return story_dir(title, content_type) / "chunks.json"
 
 
+def original_chunks_path(title: str, content_type: str = "long") -> Path:
+    return story_dir(title, content_type) / "original_chunks.json"
+
+
 def audio_dir(title: str, content_type: str = "long") -> Path:
     d = story_dir(title, content_type) / "audio"
     d.mkdir(parents=True, exist_ok=True)

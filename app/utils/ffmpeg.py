@@ -66,6 +66,10 @@ def create_slideshow(
 ) -> Path:
     """Create a slideshow video from images synced to audio duration.
 
+    Each image is rendered as an individual video clip using -loop 1, then all
+    clips are concatenated with the audio track. This avoids the known FFmpeg
+    concat demuxer issue where static images produce truncated output.
+
     Args:
         durations: Per-image durations in seconds. 0 or None = auto (equal split).
         target_width/target_height: If set, scale+crop images to fill this resolution.
@@ -81,8 +85,20 @@ def create_slideshow(
             f"crop={target_width}:{target_height}"
         )
 
-    # Single image: use -loop 1 (concat demuxer produces broken keyframes for
-    # a single long-duration image)
+    # Calculate per-image durations
+    if durations and len(durations) == len(images):
+        fixed_total = sum(d for d in durations if d > 0)
+        auto_count = sum(1 for d in durations if d <= 0)
+        auto_dur = max(0.5, (total_duration - fixed_total) / auto_count) if auto_count > 0 else 0
+        final_durations = [d if d > 0 else auto_dur for d in durations]
+    else:
+        per_image = total_duration / len(images)
+        final_durations = [per_image] * len(images)
+
+    log.info("スライドショー: %d枚, 各%.1fs, 合計%.1fs",
+             len(images), final_durations[0], sum(final_durations))
+
+    # Single image: simple -loop 1 with audio
     if len(images) == 1:
         vf_args = ["-vf", vf_scale] if vf_scale else []
         run_ffmpeg([
@@ -101,40 +117,55 @@ def create_slideshow(
         ])
         return output_path
 
-    # Calculate per-image durations
-    if durations and len(durations) == len(images):
-        # Fill in auto (0) durations
-        fixed_total = sum(d for d in durations if d > 0)
-        auto_count = sum(1 for d in durations if d <= 0)
-        auto_dur = max(0.5, (total_duration - fixed_total) / auto_count) if auto_count > 0 else 0
-        final_durations = [d if d > 0 else auto_dur for d in durations]
-    else:
-        per_image = total_duration / len(images)
-        final_durations = [per_image] * len(images)
+    # Multiple images: generate each as a silent video clip, then concat + add audio.
+    # This avoids the concat demuxer bug with long-duration static images.
+    temp_dir = output_path.parent
+    clip_paths: list[Path] = []
 
-    # Write concat file
-    concat_file = output_path.parent / "concat.txt"
+    for i, (img, dur) in enumerate(zip(images, final_durations, strict=False)):
+        clip_path = temp_dir / f"slide_clip_{i:03d}.ts"
+        vf_args = ["-vf", vf_scale] if vf_scale else []
+        run_ffmpeg([
+            "-loop", "1",
+            "-i", str(img),
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            *vf_args,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-r", str(fps),
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-t", f"{dur:.3f}",
+            str(clip_path),
+        ])
+        clip_paths.append(clip_path)
+        log.info("スライドクリップ %d/%d 生成完了 (%.1fs)", i + 1, len(images), dur)
+
+    # Concat all clips
+    concat_file = temp_dir / "slide_concat.txt"
     lines = []
-    for img, dur in zip(images, final_durations, strict=False):
-        safe_path = str(img.resolve()).replace("'", "'\\''")
+    for cp in clip_paths:
+        safe_path = str(cp.resolve()).replace("'", "'\\''")
         lines.append(f"file '{safe_path}'")
-        lines.append(f"duration {dur:.3f}")
-    # Last image needs duration too, then repeat for ffmpeg concat demuxer
-    safe_last = str(images[-1].resolve()).replace("'", "'\\''")
-    lines.append(f"file '{safe_last}'")
-    lines.append("duration 0.001")
     concat_file.write_text("\n".join(lines))
 
-    vf_args = ["-vf", vf_scale] if vf_scale else []
+    # Concat video clips + replace audio with the real narration
+    video_only = temp_dir / "slideshow_video_only.mp4"
     run_ffmpeg([
         "-f", "concat",
         "-safe", "0",
         "-i", str(concat_file),
+        "-c", "copy",
+        str(video_only),
+    ])
+
+    # Mux concatenated video with real audio
+    run_ffmpeg([
+        "-i", str(video_only),
         "-i", str(audio_path),
-        *vf_args,
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-r", str(fps),
+        "-map", "0:v",
+        "-map", "1:a",
+        "-c:v", "copy",
         "-c:a", "aac",
         "-b:a", "192k",
         "-t", f"{total_duration:.3f}",
@@ -142,7 +173,19 @@ def create_slideshow(
         str(output_path),
     ])
 
+    # Verify output duration
+    out_dur = get_audio_duration(output_path)
+    if abs(out_dur - total_duration) > 1.0:
+        log.warning("⚠ スライドショー尺ズレ: 期待=%.1fs, 実際=%.1fs", total_duration, out_dur)
+    else:
+        log.info("スライドショー尺OK: %.1fs", out_dur)
+
+    # Cleanup
     concat_file.unlink(missing_ok=True)
+    video_only.unlink(missing_ok=True)
+    for cp in clip_paths:
+        cp.unlink(missing_ok=True)
+
     return output_path
 
 
@@ -238,7 +281,6 @@ def mix_bgm(
         "-map", "[out]",
         "-c:v", "copy",
         "-c:a", "aac",
-        "-shortest",
         str(output_path),
     ])
     return output_path
@@ -298,29 +340,9 @@ CJK_FONT_PATHS = [
     "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
 ]
 
-# Readable fonts for subtitles (Zomzi is horror display font, bad for body text)
-SUBTITLE_FONT_PATHS = [
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
-    "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
-    # Fallback to Zomzi only if nothing else available
-    "/app/fonts/Zomzi.TTF",
-    "fonts/Zomzi.TTF",
-]
-
-
 def _find_ffmpeg_font() -> str:
-    """Find a CJK font usable by FFmpeg drawtext (prefers horror-style for titles/credits)."""
+    """Find a CJK font usable by FFmpeg (prefers Zomzi for horror style)."""
     for fp in CJK_FONT_PATHS:
-        if Path(fp).exists():
-            return fp
-    return ""
-
-
-def _find_subtitle_font() -> str:
-    """Find a readable CJK font for subtitles (prefers clean sans-serif over display fonts)."""
-    for fp in SUBTITLE_FONT_PATHS:
         if Path(fp).exists():
             return fp
     return ""
@@ -330,7 +352,7 @@ def add_credit_overlay(
     input_path: Path,
     output_path: Path,
     lines: list[str],
-    font_size: int = 28,
+    font_size: int = 52,
 ) -> Path:
     """Burn credit text at the bottom of a video using drawtext filter."""
     font_path = _find_ffmpeg_font()
@@ -340,13 +362,13 @@ def add_credit_overlay(
     for i, line in enumerate(reversed(lines)):
         # Escape special chars for FFmpeg drawtext
         escaped = line.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
-        y_offset = 40 + i * (font_size + 10)
+        y_offset = 60 + i * (font_size + 16)
         font_opt = f":fontfile='{font_path}'" if font_path else ""
         filters.append(
             f"drawtext=text='{escaped}'"
             f":fontsize={font_size}"
             f":fontcolor=white"
-            f":borderw=2:bordercolor=black"
+            f":borderw=3:bordercolor=black"
             f":x=(w-text_w)/2"
             f":y=h-{y_offset}"
             f"{font_opt}"
@@ -364,59 +386,81 @@ def add_credit_overlay(
     return output_path
 
 
-def _split_subtitle_text(text: str, max_chars: int = 40) -> list[str]:
-    """Split long subtitle text into shorter display segments.
+def _split_subtitle_text(text: str, max_chars: int = 28) -> list[str]:
+    """Split long subtitle text into shorter display segments for SRT.
 
-    Splits at sentence-ending punctuation (。！？」) first, then at commas (、),
-    and finally force-splits if still too long. This ensures each subtitle entry
-    shows at most 2 lines on a vertical 1080px screen.
+    Strategy:
+    1. Split at sentence-ending punctuation (。！？」) — punctuation stays
+       attached to the preceding segment (no orphaned 。 entries).
+    2. If a segment is still over max_chars, split at commas (、).
+    3. Last resort: force-split, but search backwards for a natural Japanese
+       break point (particle or punctuation) so we don't cut mid-word.
     """
     if len(text) <= max_chars:
         return [text]
 
-    segments: list[str] = []
-
-    # First split at sentence boundaries
+    # Step 1: split at sentence endings, keeping the delimiter attached
     parts = re.split(r"(?<=[。！？」])", text)
     parts = [p for p in parts if p]
 
+    # Step 2: group parts into segments respecting max_chars
+    segments: list[str] = []
     current = ""
     for part in parts:
         if len(current) + len(part) <= max_chars:
             current += part
-        elif not current:
-            # Single part exceeds max_chars, split further at commas
-            sub_parts = re.split(r"(?<=[、，])", part)
-            for sp in sub_parts:
-                if len(current) + len(sp) <= max_chars:
-                    current += sp
-                elif not current:
-                    # Force-split at max_chars
-                    for j in range(0, len(sp), max_chars):
-                        chunk = sp[j : j + max_chars]
-                        if chunk:
-                            segments.append(chunk)
-                else:
-                    segments.append(current)
-                    current = sp
         else:
-            segments.append(current)
+            if current:
+                segments.append(current)
             current = part
 
     if current:
         segments.append(current)
 
-    # Final pass: force-split any remaining oversized segments
-    final: list[str] = []
+    # Step 3: split any oversized segments at commas
+    refined: list[str] = []
     for seg in segments:
         if len(seg) <= max_chars:
-            final.append(seg)
-        else:
-            for j in range(0, len(seg), max_chars):
-                chunk = seg[j : j + max_chars]
-                if chunk:
-                    final.append(chunk)
+            refined.append(seg)
+            continue
+        comma_parts = re.split(r"(?<=[、，])", seg)
+        comma_parts = [p for p in comma_parts if p]
+        cur = ""
+        for cp in comma_parts:
+            if len(cur) + len(cp) <= max_chars:
+                cur += cp
+            else:
+                if cur:
+                    refined.append(cur)
+                cur = cp
+        if cur:
+            refined.append(cur)
 
+    # Step 4: force-split anything still too long, seeking a natural break
+    final: list[str] = []
+    for seg in refined:
+        if len(seg) <= max_chars:
+            final.append(seg)
+            continue
+        # Search backwards from max_chars for a break character
+        pos = 0
+        while pos < len(seg):
+            if pos + max_chars >= len(seg):
+                final.append(seg[pos:])
+                break
+            # Look backwards from limit for a break point
+            end = pos + max_chars
+            break_at = end
+            for offset in range(min(10, end - pos)):
+                ch = seg[end - 1 - offset]
+                if ch in "。、！？」）】』\n":
+                    break_at = end - offset
+                    break
+            final.append(seg[pos:break_at])
+            pos = break_at
+
+    # Remove any entries that are only whitespace
+    final = [s for s in final if s.strip()]
     return final if final else [text]
 
 
@@ -478,15 +522,14 @@ def burn_subtitles(
     input_path: Path,
     subtitle_path: Path,
     output_path: Path,
-    font_size: int = 52,
+    font_size: int = 48,
     margin_v: int = 220,
 ) -> Path:
     """Burn SRT subtitles into video with dramatic styling.
 
-    Uses a readable CJK font (not horror display font) for subtitle legibility.
-    Default font_size=52 and margin_v=220 are tuned for vertical 1080x1920 shorts.
+    Default font_size=48 and margin_v=220 are tuned for vertical 1080x1920 shorts.
     """
-    font_path = _find_subtitle_font()
+    font_path = _find_ffmpeg_font()
     # Escape path for FFmpeg filter (colons and backslashes)
     sub_escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
 

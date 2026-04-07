@@ -14,6 +14,7 @@ from app.utils.paths import (
     images_dir,
     meta_path,
     narration_path,
+    original_chunks_path,
     processed_text_path,
     raw_content_path,
     story_dir,
@@ -57,9 +58,16 @@ def do_text(story: Story, progress_callback: ProgressCallback = None) -> None:
     chunks_path(story.title, ct).write_text(
         json.dumps(chunks, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+    # Save original text chunks (kanji) mapped 1:1 to hiragana chunks for subtitles
+    orig_chunks = text_processor.split_into_n_chunks(raw, len(chunks))
+    original_chunks_path(story.title, ct).write_text(
+        json.dumps(orig_chunks, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
     if progress_callback:
         progress_callback(2, 2)
-    log.info("[text] %d チャンク生成", len(chunks))
+    log.info("[text] %d チャンク生成 (原文チャンクも保存)", len(chunks))
 
 
 def do_voice(story: Story, progress_callback: ProgressCallback = None) -> None:
@@ -374,28 +382,38 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         target_height=1920,
     )
 
-    # Step 2: Generate and burn subtitles (narration text as telop)
+    # Step 2: Generate and burn subtitles (original text with kanji, not hiragana)
     if progress_callback:
         progress_callback(2, 4)
-    chunks_file = chunks_path(story.title, ct)
+    # Prefer original_chunks.json (kanji) for subtitle display text.
+    # Timing comes from narration audio files which match hiragana chunks 1:1.
+    orig_chunks_file = original_chunks_path(story.title, ct)
+    hiragana_chunks_file = chunks_path(story.title, ct)
     subtitled_output = sdir / "subtitled_short.mp4"
-    if chunks_file.exists():
-        chunks = json.loads(chunks_file.read_text(encoding="utf-8"))
+
+    subtitle_chunks = None
+    if orig_chunks_file.exists():
+        subtitle_chunks = json.loads(orig_chunks_file.read_text(encoding="utf-8"))
+        log.info("[video:short] 字幕: 原文（漢字）使用")
+    elif hiragana_chunks_file.exists():
+        subtitle_chunks = json.loads(hiragana_chunks_file.read_text(encoding="utf-8"))
+        log.info("[video:short] 字幕: ひらがなテキスト使用（原文チャンクなし）")
+
+    if subtitle_chunks:
         srt_path = sdir / "subtitles.srt"
-        # Subtitle timing offset = title clip duration + leading silence
         subtitle_offset = title_clip_duration + lead
         log.info("[video:short] 字幕オフセット: title=%.2fs + lead=%.2fs = %.2fs",
                  title_clip_duration, lead, subtitle_offset)
-        generate_srt(chunks, a_dir, srt_path, leading_silence=subtitle_offset,
-                     max_subtitle_chars=40)
+        generate_srt(subtitle_chunks, a_dir, srt_path,
+                     leading_silence=subtitle_offset, max_subtitle_chars=28)
         log.info("[video:short] 字幕焼き込み中...")
         burn_subtitles(raw_output, srt_path, subtitled_output,
-                       font_size=52, margin_v=220)
+                       font_size=48, margin_v=220)
         raw_output.unlink(missing_ok=True)
     else:
         subtitled_output = raw_output
 
-    # Step 3: Add credit overlay
+    # Step 3: Add credit overlay (larger font for 1080x1920)
     if progress_callback:
         progress_callback(3, 4)
     meta_file = meta_path(story.title, ct)
@@ -410,7 +428,7 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         f"「{story.title}」",
         f"作者: {author}",
     ]
-    add_credit_overlay(subtitled_output, output, credit_lines)
+    add_credit_overlay(subtitled_output, output, credit_lines, font_size=52)
     subtitled_output.unlink(missing_ok=True)
 
     if progress_callback:
