@@ -60,21 +60,35 @@ def create_slideshow(
     output_path: Path,
     fps: int = 30,
     durations: list[float] | None = None,
+    target_width: int | None = None,
+    target_height: int | None = None,
 ) -> Path:
     """Create a slideshow video from images synced to audio duration.
 
     Args:
         durations: Per-image durations in seconds. 0 or None = auto (equal split).
+        target_width/target_height: If set, scale+crop images to fill this resolution.
     """
     total_duration = get_audio_duration(audio_path)
+
+    # Video filter for scaling/cropping to target resolution (fill, no letterbox)
+    vf_scale = ""
+    if target_width and target_height:
+        vf_scale = (
+            f"scale={target_width}:{target_height}"
+            f":force_original_aspect_ratio=increase,"
+            f"crop={target_width}:{target_height}"
+        )
 
     # Single image: use -loop 1 (concat demuxer produces broken keyframes for
     # a single long-duration image)
     if len(images) == 1:
+        vf_args = ["-vf", vf_scale] if vf_scale else []
         run_ffmpeg([
             "-loop", "1",
             "-i", str(images[0]),
             "-i", str(audio_path),
+            *vf_args,
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
             "-r", str(fps),
@@ -110,11 +124,13 @@ def create_slideshow(
     lines.append("duration 0.001")
     concat_file.write_text("\n".join(lines))
 
+    vf_args = ["-vf", vf_scale] if vf_scale else []
     run_ffmpeg([
         "-f", "concat",
         "-safe", "0",
         "-i", str(concat_file),
         "-i", str(audio_path),
+        *vf_args,
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-r", str(fps),
@@ -271,6 +287,23 @@ def _normalize_video(
     return output_path
 
 
+CJK_FONT_PATHS = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
+]
+
+
+def _find_ffmpeg_font() -> str:
+    """Find a CJK font usable by FFmpeg drawtext."""
+    for fp in CJK_FONT_PATHS:
+        if Path(fp).exists():
+            return fp
+    return ""
+
+
 def add_credit_overlay(
     input_path: Path,
     output_path: Path,
@@ -278,12 +311,15 @@ def add_credit_overlay(
     font_size: int = 28,
 ) -> Path:
     """Burn credit text at the bottom of a video using drawtext filter."""
+    font_path = _find_ffmpeg_font()
+
     # Build drawtext filter chain for each line (bottom-up positioning)
     filters = []
     for i, line in enumerate(reversed(lines)):
         # Escape special chars for FFmpeg drawtext
         escaped = line.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
         y_offset = 40 + i * (font_size + 10)
+        font_opt = f":fontfile='{font_path}'" if font_path else ""
         filters.append(
             f"drawtext=text='{escaped}'"
             f":fontsize={font_size}"
@@ -291,6 +327,7 @@ def add_credit_overlay(
             f":borderw=2:bordercolor=black"
             f":x=(w-text_w)/2"
             f":y=h-{y_offset}"
+            f"{font_opt}"
         )
 
     vf = ",".join(filters)

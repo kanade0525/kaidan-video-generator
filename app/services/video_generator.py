@@ -35,6 +35,8 @@ def create_video(
     include_op: bool = True,
     include_ed: bool = True,
     include_title_card: bool = True,
+    target_width: int | None = None,
+    target_height: int | None = None,
 ) -> Path:
     """Create the final video from images, narration, and optional BGM."""
     fps = cfg_get("fps")
@@ -79,7 +81,10 @@ def create_video(
         progress_callback(1, 4)
     log.info("スライドショー作成中...")
     get_audio_duration(boosted_narration)
-    create_slideshow(images, boosted_narration, slideshow_path, fps=fps, durations=durations)
+    create_slideshow(
+        images, boosted_narration, slideshow_path, fps=fps, durations=durations,
+        target_width=target_width, target_height=target_height,
+    )
 
     # Step 2: Add fade-in only (no fade-out, ED handles the ending)
     if progress_callback:

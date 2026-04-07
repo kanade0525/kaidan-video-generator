@@ -346,7 +346,7 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         title_audio = sdir / "title_narration.wav"
         voice_generator.generate_title_audio(story.title, title_audio)
 
-    # Create video without OP/ED but with title card
+    # Create video without OP/ED but with title card, vertical 1080x1920
     raw_output = sdir / "raw_short.mp4"
     video_generator.create_video(
         images, narration, raw_output,
@@ -359,6 +359,8 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         include_op=False,
         include_ed=False,
         include_title_card=True,
+        target_width=1080,
+        target_height=1920,
     )
 
     # Add credit overlay
