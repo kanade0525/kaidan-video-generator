@@ -503,31 +503,34 @@ def generate_images_for_story(
 
     image_paths: list[Path] = []
 
-    if not is_short:
-        # Generate title card (long-form only)
-        title_bg_prompt = _generate_title_bg_prompt(text, title)
-        title_bg_data = None
-        try:
-            title_bg_data = generate_image_ai(title_bg_prompt)
-            log.info("タイトル背景画像生成成功")
-        except Exception as e:
-            log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
+    # Generate title card
+    if is_short:
+        tc_w, tc_h = 1080, 1920
+    else:
+        tc_w, tc_h = 1792, 1024
 
-        title_path = output_dir / "000_title_card.png"
-        title_path.write_bytes(create_title_card(title, bg_image_data=title_bg_data, category=category))
-        image_paths.append(title_path)
+    title_bg_prompt = _generate_title_bg_prompt(text, title)
+    title_bg_data = None
+    try:
+        ar = cfg_get("shorts_image_aspect_ratio") if is_short else None
+        title_bg_data = generate_image_ai(title_bg_prompt, aspect_ratio=ar)
+        log.info("タイトル背景画像生成成功")
+    except Exception as e:
+        log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
 
-        if rate_limit > 0:
-            time.sleep(rate_limit)
+    title_path = output_dir / "000_title_card.png"
+    title_path.write_bytes(
+        create_title_card(title, width=tc_w, height=tc_h, bg_image_data=title_bg_data, category=category)
+    )
+    image_paths.append(title_path)
+
+    if rate_limit > 0:
+        time.sleep(rate_limit)
 
     # Scene prompts
     prompts = extract_scene_prompts(text, title, num_scenes)
 
-    # Determine fallback dimensions based on content type
-    if is_short:
-        fb_w, fb_h = 1080, 1920
-    else:
-        fb_w, fb_h = 1792, 1024
+    fb_w, fb_h = (1080, 1920) if is_short else (1792, 1024)
 
     for i, prompt in enumerate(prompts):
         if progress_callback:

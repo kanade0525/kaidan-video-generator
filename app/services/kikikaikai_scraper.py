@@ -206,29 +206,28 @@ def fetch_story_content(url: str) -> tuple[str, dict]:
             tags.append(tag_text)
     tags = list(dict.fromkeys(tags))  # Deduplicate preserving order
 
-    # Story text: extract from article/main content area
-    # Try multiple selectors for the story body
+    # Story text: extract from div.main-text (the actual story body)
     text = ""
-    for selector in [
-        "article",
-        ".post-content",
-        ".entry-content",
-        ".story-content",
-    ]:
-        elem = soup.select_one(selector)
-        if elem and len(elem.get_text(strip=True)) > 50:
-            # Remove script/style tags
-            for tag in elem.find_all(["script", "style", "ins"]):
-                tag.decompose()
-            text = elem.get_text("\n", strip=True)
-            break
+    main_text = soup.select_one("div.main-text")
+    if main_text:
+        for tag in main_text.find_all(["script", "style", "ins"]):
+            tag.decompose()
+        text = main_text.get_text("\n", strip=True)
+    else:
+        # Fallback: try broader selectors
+        for selector in ["article", ".post-content", ".entry-content"]:
+            elem = soup.select_one(selector)
+            if elem and len(elem.get_text(strip=True)) > 50:
+                for tag in elem.find_all(["script", "style", "ins"]):
+                    tag.decompose()
+                text = elem.get_text("\n", strip=True)
+                break
 
-    # Fallback: get all <p> tags from main content
+    # Fallback: get all <p> tags
     if not text:
         paragraphs = []
         for p in soup.find_all("p"):
             p_text = p.get_text(strip=True)
-            # Skip short non-content paragraphs
             if len(p_text) > 10 and "googletag" not in p_text:
                 paragraphs.append(p_text)
         text = "\n".join(paragraphs)

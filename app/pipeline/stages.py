@@ -328,6 +328,7 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     img_dir = images_dir(story.title, ct)
     sdir = story_dir(story.title, ct)
 
+    title_card = img_dir / TITLE_CARD_FILENAME
     images, durations = load_scene_images(img_dir, sdir / "slideshow.json")
     if not images:
         raise RuntimeError("No images found")
@@ -339,19 +340,25 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     lead = cfg_get("shorts_leading_silence")
     trail = cfg_get("shorts_trailing_silence")
 
-    # Create video without OP/ED/title card
+    # Generate title narration audio for title card
+    title_audio = None
+    if title_card.exists():
+        title_audio = sdir / "title_narration.wav"
+        voice_generator.generate_title_audio(story.title, title_audio)
+
+    # Create video without OP/ED but with title card
     raw_output = sdir / "raw_short.mp4"
     video_generator.create_video(
         images, narration, raw_output,
         durations=durations,
-        title_card=None,
-        title_audio=None,
+        title_card=title_card if title_card.exists() else None,
+        title_audio=title_audio,
         progress_callback=progress_callback,
         leading_silence=lead,
         trailing_silence=trail,
         include_op=False,
         include_ed=False,
-        include_title_card=False,
+        include_title_card=True,
     )
 
     # Add credit overlay
