@@ -271,6 +271,40 @@ def _normalize_video(
     return output_path
 
 
+def add_credit_overlay(
+    input_path: Path,
+    output_path: Path,
+    lines: list[str],
+    font_size: int = 28,
+) -> Path:
+    """Burn credit text at the bottom of a video using drawtext filter."""
+    # Build drawtext filter chain for each line (bottom-up positioning)
+    filters = []
+    for i, line in enumerate(reversed(lines)):
+        # Escape special chars for FFmpeg drawtext
+        escaped = line.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
+        y_offset = 40 + i * (font_size + 10)
+        filters.append(
+            f"drawtext=text='{escaped}'"
+            f":fontsize={font_size}"
+            f":fontcolor=white"
+            f":borderw=2:bordercolor=black"
+            f":x=(w-text_w)/2"
+            f":y=h-{y_offset}"
+        )
+
+    vf = ",".join(filters)
+    run_ffmpeg([
+        "-i", str(input_path),
+        "-vf", vf,
+        "-c:v", "libx264",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        str(output_path),
+    ])
+    return output_path
+
+
 def concat_videos(
     parts: list[Path],
     output_path: Path,

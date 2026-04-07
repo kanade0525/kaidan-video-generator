@@ -11,18 +11,22 @@ def create_layout():
     with ui.left_drawer(value=True).classes("bg-gray-800 text-white") as drawer:
         ui.label("メニュー").classes("text-lg font-bold mb-4 mt-2")
 
+        link_cls = "text-white no-underline px-3 py-2 rounded hover:bg-gray-700 block"
+
         with ui.column().classes("gap-1 w-full"):
-            ui.link("パイプライン", "/").classes(
-                "text-white no-underline px-3 py-2 rounded hover:bg-gray-700 block"
-            )
-            ui.link("ストーリー管理", "/stories").classes(
-                "text-white no-underline px-3 py-2 rounded hover:bg-gray-700 block"
-            )
-            ui.link("生成結果", "/results").classes(
-                "text-white no-underline px-3 py-2 rounded hover:bg-gray-700 block"
-            )
-            ui.link("設定", "/settings").classes(
-                "text-white no-underline px-3 py-2 rounded hover:bg-gray-700 block"
-            )
+            ui.label("長編動画").classes("text-xs text-gray-400 px-3 mt-2")
+            ui.link("パイプライン", "/").classes(link_cls)
+            ui.link("ストーリー管理", "/stories").classes(link_cls)
+            ui.link("生成結果", "/results").classes(link_cls)
+
+            ui.separator().classes("my-2 bg-gray-600")
+
+            ui.label("ショート動画").classes("text-xs text-gray-400 px-3 mt-2")
+            ui.link("Shortsパイプライン", "/shorts").classes(link_cls)
+            ui.link("Shortsストーリー", "/shorts/stories").classes(link_cls)
+
+            ui.separator().classes("my-2 bg-gray-600")
+
+            ui.link("設定", "/settings").classes(link_cls)
 
     return drawer
