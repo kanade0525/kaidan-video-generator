@@ -134,7 +134,9 @@ def create_video(
 
     if len(parts) > 1:
         log.info("OP/ED結合中...")
-        concat_videos(parts, output_path)
+        tw = target_width or 1920
+        th = target_height or 1080
+        concat_videos(parts, output_path, width=tw, height=th)
     else:
         bgm_mixed_path.rename(output_path)
 

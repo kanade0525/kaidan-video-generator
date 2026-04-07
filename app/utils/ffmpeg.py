@@ -344,9 +344,89 @@ def add_credit_overlay(
     return output_path
 
 
+def generate_srt(
+    chunks: list[str],
+    audio_dir: Path,
+    output_path: Path,
+    leading_silence: float = 0.0,
+) -> Path:
+    """Generate an SRT subtitle file from narration chunks.
+
+    Reads individual chunk audio files to determine timing.
+    """
+    srt_lines = []
+    current_time = leading_silence
+
+    for i, chunk_text in enumerate(chunks):
+        chunk_audio = audio_dir / f"narration_{i:04d}.wav"
+        if not chunk_audio.exists():
+            continue
+
+        duration = get_audio_duration(chunk_audio)
+        start = current_time
+        end = current_time + duration
+
+        # Format SRT timestamps (HH:MM:SS,mmm)
+        def fmt(t: float) -> str:
+            h = int(t // 3600)
+            m = int((t % 3600) // 60)
+            s = int(t % 60)
+            ms = int((t % 1) * 1000)
+            return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+        srt_lines.append(str(i + 1))
+        srt_lines.append(f"{fmt(start)} --> {fmt(end)}")
+        srt_lines.append(chunk_text)
+        srt_lines.append("")
+
+        current_time = end
+
+    output_path.write_text("\n".join(srt_lines), encoding="utf-8")
+    return output_path
+
+
+def burn_subtitles(
+    input_path: Path,
+    subtitle_path: Path,
+    output_path: Path,
+    font_size: int = 44,
+    margin_v: int = 120,
+) -> Path:
+    """Burn SRT subtitles into video with large dramatic styling."""
+    font_path = _find_ffmpeg_font()
+    # Escape path for FFmpeg filter (colons and backslashes)
+    sub_escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
+
+    # Force style for dramatic vertical video subtitles
+    font_name = f"fontfile={font_path}," if font_path else ""
+    style = (
+        f"force_style='{font_name}"
+        f"FontSize={font_size},"
+        f"PrimaryColour=&H00FFFFFF,"
+        f"OutlineColour=&H00000000,"
+        f"BackColour=&H80000000,"
+        f"Outline=3,"
+        f"Shadow=2,"
+        f"MarginV={margin_v},"
+        f"Alignment=2'"
+    )
+
+    run_ffmpeg([
+        "-i", str(input_path),
+        "-vf", f"subtitles='{sub_escaped}':{style}",
+        "-c:v", "libx264",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        str(output_path),
+    ])
+    return output_path
+
+
 def concat_videos(
     parts: list[Path],
     output_path: Path,
+    width: int = 1920,
+    height: int = 1080,
 ) -> Path:
     """Concatenate multiple video files, normalizing format first."""
     temp_dir = output_path.parent
@@ -355,7 +435,7 @@ def concat_videos(
     for i, part in enumerate(parts):
         norm_path = temp_dir / f"norm_{i}.ts"
         # Encode to MPEG-TS for safe concat
-        _normalize_video(part, norm_path)
+        _normalize_video(part, norm_path, width=width, height=height)
         normalized_parts.append(norm_path)
 
     # Use concat protocol with intermediate TS files

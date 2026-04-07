@@ -317,16 +317,22 @@ def do_images_short(story: Story, progress_callback: ProgressCallback = None) ->
 
 
 def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> None:
-    """Stage: Create final short video (vertical, no OP/ED, with credit overlay)."""
+    """Stage: Create final short video (vertical, no OP/ED, with subtitles + credit)."""
     from app.config import get as cfg_get
-    from app.utils.ffmpeg import add_credit_overlay
+    from app.utils.ffmpeg import (
+        add_credit_overlay,
+        burn_subtitles,
+        generate_srt,
+        get_audio_duration,
+    )
 
     log.info("[video:short] %s", story.title)
     ct = story.content_type
     if progress_callback:
-        progress_callback(0, 3)
+        progress_callback(0, 4)
     img_dir = images_dir(story.title, ct)
     sdir = story_dir(story.title, ct)
+    a_dir = audio_dir(story.title, ct)
 
     title_card = img_dir / TITLE_CARD_FILENAME
     images, durations = load_scene_images(img_dir, sdir / "slideshow.json")
@@ -342,18 +348,23 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
 
     # Generate title narration audio for title card
     title_audio = None
+    title_clip_duration = 0.0
     if title_card.exists():
         title_audio = sdir / "title_narration.wav"
         voice_generator.generate_title_audio(story.title, title_audio)
+        # Title clip duration = silence_before(1.0) + audio + silence_after(1.0)
+        title_clip_duration = 1.0 + get_audio_duration(title_audio) + 1.0
 
-    # Create video without OP/ED but with title card, vertical 1080x1920
+    # Step 1: Create base video (no OP/ED, vertical 1080x1920)
+    if progress_callback:
+        progress_callback(1, 4)
     raw_output = sdir / "raw_short.mp4"
     video_generator.create_video(
         images, narration, raw_output,
         durations=durations,
         title_card=title_card if title_card.exists() else None,
         title_audio=title_audio,
-        progress_callback=progress_callback,
+        progress_callback=None,
         leading_silence=lead,
         trailing_silence=trail,
         include_op=False,
@@ -363,7 +374,26 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         target_height=1920,
     )
 
-    # Add credit overlay
+    # Step 2: Generate and burn subtitles (narration text as telop)
+    if progress_callback:
+        progress_callback(2, 4)
+    chunks_file = chunks_path(story.title, ct)
+    subtitled_output = sdir / "subtitled_short.mp4"
+    if chunks_file.exists():
+        chunks = json.loads(chunks_file.read_text(encoding="utf-8"))
+        srt_path = sdir / "subtitles.srt"
+        # Subtitle timing offset = title clip duration + leading silence
+        subtitle_offset = title_clip_duration + lead
+        generate_srt(chunks, a_dir, srt_path, leading_silence=subtitle_offset)
+        log.info("[video:short] 字幕焼き込み中...")
+        burn_subtitles(raw_output, srt_path, subtitled_output, font_size=44, margin_v=120)
+        raw_output.unlink(missing_ok=True)
+    else:
+        subtitled_output = raw_output
+
+    # Step 3: Add credit overlay
+    if progress_callback:
+        progress_callback(3, 4)
     meta_file = meta_path(story.title, ct)
     author = story.author
     if meta_file.exists():
@@ -376,9 +406,11 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         f"「{story.title}」",
         f"作者: {author}",
     ]
-    add_credit_overlay(raw_output, output, credit_lines)
-    raw_output.unlink(missing_ok=True)
+    add_credit_overlay(subtitled_output, output, credit_lines)
+    subtitled_output.unlink(missing_ok=True)
 
+    if progress_callback:
+        progress_callback(4, 4)
     log.info("[video:short] 動画生成完了: %s", output)
 
 

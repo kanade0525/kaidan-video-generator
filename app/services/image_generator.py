@@ -415,16 +415,20 @@ def create_title_card(
     draw = ImageDraw.Draw(bg)
 
     # --- Title text ---
-    lines = _wrap_title(title, max_chars_per_line=7)
+    # Vertical video: fewer chars per line for larger text
+    is_vertical = height > width
+    chars_per_line = 5 if is_vertical else 7
+    lines = _wrap_title(title, max_chars_per_line=chars_per_line)
 
     # Calculate font size: fill most of the image
-    padding_x = width // 10
+    padding_x = width // 8 if is_vertical else width // 10
     available_w = width - padding_x * 2
     # Font size based on widest line
     max_line_len = max(len(line) for line in lines)
     font_size = min(available_w // max(max_line_len, 1), height // (len(lines) + 2))
-    font_size = min(font_size, 240)
-    font_size = max(font_size, 80)
+    max_font = 360 if is_vertical else 240
+    font_size = min(font_size, max_font)
+    font_size = max(font_size, 100 if is_vertical else 80)
 
     font = _find_cjk_font(font_size, use_koin=True)
     if font is None:
