@@ -216,34 +216,33 @@ erDiagram
 
 ## ディレクトリ構成
 
-```
-app/
-+-- main.py                 # エントリポイント
-+-- config.py               # 設定管理 (TOML, デフォルト値マージ)
-+-- database.py             # SQLite アクセス層
-+-- models.py               # データモデル (Story)
-+-- pipeline/
-|   +-- executor.py         # ステージ実行エンジン
-|   +-- stages.py           # ステージ定義・ワーカー処理
-|   +-- events.py           # EventBus (Pub/Sub)
-|   +-- retry.py            # リトライデコレータ
-+-- services/
-|   +-- scraper.py          # Web スクレイピング
-|   +-- text_processor.py   # テキスト処理 (LLM + MeCab)
-|   +-- voice_generator.py  # VOICEVOX 音声合成
-|   +-- image_generator.py  # 画像生成 (Gemini/Imagen)
-|   +-- video_generator.py  # FFmpeg 動画合成
-|   +-- youtube_uploader.py # YouTube アップロード
-|   +-- clients.py          # 共有 API クライアント
-+-- ui/
-|   +-- layout.py           # 共通レイアウト
-|   +-- url_state.py        # URL ステート管理
-|   +-- pages/              # Pipeline, Stories, Results, Settings
-+-- utils/
-    +-- ffmpeg.py            # FFmpeg ラッパー
-    +-- paths.py             # パス管理
-    +-- log.py               # ログ設定
-```
+| パス | 説明 |
+| --- | --- |
+| `app/main.py` | エントリポイント |
+| `app/config.py` | 設定管理 (TOML, デフォルト値マージ) |
+| `app/database.py` | SQLite アクセス層 |
+| `app/models.py` | データモデル (Story) |
+| **`app/pipeline/`** | |
+| `app/pipeline/executor.py` | ステージ実行エンジン |
+| `app/pipeline/stages.py` | ステージ定義・ワーカー処理 |
+| `app/pipeline/events.py` | EventBus (Pub/Sub) |
+| `app/pipeline/retry.py` | リトライデコレータ |
+| **`app/services/`** | |
+| `app/services/scraper.py` | Web スクレイピング |
+| `app/services/text_processor.py` | テキスト処理 (LLM + MeCab) |
+| `app/services/voice_generator.py` | VOICEVOX 音声合成 |
+| `app/services/image_generator.py` | 画像生成 (Gemini / Imagen) |
+| `app/services/video_generator.py` | FFmpeg 動画合成 |
+| `app/services/youtube_uploader.py` | YouTube アップロード |
+| `app/services/clients.py` | 共有 API クライアント |
+| **`app/ui/`** | |
+| `app/ui/layout.py` | 共通レイアウト |
+| `app/ui/url_state.py` | URL ステート管理 |
+| `app/ui/pages/` | Pipeline, Stories, Results, Settings |
+| **`app/utils/`** | |
+| `app/utils/ffmpeg.py` | FFmpeg ラッパー |
+| `app/utils/paths.py` | パス管理 |
+| `app/utils/log.py` | ログ設定 |
 
 ## セットアップ
 
