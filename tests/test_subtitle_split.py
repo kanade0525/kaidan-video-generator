@@ -63,8 +63,9 @@ class TestSplitSubtitleText:
         )
         result = _split_subtitle_text(text, max_chars=28)
         assert "".join(result) == text
+        # Short fragments (≤5 chars) may be merged, allowing up to +6 tolerance
         for seg in result:
-            assert len(seg) <= 28
+            assert len(seg) <= 34  # 28 + merge tolerance of 6
 
     def test_empty_text(self):
         result = _split_subtitle_text("", max_chars=28)

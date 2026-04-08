@@ -408,7 +408,8 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
                      leading_silence=subtitle_offset, max_subtitle_chars=28)
         log.info("[video:short] 字幕焼き込み中...")
         burn_subtitles(raw_output, srt_path, subtitled_output,
-                       font_size=48, margin_v=220)
+                       font_size=46, margin_v=200,
+                       video_width=1080, video_height=1920)
         raw_output.unlink(missing_ok=True)
     else:
         subtitled_output = raw_output

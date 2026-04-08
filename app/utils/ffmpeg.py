@@ -348,6 +348,16 @@ def _find_ffmpeg_font() -> str:
     return ""
 
 
+def _get_font_family(font_path: str) -> str:
+    """Extract the font family name from a TTF/TTC file for libass FontName."""
+    try:
+        from PIL import ImageFont
+        font = ImageFont.truetype(font_path, 20)
+        return font.getname()[0]
+    except Exception:
+        return Path(font_path).stem
+
+
 def add_credit_overlay(
     input_path: Path,
     output_path: Path,
@@ -390,17 +400,20 @@ def _split_subtitle_text(text: str, max_chars: int = 28) -> list[str]:
     """Split long subtitle text into shorter display segments for SRT.
 
     Strategy:
-    1. Split at sentence-ending punctuation (。！？」) — punctuation stays
-       attached to the preceding segment (no orphaned 。 entries).
+    1. Split at sentence-ending punctuation (。！？) — punctuation stays
+       attached to the preceding segment.
     2. If a segment is still over max_chars, split at commas (、).
-    3. Last resort: force-split, but search backwards for a natural Japanese
-       break point (particle or punctuation) so we don't cut mid-word.
+    3. Last resort: force-split, searching backwards for a natural break.
+
+    Bracket handling: 「」pairs are kept together when possible.
+    Short fragments (≤3 chars like lone 」) are merged into adjacent segments.
     """
     if len(text) <= max_chars:
         return [text]
 
-    # Step 1: split at sentence endings, keeping the delimiter attached
-    parts = re.split(r"(?<=[。！？」])", text)
+    # Step 1: split at sentence endings, keeping the delimiter attached.
+    # Do NOT split after 」 here — handle brackets separately to avoid orphans.
+    parts = re.split(r"(?<=[。！？])", text)
     parts = [p for p in parts if p]
 
     # Step 2: group parts into segments respecting max_chars
@@ -437,30 +450,48 @@ def _split_subtitle_text(text: str, max_chars: int = 28) -> list[str]:
             refined.append(cur)
 
     # Step 4: force-split anything still too long, seeking a natural break
-    final: list[str] = []
+    forced: list[str] = []
     for seg in refined:
         if len(seg) <= max_chars:
-            final.append(seg)
+            forced.append(seg)
             continue
-        # Search backwards from max_chars for a break character
         pos = 0
         while pos < len(seg):
             if pos + max_chars >= len(seg):
-                final.append(seg[pos:])
+                forced.append(seg[pos:])
                 break
-            # Look backwards from limit for a break point
             end = pos + max_chars
             break_at = end
             for offset in range(min(10, end - pos)):
                 ch = seg[end - 1 - offset]
-                if ch in "。、！？」）】』\n":
+                if ch in "。、！？）】』\n":
                     break_at = end - offset
                     break
-            final.append(seg[pos:break_at])
+            forced.append(seg[pos:break_at])
             pos = break_at
 
-    # Remove any entries that are only whitespace
-    final = [s for s in final if s.strip()]
+    # Step 5: merge short fragments (≤5 chars) into neighbors to avoid
+    # orphaned entries like lone "」", "た。", "ていった。".
+    # Allow up to 6 extra chars over max_chars when merging — a slightly
+    # long subtitle is far better than a 2-char flash.
+    merge_tolerance = 6
+    final: list[str] = []
+    for seg in forced:
+        seg = seg.strip()
+        if not seg:
+            continue
+        if len(seg) <= 5 and final:
+            if len(final[-1]) + len(seg) <= max_chars + merge_tolerance:
+                final[-1] += seg
+                continue
+        final.append(seg)
+
+    # Also merge a short leading fragment forward
+    if len(final) > 1 and len(final[0]) <= 5:
+        if len(final[0]) + len(final[1]) <= max_chars + merge_tolerance:
+            final[1] = final[0] + final[1]
+            final.pop(0)
+
     return final if final else [text]
 
 
@@ -522,34 +553,57 @@ def burn_subtitles(
     input_path: Path,
     subtitle_path: Path,
     output_path: Path,
-    font_size: int = 48,
-    margin_v: int = 220,
+    font_size: int = 46,
+    margin_v: int = 200,
+    video_width: int = 1080,
+    video_height: int = 1920,
 ) -> Path:
     """Burn SRT subtitles into video with dramatic styling.
 
-    Default font_size=48 and margin_v=220 are tuned for vertical 1080x1920 shorts.
+    Default font_size=46 and margin_v=200 are tuned for vertical 1080x1920 shorts.
+    Uses Zomzi font via fontsdir for proper libass font resolution.
+
+    IMPORTANT: PlayResX/PlayResY must match the actual video dimensions so that
+    font_size corresponds to real pixel sizes. Without this, libass scales from
+    its default 384x288 canvas, making text enormously oversized on HD video.
     """
     font_path = _find_ffmpeg_font()
     # Escape path for FFmpeg filter (colons and backslashes)
     sub_escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
 
-    # Force style for dramatic vertical video subtitles
-    font_name = f"fontfile={font_path}," if font_path else ""
+    # Resolve font directory and font name for libass
+    fonts_dir = ""
+    font_name_str = ""
+    if font_path:
+        fonts_dir_path = Path(font_path).parent
+        fonts_dir = str(fonts_dir_path).replace("\\", "/").replace(":", "\\:")
+        # Resolve the actual font family name embedded in the TTF file.
+        # libass matches by family name, not filename.
+        font_family = _get_font_family(font_path)
+        font_name_str = f"FontName={font_family}," if font_family else ""
+
     style = (
-        f"force_style='{font_name}"
+        f"force_style='{font_name_str}"
+        f"PlayResX={video_width},"
+        f"PlayResY={video_height},"
         f"FontSize={font_size},"
         f"PrimaryColour=&H00FFFFFF,"
         f"OutlineColour=&H00000000,"
         f"BackColour=&H80000000,"
-        f"Outline=3,"
-        f"Shadow=2,"
+        f"Outline=2,"
+        f"Shadow=1,"
         f"MarginV={margin_v},"
         f"Alignment=2'"
     )
 
+    # Build subtitles filter with fontsdir for font discovery
+    sub_filter = f"subtitles='{sub_escaped}':{style}"
+    if fonts_dir:
+        sub_filter = f"subtitles='{sub_escaped}':fontsdir='{fonts_dir}':{style}"
+
     run_ffmpeg([
         "-i", str(input_path),
-        "-vf", f"subtitles='{sub_escaped}':{style}",
+        "-vf", sub_filter,
         "-c:v", "libx264",
         "-c:a", "copy",
         "-movflags", "+faststart",
