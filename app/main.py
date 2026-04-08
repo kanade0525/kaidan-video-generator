@@ -11,6 +11,8 @@ from app.ui.layout import create_layout
 from app.ui.pages.pipeline import pipeline_page
 from app.ui.pages.results import results_page
 from app.ui.pages.settings import settings_page
+from app.ui.pages.shorts_pipeline import shorts_pipeline_page
+from app.ui.pages.shorts_stories import shorts_stories_page
 from app.ui.pages.stories import stories_page
 from app.utils.log import setup_logging
 
@@ -34,13 +36,31 @@ def stories(category: str = "", page: int = 0):
 @ui.page("/results")
 def results(keyword: str = "", id: int = 0):
     create_layout()
-    results_page(keyword=keyword, story_id=id)
+    results_page(keyword=keyword, story_id=id, content_type="long")
 
 
 @ui.page("/settings")
 def settings():
     create_layout()
     settings_page()
+
+
+@ui.page("/shorts")
+def shorts():
+    create_layout()
+    shorts_pipeline_page()
+
+
+@ui.page("/shorts/stories")
+def shorts_stories(page: int = 0):
+    create_layout()
+    shorts_stories_page(page=page)
+
+
+@ui.page("/shorts/results")
+def shorts_results(keyword: str = "", id: int = 0):
+    create_layout()
+    results_page(keyword=keyword, story_id=id, content_type="short", base_path="/shorts/results")
 
 
 def main():

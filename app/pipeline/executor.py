@@ -4,7 +4,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from app import database as db
-from app.models import STAGES, prev_stage
+from app.models import STAGES, STAGES_SHORT, prev_stage, stages_for
 from app.pipeline.events import (
     STAGE_COMPLETED,
     STAGE_FAILED,
@@ -32,9 +32,10 @@ POLL_INTERVAL = 5.0
 class StageExecutor:
     """Manages workers for a single pipeline stage."""
 
-    def __init__(self, target_stage: str):
+    def __init__(self, target_stage: str, content_type: str = "long"):
         self.target_stage = target_stage
-        self.input_stage = prev_stage(target_stage) or "pending"
+        self.content_type = content_type
+        self.input_stage = prev_stage(target_stage, content_type) or "pending"
         self.max_workers = STAGE_CONCURRENCY.get(target_stage, 1)
         self._executor: ThreadPoolExecutor | None = None
         self._poll_thread: threading.Thread | None = None
@@ -79,7 +80,9 @@ class StageExecutor:
                 self._stop_event.wait(POLL_INTERVAL)
                 continue
 
-            stories = db.get_stories_at_stage(self.input_stage, limit=1)
+            stories = db.get_stories_at_stage(
+                self.input_stage, limit=1, content_type=self.content_type,
+            )
             if not stories:
                 self._stop_event.wait(POLL_INTERVAL)
                 continue
@@ -99,7 +102,7 @@ class StageExecutor:
 
     def _process(self, story) -> None:
         try:
-            func = STAGE_FUNCTIONS[self.target_stage]
+            func = STAGE_FUNCTIONS[(self.content_type, self.target_stage)]
             bus.publish(STAGE_STARTED, {"stage": self.target_stage, "story_id": story.id})
 
             func(story)
@@ -110,7 +113,7 @@ class StageExecutor:
             log.info("✓ %s: %s", self.target_stage, story.title)
         except Exception as e:
             error_msg = str(e)[:500]
-            db.mark_failed(story.id, self.target_stage, error_msg)
+            db.mark_failed(story.id, self.target_stage, error_msg, content_type=self.content_type)
             db.add_log("ERROR", error_msg, self.target_stage, story.id)
             fail_data = {
                 "stage": self.target_stage,
@@ -127,10 +130,12 @@ class StageExecutor:
 class Pipeline:
     """Manages all stage executors."""
 
-    def __init__(self):
+    def __init__(self, content_type: str = "long"):
+        self.content_type = content_type
+        stage_list = stages_for(content_type)
         self.executors: dict[str, StageExecutor] = {}
-        for stage in STAGES[1:]:  # Skip 'pending'
-            self.executors[stage] = StageExecutor(stage)
+        for stage in stage_list[1:]:  # Skip 'pending'
+            self.executors[stage] = StageExecutor(stage, content_type=content_type)
 
     def start_stage(self, stage: str) -> None:
         if stage in self.executors:
@@ -169,7 +174,7 @@ class Pipeline:
         if not story:
             return
 
-        func = STAGE_FUNCTIONS.get(target_stage)
+        func = STAGE_FUNCTIONS.get((self.content_type, target_stage))
         if not func:
             return
 
@@ -179,10 +184,11 @@ class Pipeline:
             db.update_stage(story.id, target_stage)
             db.add_log("INFO", f"Manual run completed: {story.title}", target_stage, story.id)
         except Exception as e:
-            db.mark_failed(story.id, target_stage, str(e)[:500])
+            db.mark_failed(story.id, target_stage, str(e)[:500], content_type=self.content_type)
             db.add_log("ERROR", str(e)[:500], target_stage, story.id)
             raise
 
 
-# Singleton
-pipeline = Pipeline()
+# Singletons
+pipeline = Pipeline(content_type="long")
+shorts_pipeline = Pipeline(content_type="short")

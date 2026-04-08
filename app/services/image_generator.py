@@ -91,7 +91,10 @@ def _generate_title_bg_prompt(text: str, title: str) -> str:
 
 
 @with_retry(max_attempts=2, base_delay=30.0)
-def generate_image_ai(prompt: str, model: str | None = None, size: str | None = None) -> bytes:
+def generate_image_ai(
+    prompt: str, model: str | None = None, size: str | None = None,
+    aspect_ratio: str | None = None,
+) -> bytes:
     """Generate an image using Imagen or AirForce API."""
     img_model = model or cfg_get("image_model")
     style = cfg_get("image_style")
@@ -99,19 +102,19 @@ def generate_image_ai(prompt: str, model: str | None = None, size: str | None = 
 
     # Use Google API if model starts with "imagen" or "gemini"
     if img_model.startswith("imagen") or img_model.startswith("gemini"):
-        return _generate_imagen(full_prompt, img_model)
+        return _generate_imagen(full_prompt, img_model, aspect_ratio=aspect_ratio)
 
     # Fallback to AirForce
     return _generate_airforce(full_prompt, img_model, size)
 
 
-def _generate_imagen(prompt: str, model: str) -> bytes:
+def _generate_imagen(prompt: str, model: str, aspect_ratio: str | None = None) -> bytes:
     """Generate image using Google Imagen or Gemini Image API."""
     from google.genai import types
 
     client = get_gemini_image()
 
-    aspect_ratio = cfg_get("image_aspect_ratio")
+    aspect_ratio = aspect_ratio or cfg_get("image_aspect_ratio")
     output_mime = cfg_get("image_output_mime")
     compression = cfg_get("image_compression_quality")
 
@@ -412,16 +415,24 @@ def create_title_card(
     draw = ImageDraw.Draw(bg)
 
     # --- Title text ---
-    lines = _wrap_title(title, max_chars_per_line=7)
+    # Vertical video: fewer chars per line for larger text
+    is_vertical = height > width
+    chars_per_line = 5 if is_vertical else 7
+    lines = _wrap_title(title, max_chars_per_line=chars_per_line)
 
     # Calculate font size: fill most of the image
-    padding_x = width // 10
+    padding_x = width // 8 if is_vertical else width // 10
     available_w = width - padding_x * 2
     # Font size based on widest line
     max_line_len = max(len(line) for line in lines)
     font_size = min(available_w // max(max_line_len, 1), height // (len(lines) + 2))
-    font_size = min(font_size, 240)
-    font_size = max(font_size, 80)
+    # Short titles (1-3 chars) get larger max for dramatic impact
+    if is_vertical:
+        max_font = 500 if max_line_len <= 3 else (420 if max_line_len <= 5 else 360)
+    else:
+        max_font = 300 if max_line_len <= 3 else 240
+    font_size = min(font_size, max_font)
+    font_size = max(font_size, 120 if is_vertical else 80)
 
     font = _find_cjk_font(font_size, use_koin=True)
     if font is None:
@@ -489,24 +500,37 @@ def create_title_card(
 
 
 def generate_images_for_story(
-    text: str, title: str, output_dir: Path, category: str = "怪談", progress_callback=None
+    text: str, title: str, output_dir: Path, category: str = "怪談",
+    progress_callback=None, content_type: str = "long",
 ) -> list[Path]:
     """Generate all images for a story."""
-    num_scenes = cfg_get("num_scenes")
+    is_short = content_type == "short"
+    num_scenes = cfg_get("shorts_num_scenes") if is_short else cfg_get("num_scenes")
     rate_limit = cfg_get("image_rate_limit")
+    use_vhs = cfg_get("shorts_vhs_enabled") if is_short else True
 
-    # Generate title card background image via AI (content-aware)
+    image_paths: list[Path] = []
+
+    # Generate title card
+    if is_short:
+        tc_w, tc_h = 1080, 1920
+    else:
+        tc_w, tc_h = 1792, 1024
+
     title_bg_prompt = _generate_title_bg_prompt(text, title)
     title_bg_data = None
     try:
-        title_bg_data = generate_image_ai(title_bg_prompt)
+        ar = cfg_get("shorts_image_aspect_ratio") if is_short else None
+        title_bg_data = generate_image_ai(title_bg_prompt, aspect_ratio=ar)
         log.info("タイトル背景画像生成成功")
     except Exception as e:
         log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
 
     title_path = output_dir / "000_title_card.png"
-    title_path.write_bytes(create_title_card(title, bg_image_data=title_bg_data, category=category))
-    image_paths = [title_path]
+    title_path.write_bytes(
+        create_title_card(title, width=tc_w, height=tc_h, bg_image_data=title_bg_data, category=category)
+    )
+    image_paths.append(title_path)
 
     if rate_limit > 0:
         time.sleep(rate_limit)
@@ -514,19 +538,24 @@ def generate_images_for_story(
     # Scene prompts
     prompts = extract_scene_prompts(text, title, num_scenes)
 
+    fb_w, fb_h = (1080, 1920) if is_short else (1792, 1024)
+
     for i, prompt in enumerate(prompts):
         if progress_callback:
-            progress_callback(i + 1, len(prompts) + 1)  # +1 for title card
+            offset = 0 if is_short else 1  # +1 for title card in long-form
+            progress_callback(i + offset, len(prompts) + offset)
         log.info("AI画像生成中 (%d/%d): %s", i + 1, len(prompts), prompt[:60])
         img_path = output_dir / f"scene_{i:03d}.png"
 
         try:
-            img_data = generate_image_ai(prompt)
-            img_data = degrade_to_vhs(img_data)
+            ar = cfg_get("shorts_image_aspect_ratio") if is_short else None
+            img_data = generate_image_ai(prompt, aspect_ratio=ar)
+            if use_vhs:
+                img_data = degrade_to_vhs(img_data)
             img_path.write_bytes(img_data)
         except Exception as e:
             log.warning("画像生成失敗、フォールバック使用: %s", e)
-            img_path.write_bytes(generate_fallback_image())
+            img_path.write_bytes(generate_fallback_image(width=fb_w, height=fb_h))
 
         image_paths.append(img_path)
 

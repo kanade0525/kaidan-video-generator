@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.models import STAGES, Story
+from app.models import STAGES, Story, stages_for
 
 DB_PATH = Path("data/kaidan.db")
 
@@ -67,11 +67,18 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_story_categories_story ON story_categories(story_id);
         CREATE INDEX IF NOT EXISTS idx_stage_completions_story ON stage_completions(story_id);
     """)
-    # Add youtube_video_id column if missing (migration)
-    try:
-        conn.execute("ALTER TABLE stories ADD COLUMN youtube_video_id TEXT")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
+    # Migrations: add columns if missing
+    for col, definition in [
+        ("youtube_video_id", "TEXT"),
+        ("content_type", "TEXT DEFAULT 'long'"),
+        ("author", "TEXT DEFAULT ''"),
+        ("char_count", "INTEGER"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE stories ADD COLUMN {col} {definition}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_content_type ON stories(content_type)")
     conn.commit()
 
 
@@ -101,6 +108,7 @@ def _row_to_story(
             ).fetchall()
             stages_completed = {c["stage"]: c["completed_at"] for c in comps}
 
+    keys = row.keys()
     return Story(
         id=row["id"],
         url=row["url"],
@@ -112,9 +120,10 @@ def _row_to_story(
         updated_at=row["updated_at"],
         categories=categories,
         stages_completed=stages_completed,
-        youtube_video_id=(
-            row["youtube_video_id"] if "youtube_video_id" in row.keys() else None
-        ),
+        youtube_video_id=row["youtube_video_id"] if "youtube_video_id" in keys else None,
+        content_type=row["content_type"] if "content_type" in keys else "long",
+        author=row["author"] if "author" in keys else "",
+        char_count=row["char_count"] if "char_count" in keys else None,
     )
 
 
@@ -160,15 +169,19 @@ def add_story(
     title: str = "",
     pub_date: str = "",
     categories: list[str] | None = None,
+    content_type: str = "long",
+    author: str = "",
+    char_count: int | None = None,
 ) -> Story | None:
     """Add a new story. Returns None if URL already exists."""
     conn = _get_conn()
     now = _now()
     try:
         cur = conn.execute(
-            "INSERT INTO stories (url, title, pub_date, stage, added_at, updated_at) "
-            "VALUES (?, ?, ?, 'pending', ?, ?)",
-            (url, title, pub_date, now, now),
+            "INSERT INTO stories (url, title, pub_date, stage, added_at, updated_at,"
+            " content_type, author, char_count) "
+            "VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+            (url, title, pub_date, now, now, content_type, author, char_count),
         )
         story_id = cur.lastrowid
         for cat in categories or []:
@@ -200,6 +213,7 @@ def _build_story_filter(
     stage: str | None = None,
     category: str | None = None,
     keyword: str | None = None,
+    content_type: str | None = None,
 ) -> tuple[str, list]:
     """Build a filtered query for stories. Returns (query, params)."""
     query = f"{select} FROM stories s"
@@ -218,6 +232,9 @@ def _build_story_filter(
     if keyword:
         conditions.append("s.title LIKE ?")
         params.append(f"%{keyword}%")
+    if content_type:
+        conditions.append("s.content_type = ?")
+        params.append(content_type)
 
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
@@ -231,11 +248,13 @@ def get_stories(
     keyword: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    content_type: str | None = None,
 ) -> list[Story]:
     """Query stories with optional filters."""
     conn = _get_conn()
     query, params = _build_story_filter(
         "SELECT DISTINCT s.*", stage=stage, category=category, keyword=keyword,
+        content_type=content_type,
     )
     query += " ORDER BY s.id DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
@@ -243,20 +262,31 @@ def get_stories(
     return _rows_to_stories(rows)
 
 
-def count_stories(stage: str | None = None, category: str | None = None) -> int:
+def count_stories(
+    stage: str | None = None,
+    category: str | None = None,
+    content_type: str | None = None,
+) -> int:
     conn = _get_conn()
     query, params = _build_story_filter(
         "SELECT COUNT(DISTINCT s.id)", stage=stage, category=category,
+        content_type=content_type,
     )
     return conn.execute(query, params).fetchone()[0]
 
 
-def get_stage_counts() -> dict[str, int]:
+def get_stage_counts(content_type: str | None = None) -> dict[str, int]:
     """Get count of stories at each stage."""
     conn = _get_conn()
-    rows = conn.execute(
-        "SELECT stage, COUNT(*) as cnt FROM stories GROUP BY stage"
-    ).fetchall()
+    if content_type:
+        rows = conn.execute(
+            "SELECT stage, COUNT(*) as cnt FROM stories WHERE content_type = ? GROUP BY stage",
+            (content_type,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT stage, COUNT(*) as cnt FROM stories GROUP BY stage"
+        ).fetchall()
     return {r["stage"]: r["cnt"] for r in rows}
 
 
@@ -327,12 +357,15 @@ def recover_running() -> int:
     conn = _get_conn()
     now = _now()
     rows = conn.execute(
-        "SELECT id, stage FROM stories WHERE stage LIKE '%:running'"
+        "SELECT id, stage, content_type FROM stories WHERE stage LIKE '%:running'"
     ).fetchall()
+    keys = rows[0].keys() if rows else []
     count = 0
     for row in rows:
         base_stage = row["stage"].replace(":running", "")
-        prev = STAGES[STAGES.index(base_stage) - 1] if STAGES.index(base_stage) > 0 else "pending"
+        ct = row["content_type"] if "content_type" in keys else "long"
+        stage_list = stages_for(ct)
+        prev = stage_list[stage_list.index(base_stage) - 1] if stage_list.index(base_stage) > 0 else "pending"
         conn.execute(
             "UPDATE stories SET stage = ?, error = NULL, updated_at = ? WHERE id = ?",
             (prev, now, row["id"]),
@@ -342,13 +375,21 @@ def recover_running() -> int:
     return count
 
 
-def get_stories_at_stage(stage: str, limit: int = 1) -> list[Story]:
+def get_stories_at_stage(
+    stage: str, limit: int = 1, content_type: str | None = None,
+) -> list[Story]:
     """Get stories ready for processing at a given stage (input stage for workers)."""
     conn = _get_conn()
-    rows = conn.execute(
-        "SELECT * FROM stories WHERE stage = ? ORDER BY id ASC LIMIT ?",
-        (stage, limit),
-    ).fetchall()
+    if content_type:
+        rows = conn.execute(
+            "SELECT * FROM stories WHERE stage = ? AND content_type = ? ORDER BY id ASC LIMIT ?",
+            (stage, content_type, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM stories WHERE stage = ? ORDER BY id ASC LIMIT ?",
+            (stage, limit),
+        ).fetchall()
     return _rows_to_stories(rows)
 
 
@@ -362,10 +403,11 @@ def mark_running(story_id: int, stage: str) -> None:
     conn.commit()
 
 
-def mark_failed(story_id: int, stage: str, error: str) -> None:
+def mark_failed(story_id: int, stage: str, error: str, content_type: str = "long") -> None:
     """Mark a story as failed."""
     conn = _get_conn()
-    prev = STAGES[STAGES.index(stage) - 1] if STAGES.index(stage) > 0 else "pending"
+    stage_list = stages_for(content_type)
+    prev = stage_list[stage_list.index(stage) - 1] if stage_list.index(stage) > 0 else "pending"
     conn.execute(
         "UPDATE stories SET stage = ?, error = ?, updated_at = ? WHERE id = ?",
         (prev, error, _now(), story_id),

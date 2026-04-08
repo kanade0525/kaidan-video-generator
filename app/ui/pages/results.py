@@ -6,8 +6,8 @@ from app import database as db
 from app.utils.log import get_logger
 
 log = get_logger("kaidan.ui.results")
-from app.models import STAGE_LABELS, STAGES
-from app.pipeline.executor import pipeline
+from app.models import STAGE_LABELS, STAGES, stages_for
+from app.pipeline.executor import pipeline, shorts_pipeline
 from app.utils.paths import (
     audio_dir,
     chunks_path,
@@ -20,7 +20,10 @@ from app.utils.paths import (
 )
 
 
-def results_page(keyword: str = "", story_id: int = 0):
+def results_page(
+    keyword: str = "", story_id: int = 0, content_type: str | None = None,
+    base_path: str = "/results",
+):
     """Results viewer page."""
     ui.label("生成結果").classes("text-2xl font-bold mb-4")
 
@@ -47,6 +50,7 @@ def results_page(keyword: str = "", story_id: int = 0):
         url = build_results_url(
             keyword=search_input.value or "",
             story_id=selected_id,
+            base_path=base_path,
         )
         ui.run_javascript(f'window.history.replaceState(null, "", "{url}")')
 
@@ -66,8 +70,9 @@ def results_page(keyword: str = "", story_id: int = 0):
             ui.label(f"「{story.title}」").classes("text-xl font-bold mb-2")
 
             with ui.row().classes("gap-1 mb-4"):
-                stage_idx = STAGES.index(story.stage) if story.stage in STAGES else 0
-                for i, s in enumerate(STAGES):
+                story_stages = stages_for(story.content_type)
+                stage_idx = story_stages.index(story.stage) if story.stage in story_stages else 0
+                for i, s in enumerate(story_stages):
                     color = "green" if i <= stage_idx else "gray"
                     label = STAGE_LABELS.get(s, s)
                     ui.badge(label, color=color).classes("text-xs")
@@ -83,7 +88,9 @@ def results_page(keyword: str = "", story_id: int = 0):
                 images_tab = ui.tab("画像")
                 video_tab = ui.tab("動画")
                 youtube_tab = ui.tab("YouTube")
-                report_tab = ui.tab("HHS使用報告")
+                report_tab = None
+                if story.content_type != "short":
+                    report_tab = ui.tab("HHS使用報告")
 
             with ui.tab_panels(tabs, value=scrape_tab).classes("w-full"):
                 with ui.tab_panel(scrape_tab):
@@ -104,13 +111,14 @@ def results_page(keyword: str = "", story_id: int = 0):
                 with ui.tab_panel(youtube_tab):
                     _show_youtube_upload_tab(story)
 
-                with ui.tab_panel(report_tab):
-                    _show_usage_report_tab(story)
+                if report_tab:
+                    with ui.tab_panel(report_tab):
+                        _show_usage_report_tab(story)
 
     def update_story_list():
         s = stage_filter.value or None
         kw = search_input.value.strip() if search_input.value else None
-        stories = db.get_stories(stage=s, keyword=kw, limit=200)
+        stories = db.get_stories(stage=s, keyword=kw, limit=200, content_type=content_type)
 
         select_container.clear()
         detail_container.clear()
@@ -162,7 +170,8 @@ def _retry_button(story, target_stage: str, label: str = "再処理"):
 
         def run():
             try:
-                pipeline.run_single(story.id, target_stage, progress_callback=progress_callback)
+                p = shorts_pipeline if story.content_type == "short" else pipeline
+                p.run_single(story.id, target_stage, progress_callback=progress_callback)
             except Exception as e:
                 state["error"] = str(e)
             state["done"] = True
@@ -195,7 +204,7 @@ def _retry_button(story, target_stage: str, label: str = "再処理"):
 
 
 def _show_scrape_result(story):
-    raw_path = raw_content_path(story.title)
+    raw_path = raw_content_path(story.title, story.content_type)
     if raw_path.exists():
         text = raw_path.read_text(encoding="utf-8")
         char_label = ui.label(f"文字数: {len(text)}").classes("text-sm text-gray-500")
@@ -215,14 +224,14 @@ def _show_scrape_result(story):
 
 
 def _show_text_result(story):
-    proc_path = processed_text_path(story.title)
+    proc_path = processed_text_path(story.title, story.content_type)
     if proc_path.exists():
         text = proc_path.read_text(encoding="utf-8")
         char_label = ui.label(f"文字数: {len(text)}").classes("text-sm text-gray-500")
         edited = {"text": text}
         ui.textarea(value=text, on_change=lambda e: edited.update(text=e.value)).classes("w-full").props("rows=10")
 
-        chunk_file = chunks_path(story.title)
+        chunk_file = chunks_path(story.title, story.content_type)
         if chunk_file.exists():
             import json
             chunks = json.loads(chunk_file.read_text(encoding="utf-8"))
@@ -237,7 +246,7 @@ def _show_text_result(story):
             proc_path.write_text(new_text, encoding="utf-8")
             # Re-split into chunks using the proper splitter
             new_chunks = split_into_chunks(new_text)
-            chunk_file = chunks_path(story.title)
+            chunk_file = chunks_path(story.title, story.content_type)
             chunk_file.write_text(_json.dumps(new_chunks, ensure_ascii=False, indent=2))
             log.info("チャンク保存: %d チャンク", len(new_chunks))
             char_label.text = f"文字数: {len(new_text)}"
@@ -251,7 +260,7 @@ def _show_text_result(story):
 
 
 def _show_voice_result(story):
-    narr_path = narration_path(story.title)
+    narr_path = narration_path(story.title, story.content_type)
     if narr_path.exists():
         # Serve audio file with cache-busting timestamp
         ts = int(narr_path.stat().st_mtime)
@@ -260,7 +269,7 @@ def _show_voice_result(story):
         ui.audio(f"{static_path}/{narr_path.name}?t={ts}").classes("w-full")
 
         # Individual chunks
-        a_dir = audio_dir(story.title)
+        a_dir = audio_dir(story.title, story.content_type)
         chunk_files = sorted(a_dir.glob("*.wav"))
         if chunk_files:
             ui.label(f"チャンク音声: {len(chunk_files)}件").classes("text-sm text-gray-500 mt-2")
@@ -273,7 +282,7 @@ def _show_voice_result(story):
 def _show_images_result(story):
     import json as _json
 
-    img_dir = images_dir(story.title)
+    img_dir = images_dir(story.title, story.content_type)
     images = sorted(img_dir.glob("*.png"))
 
     if images:
@@ -281,7 +290,7 @@ def _show_images_result(story):
         app.add_static_files(static_path, str(img_dir))
 
         # Load or create slideshow config
-        config_path = story_dir(story.title) / "slideshow.json"
+        config_path = story_dir(story.title, story.content_type) / "slideshow.json"
         if config_path.exists():
             slide_config = _json.loads(config_path.read_text())
         else:
@@ -349,7 +358,7 @@ def _show_images_result(story):
 
 
 def _show_video_result(story):
-    vid_path = video_path(story.title)
+    vid_path = video_path(story.title, story.content_type)
     if vid_path.exists():
         ts = int(vid_path.stat().st_mtime)
         static_path = f"/video/{story.id}"
@@ -363,7 +372,7 @@ def _show_video_result(story):
 
 def _show_youtube_upload_tab(story):
     """YouTube upload tab."""
-    vid_path = video_path(story.title)
+    vid_path = video_path(story.title, story.content_type)
     if vid_path.exists():
         _show_youtube_upload(story)
     else:
@@ -402,16 +411,25 @@ def _show_youtube_upload(story):
 
     # Upload form
     with ui.card().classes("w-full p-4 mt-2"):
-        title_template = cfg_get("youtube_title_template")
+        is_short = story.content_type == "short"
+        title_template = cfg_get("shorts_youtube_title_template" if is_short else "youtube_title_template")
         category = story.categories[0] if story.categories else "怪談"
-        yt_title = ui.input("タイトル", value=title_template.format(title=story.title, category=category)).classes("w-full")
-        description_template = cfg_get("youtube_description_template")
+        if is_short:
+            yt_title_val = title_template.format(title=story.title)
+        else:
+            yt_title_val = title_template.format(title=story.title, category=category)
+        yt_title = ui.input("タイトル", value=yt_title_val).classes("w-full")
+        description_template = cfg_get("shorts_youtube_description_template" if is_short else "youtube_description_template")
         from app.services.voice_generator import get_speaker_name
         speaker_name = get_speaker_name()
-        yt_desc = ui.textarea(
-            "説明", value=description_template.format(title=story.title, url=story.url, speaker=speaker_name)
-        ).classes("w-full")
-        tags_str = cfg_get("youtube_tags")
+        if is_short:
+            yt_desc_val = description_template.format(
+                title=story.title, url=story.url, author=story.author, speaker=speaker_name,
+            )
+        else:
+            yt_desc_val = description_template.format(title=story.title, url=story.url, speaker=speaker_name)
+        yt_desc = ui.textarea("説明", value=yt_desc_val).classes("w-full")
+        tags_str = cfg_get("shorts_youtube_tags" if is_short else "youtube_tags")
         yt_tags = ui.input("タグ（カンマ区切り）", value=tags_str).classes("w-full")
 
         with ui.row().classes("gap-4"):
@@ -502,7 +520,7 @@ def _show_youtube_upload(story):
                         upload_state["progress"] = cur / total if total > 0 else 0
 
                     result = youtube_uploader.upload_video(
-                        video_path=video_path(story.title),
+                        video_path=video_path(story.title, story.content_type),
                         title=yt_title.value,
                         description=yt_desc.value,
                         tags=tags,

@@ -126,3 +126,46 @@ def split_into_chunks(text: str, max_length: int | None = None) -> list[str]:
         chunks.append(current)
 
     return chunks
+
+
+def split_into_n_chunks(text: str, n: int) -> list[str]:
+    """Split text into exactly *n* chunks at sentence boundaries.
+
+    Used to create original-text (kanji) chunks that map 1:1 to the
+    hiragana chunks used for voice generation.
+    """
+    if n <= 0:
+        return [text]
+
+    # Split into sentences
+    sentences = re.split(r"(?<=[。！？」\n])", text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    if not sentences:
+        return [text] + [""] * (n - 1)
+
+    if len(sentences) <= n:
+        # Fewer sentences than requested chunks — group 1:1 and pad
+        chunks = sentences[:n]
+        while len(chunks) < n:
+            chunks.append("")
+        return chunks
+
+    # Distribute sentences evenly into n groups
+    chunks: list[str] = []
+    per_chunk = len(sentences) / n
+    current = ""
+    threshold = per_chunk
+    for i, sent in enumerate(sentences):
+        current += sent
+        if (i + 1) >= threshold and len(chunks) < n - 1:
+            chunks.append(current)
+            current = ""
+            threshold += per_chunk
+    if current:
+        chunks.append(current)
+
+    # Safety: ensure exactly n
+    while len(chunks) < n:
+        chunks.append("")
+    return chunks[:n]

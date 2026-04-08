@@ -58,10 +58,10 @@ def stories_page(category: str = "", page: int = 0):
         _update_url()
 
         stories = db.get_stories(
-            stage=st, category=cat,
+            stage=st, category=cat, content_type="long",
             limit=page_state["per_page"], offset=offset,
         )
-        total = db.count_stories(stage=st, category=cat)
+        total = db.count_stories(stage=st, category=cat, content_type="long")
         total_pages = max(1, (total + page_state["per_page"] - 1) // page_state["per_page"])
         page_label.text = f"{page_state['current'] + 1} / {total_pages} ({total}件)"
 
@@ -130,7 +130,7 @@ def _add_url(url_input):
     if not url:
         ui.notify("URLを入力してください", color="warning")
         return
-    result = db.add_story(url=url)
+    result = db.add_story(url=url, content_type="long")
     if result:
         ui.notify(f"追加: {result.title or url}", color="positive")
         url_input.value = ""

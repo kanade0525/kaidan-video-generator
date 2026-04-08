@@ -13,44 +13,51 @@ def safe_dirname(title: str, max_len: int = 50) -> str:
     return safe or "untitled"
 
 
-def story_dir(title: str) -> Path:
+def story_dir(title: str, content_type: str = "long") -> Path:
     """Get (and create) the output directory for a story."""
-    d = OUTPUT_BASE / safe_dirname(title)
+    if content_type == "short":
+        d = OUTPUT_BASE / "shorts" / safe_dirname(title)
+    else:
+        d = OUTPUT_BASE / safe_dirname(title)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def raw_content_path(title: str) -> Path:
-    return story_dir(title) / "raw_content.txt"
+def raw_content_path(title: str, content_type: str = "long") -> Path:
+    return story_dir(title, content_type) / "raw_content.txt"
 
 
-def meta_path(title: str) -> Path:
-    return story_dir(title) / "meta.json"
+def meta_path(title: str, content_type: str = "long") -> Path:
+    return story_dir(title, content_type) / "meta.json"
 
 
-def processed_text_path(title: str) -> Path:
-    return story_dir(title) / "processed_text.txt"
+def processed_text_path(title: str, content_type: str = "long") -> Path:
+    return story_dir(title, content_type) / "processed_text.txt"
 
 
-def chunks_path(title: str) -> Path:
-    return story_dir(title) / "chunks.json"
+def chunks_path(title: str, content_type: str = "long") -> Path:
+    return story_dir(title, content_type) / "chunks.json"
 
 
-def audio_dir(title: str) -> Path:
-    d = story_dir(title) / "audio"
+def original_chunks_path(title: str, content_type: str = "long") -> Path:
+    return story_dir(title, content_type) / "original_chunks.json"
+
+
+def audio_dir(title: str, content_type: str = "long") -> Path:
+    d = story_dir(title, content_type) / "audio"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def narration_path(title: str) -> Path:
-    return story_dir(title) / "narration_complete.wav"
+def narration_path(title: str, content_type: str = "long") -> Path:
+    return story_dir(title, content_type) / "narration_complete.wav"
 
 
-def images_dir(title: str) -> Path:
-    d = story_dir(title) / "images"
+def images_dir(title: str, content_type: str = "long") -> Path:
+    d = story_dir(title, content_type) / "images"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def video_path(title: str) -> Path:
-    return story_dir(title) / f"{safe_dirname(title)}.mp4"
+def video_path(title: str, content_type: str = "long") -> Path:
+    return story_dir(title, content_type) / f"{safe_dirname(title)}.mp4"
