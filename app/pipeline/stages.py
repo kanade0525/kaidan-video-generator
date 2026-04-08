@@ -285,9 +285,11 @@ def do_voice_short(story: Story, progress_callback: ProgressCallback = None) -> 
     log.info("[voice:short] %s", story.title)
     ct = story.content_type
     chunks = json.loads(chunks_path(story.title, ct).read_text(encoding="utf-8"))
+    shorts_speed = cfg_get("shorts_speed")
     voice_generator.generate_narration(
         chunks, audio_dir(story.title, ct),
         progress_callback=progress_callback,
+        speed=shorts_speed,
     )
 
     # Duration validation
@@ -328,16 +330,15 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     """Stage: Create final short video (vertical, no OP/ED, with subtitles + credit)."""
     from app.config import get as cfg_get
     from app.utils.ffmpeg import (
-        add_credit_overlay,
-        burn_subtitles,
-        generate_srt,
+        burn_all_overlays,
+        generate_ass,
         get_audio_duration,
     )
 
     log.info("[video:short] %s", story.title)
     ct = story.content_type
     if progress_callback:
-        progress_callback(0, 4)
+        progress_callback(0, 3)
     img_dir = images_dir(story.title, ct)
     sdir = story_dir(story.title, ct)
     a_dir = audio_dir(story.title, ct)
@@ -357,15 +358,16 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     # Generate title narration audio for title card
     title_audio = None
     title_clip_duration = 0.0
+    shorts_speed = cfg_get("shorts_speed")
     if title_card.exists():
         title_audio = sdir / "title_narration.wav"
-        voice_generator.generate_title_audio(story.title, title_audio)
+        voice_generator.generate_title_audio(story.title, title_audio, speed=shorts_speed)
         # Title clip duration = silence_before(1.0) + audio + silence_after(1.0)
         title_clip_duration = 1.0 + get_audio_duration(title_audio) + 1.0
 
     # Step 1: Create base video (no OP/ED, vertical 1080x1920)
     if progress_callback:
-        progress_callback(1, 4)
+        progress_callback(1, 3)
     raw_output = sdir / "raw_short.mp4"
     video_generator.create_video(
         images, narration, raw_output,
@@ -384,39 +386,36 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
 
     # Step 2: Generate and burn subtitles (original text with kanji, not hiragana)
     if progress_callback:
-        progress_callback(2, 4)
+        progress_callback(2, 3)
+    # Step 2: Generate ASS subtitles and burn all overlays in single pass.
     # Prefer original_chunks.json (kanji) for subtitle display text.
-    # Timing comes from narration audio files which match hiragana chunks 1:1.
     orig_chunks_file = original_chunks_path(story.title, ct)
     hiragana_chunks_file = chunks_path(story.title, ct)
-    subtitled_output = sdir / "subtitled_short.mp4"
 
     subtitle_chunks = None
+    hiragana_chunks = None
+    ass_path = None
     if orig_chunks_file.exists():
         subtitle_chunks = json.loads(orig_chunks_file.read_text(encoding="utf-8"))
+        if hiragana_chunks_file.exists():
+            hiragana_chunks = json.loads(hiragana_chunks_file.read_text(encoding="utf-8"))
         log.info("[video:short] 字幕: 原文（漢字）使用")
     elif hiragana_chunks_file.exists():
         subtitle_chunks = json.loads(hiragana_chunks_file.read_text(encoding="utf-8"))
         log.info("[video:short] 字幕: ひらがなテキスト使用（原文チャンクなし）")
 
     if subtitle_chunks:
-        srt_path = sdir / "subtitles.srt"
+        ass_path = sdir / "subtitles.ass"
         subtitle_offset = title_clip_duration + lead
         log.info("[video:short] 字幕オフセット: title=%.2fs + lead=%.2fs = %.2fs",
                  title_clip_duration, lead, subtitle_offset)
-        generate_srt(subtitle_chunks, a_dir, srt_path,
-                     leading_silence=subtitle_offset, max_subtitle_chars=28)
-        log.info("[video:short] 字幕焼き込み中...")
-        burn_subtitles(raw_output, srt_path, subtitled_output,
-                       font_size=46, margin_v=200,
-                       video_width=1080, video_height=1920)
-        raw_output.unlink(missing_ok=True)
-    else:
-        subtitled_output = raw_output
+        generate_ass(subtitle_chunks, a_dir, ass_path,
+                     leading_silence=subtitle_offset, max_subtitle_chars=19,
+                     font_size=54, alignment=5, margin_v=0, margin_lr=40,
+                     video_width=1080, video_height=1920,
+                     timing_chunks=hiragana_chunks)
 
-    # Step 3: Add credit overlay (larger font for 1080x1920)
-    if progress_callback:
-        progress_callback(3, 4)
+    # Step 2: Burn subtitles + title banner + credit overlay in single FFmpeg pass
     meta_file = meta_path(story.title, ct)
     author = story.author
     if meta_file.exists():
@@ -429,11 +428,24 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         f"「{story.title}」",
         f"作者: {author}",
     ]
-    add_credit_overlay(subtitled_output, output, credit_lines, font_size=52)
-    subtitled_output.unlink(missing_ok=True)
+
+    log.info("[video:short] 字幕・バナー・クレジットを一括焼き込み中...")
+    burn_all_overlays(
+        raw_output, output,
+        subtitle_path=ass_path,
+        banner_text="ショート怪談",
+        banner_font_size=64,
+        banner_font_color="red",
+        banner_margin_top=160,
+        banner_start_time=title_clip_duration,
+        credit_lines=credit_lines,
+        credit_font_size=52,
+        credit_margin_bottom=320,
+    )
+    raw_output.unlink(missing_ok=True)
 
     if progress_callback:
-        progress_callback(4, 4)
+        progress_callback(3, 3)
     log.info("[video:short] 動画生成完了: %s", output)
 
 
@@ -456,8 +468,6 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
     if not youtube_uploader.is_authenticated():
         raise RuntimeError("YouTube未認証。設定ページから認証を実行してください。")
 
-    from app.services.voice_generator import get_speaker_name
-
     # Load metadata for author
     meta_file = meta_path(story.title, ct)
     author = story.author
@@ -465,14 +475,47 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
         meta_data = json.loads(meta_file.read_text(encoding="utf-8"))
         author = meta_data.get("author", author)
 
-    title_template = cfg_get("shorts_youtube_title_template")
-    yt_title = title_template.format(title=story.title)
+    from app.services.voice_generator import get_speaker_name
 
-    description_template = cfg_get("shorts_youtube_description_template")
     speaker_name = get_speaker_name()
-    description = description_template.format(
-        title=story.title, url=story.url, author=author, speaker=speaker_name,
+
+    # Try LLM-generated engaging title/description
+    raw_text = ""
+    raw_file = raw_content_path(story.title, ct)
+    if raw_file.exists():
+        raw_text = raw_file.read_text(encoding="utf-8")
+
+    yt_title = ""
+    description = ""
+    if raw_text:
+        try:
+            meta_result = text_processor.generate_shorts_metadata(
+                story.title, raw_text, author,
+            )
+            yt_title = meta_result["title"]
+            description = meta_result["description"]
+        except Exception as e:
+            log.warning("[youtube:short] LLM metadata生成失敗: %s", e)
+
+    # Fallback to template
+    if not yt_title:
+        title_template = cfg_get("shorts_youtube_title_template")
+        yt_title = title_template.format(title=story.title)
+    if not description:
+        description_template = cfg_get("shorts_youtube_description_template")
+        description = description_template.format(
+            title=story.title, url=story.url, author=author, speaker=speaker_name,
+        )
+
+    # Always append source credit to description
+    credit = (
+        f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"引用元: 奇々怪々\n"
+        f"「{story.title}」{story.url}\n"
+        f"作者: {author}\n"
+        f"音声: VOICEVOX:{speaker_name}"
     )
+    description += credit
 
     tags = cfg_get("shorts_youtube_tags")
     category_id = cfg_get("youtube_category_id")

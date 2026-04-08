@@ -28,14 +28,17 @@ class TestShortsConfigDefaults:
     def test_shorts_vhs_enabled(self):
         assert _DEFAULTS["shorts_vhs_enabled"] is True
 
-    def test_shorts_youtube_title_template_has_shorts_tag(self):
-        assert "#Shorts" in _DEFAULTS["shorts_youtube_title_template"]
+    def test_shorts_youtube_title_template_has_title_placeholder(self):
+        assert "{title}" in _DEFAULTS["shorts_youtube_title_template"]
 
-    def test_shorts_youtube_description_has_kikikaikai(self):
-        assert "奇々怪々" in _DEFAULTS["shorts_youtube_description_template"]
+    def test_shorts_youtube_description_has_title(self):
+        assert "{title}" in _DEFAULTS["shorts_youtube_description_template"]
 
-    def test_shorts_youtube_description_has_author_placeholder(self):
-        assert "{author}" in _DEFAULTS["shorts_youtube_description_template"]
+    def test_shorts_youtube_description_has_hashtags(self):
+        assert "#Shorts" in _DEFAULTS["shorts_youtube_description_template"]
+
+    def test_shorts_speed(self):
+        assert _DEFAULTS["shorts_speed"] == 1.15
 
     def test_shorts_youtube_tags(self):
         tags = _DEFAULTS["shorts_youtube_tags"]

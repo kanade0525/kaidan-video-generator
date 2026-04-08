@@ -95,16 +95,18 @@ def text_to_speech(
     return r.content
 
 
-def generate_title_audio(title: str, output_path: Path) -> Path:
+def generate_title_audio(title: str, output_path: Path, speed: float | None = None) -> Path:
     """Generate title narration audio via VOICEVOX."""
     log.info("タイトル読み上げ音声生成中: %s", title)
-    audio_data = text_to_speech(title)
+    audio_data = text_to_speech(title, speed=speed)
     output_path.write_bytes(audio_data)
     log.info("タイトル音声保存: %s", output_path.name)
     return output_path
 
 
-def generate_narration(chunks: list[str], output_dir: Path, progress_callback=None) -> Path:
+def generate_narration(
+    chunks: list[str], output_dir: Path, progress_callback=None, speed: float | None = None,
+) -> Path:
     """Generate narration for all chunks and concatenate."""
     # Clean up stale narration files from previous runs to prevent data corruption
     existing = sorted(output_dir.glob("narration_*.wav"))
@@ -119,7 +121,7 @@ def generate_narration(chunks: list[str], output_dir: Path, progress_callback=No
         log.info("音声生成中 (%d/%d)", i + 1, len(chunks))
         if progress_callback:
             progress_callback(i, len(chunks))
-        audio_data = text_to_speech(chunk)
+        audio_data = text_to_speech(chunk, speed=speed)
         audio_path = output_dir / f"narration_{i:04d}.wav"
         audio_path.write_bytes(audio_data)
         audio_files.append(audio_path)

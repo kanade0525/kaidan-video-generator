@@ -69,7 +69,7 @@ def create_video(
     log.info("前後無音追加中（lead=%.1fs, narr=%.1fs, trail=%.1fs → 計%.1fs）...",
              lead_sil, narr_dur, trail_sil, total_dur)
     lead_ms = int(lead_sil * 1000)
-    trail_ms = trail_sil
+    trail_ms = trail_sil  # apad pad_dur expects seconds (duration type)
     run_ffmpeg([
         "-i", str(normalized),
         "-af", f"adelay={lead_ms}|{lead_ms},apad=pad_dur={trail_ms}",

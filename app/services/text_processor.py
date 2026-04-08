@@ -169,3 +169,61 @@ def split_into_n_chunks(text: str, n: int) -> list[str]:
     while len(chunks) < n:
         chunks.append("")
     return chunks[:n]
+
+
+@with_retry(max_attempts=2, base_delay=3.0)
+def generate_shorts_metadata(title: str, text: str, author: str) -> dict[str, str]:
+    """Generate engaging YouTube Shorts title and description using Gemini.
+
+    Returns {"title": "...", "description": "..."}.
+    Falls back to simple template if LLM fails.
+    """
+    import json as _json
+
+    prompt = (
+        "あなたはYouTube Shortsの怪談チャンネルのコピーライターです。\n"
+        "以下の怪談のタイトルと内容から、YouTube Shortsに最適なタイトルと説明文を生成してください。\n\n"
+        "参考スタイル:\n"
+        "- 👻【怖い話】彼氏に車から置き去りにされた夜、私を助けてくれたのは…\n"
+        "- 😱【怖い話】深夜のマンションで見た「5階の住人」の正体…\n\n"
+        "ルール:\n"
+        "- タイトルは50文字以内\n"
+        "- 冒頭に絵文字を1つ使う（👻💀😱🔥など怖い系）\n"
+        "- 【怖い話】タグを含める\n"
+        "- ストーリーの核心に触れつつ、結末は隠す（…で終わる）\n"
+        "- 説明文は2-3行で簡潔にストーリーのあらすじを書く\n"
+        "- 説明文の最後にハッシュタグを5個程度含める（例: #怪談 #怖い話 #心霊 #ホラー #Shorts）\n"
+        "- #Shorts は必ず含める\n\n"
+        "JSON形式のみで返してください（```不要）:\n"
+        '{"title": "...", "description": "..."}\n\n'
+        f"タイトル: {title}\n"
+        f"作者: {author}\n"
+        f"本文:\n{text[:1500]}"
+    )
+
+    try:
+        client = get_gemini_text()
+        model_name = cfg_get("gemini_model") or "gemini-2.5-flash-lite"
+        response = client.models.generate_content(model=model_name, contents=prompt)
+        result_text = (response.text or "").strip()
+
+        # Strip markdown code blocks if present
+        result_text = re.sub(r"```json\s*", "", result_text)
+        result_text = re.sub(r"```\s*", "", result_text)
+
+        data = _json.loads(result_text)
+        yt_title = data.get("title", "").strip()
+        yt_desc = data.get("description", "").strip()
+
+        if not yt_title or not yt_desc:
+            raise ValueError("Empty title or description from LLM")
+
+        log.info("[metadata] LLM生成タイトル: %s", yt_title)
+        return {"title": yt_title, "description": yt_desc}
+
+    except Exception as e:
+        log.warning("[metadata] LLM生成失敗、テンプレート使用: %s", e)
+        return {
+            "title": f"👻【怖い話】{title}",
+            "description": f"【怖い話】{title}\n\n#怪談 #怖い話 #心霊 #ホラー #Shorts",
+        }

@@ -363,7 +363,40 @@ def _show_video_result(story):
         ts = int(vid_path.stat().st_mtime)
         static_path = f"/video/{story.id}"
         app.add_static_files(static_path, str(vid_path.parent))
-        ui.video(f"{static_path}/{vid_path.name}?t={ts}").classes("w-full max-w-2xl")
+
+        if story.content_type == "short":
+            # iPhone mockup frame for shorts preview
+            with ui.element("div").classes("flex justify-center"):
+                with ui.element("div").style(
+                    "width: 300px; height: 650px; "
+                    "border-radius: 40px; "
+                    "border: 6px solid #1a1a1a; "
+                    "background: #000; "
+                    "padding: 12px 4px; "
+                    "box-shadow: 0 8px 32px rgba(0,0,0,0.3), "
+                    "inset 0 0 0 2px #333; "
+                    "position: relative; "
+                    "overflow: hidden;"
+                ):
+                    # Notch
+                    ui.element("div").style(
+                        "width: 120px; height: 24px; "
+                        "background: #1a1a1a; "
+                        "border-radius: 0 0 16px 16px; "
+                        "position: absolute; "
+                        "top: 0; left: 50%; "
+                        "transform: translateX(-50%); "
+                        "z-index: 10;"
+                    )
+                    # Video inside phone — contain keeps full frame visible
+                    # with black bars top/bottom (9:16 video in 9:19.5 phone)
+                    ui.video(f"{static_path}/{vid_path.name}?t={ts}").props("controls").style(
+                        "width: 100%; height: 100%; "
+                        "object-fit: contain; "
+                        "border-radius: 32px;"
+                    )
+        else:
+            ui.video(f"{static_path}/{vid_path.name}?t={ts}").props("controls").classes("w-full max-w-2xl")
     else:
         ui.label("未生成").classes("text-gray-500")
 

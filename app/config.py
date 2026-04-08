@@ -102,22 +102,13 @@ _DEFAULTS = {
     "shorts_max_char_count": 880,
     "shorts_target_char_count": 440,
     "shorts_vhs_enabled": True,
+    "shorts_speed": 1.15,
     "shorts_scrape_delay": 2.0,
     "shorts_bgm_volume": 0.1,
-    "shorts_youtube_title_template": "【怪談】{title} #Shorts",
+    "shorts_youtube_title_template": "👻【怖い話】{title}",
     "shorts_youtube_description_template": (
-        "【怪談】{title}\n\n"
-        "百鬼朗読へようこそ。\n"
-        "日本各地に伝わる怪談・不思議な話を朗読でお届けします。\n"
-        "チャンネル登録・高評価よろしくお願いします。\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "引用元: 怖い話投稿サイト 奇々怪々\n"
-        "「{title}」{url}\n"
-        "作者: {author}\n"
-        "https://kikikaikai.kusuguru.co.jp/\n\n"
-        "音声: VOICEVOX:{speaker}\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "#怪談 #ホラー #朗読 #怖い話 #Shorts #百鬼朗読"
+        "【怖い話】{title}\n\n"
+        "#怪談 #怖い話 #心霊 #ホラー #Shorts"
     ),
     "shorts_youtube_tags": "怪談,ホラー,朗読,怖い話,Shorts",
 }

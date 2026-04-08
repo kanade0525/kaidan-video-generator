@@ -79,6 +79,7 @@ def init_db() -> None:
         except sqlite3.OperationalError:
             pass  # Column already exists
     conn.execute("CREATE INDEX IF NOT EXISTS idx_content_type ON stories(content_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_content_type_stage ON stories(content_type, stage)")
     conn.commit()
 
 

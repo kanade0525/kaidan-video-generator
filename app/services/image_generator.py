@@ -386,26 +386,18 @@ def create_title_card(
 
     draw = ImageDraw.Draw(bg)
 
-    # Dark vignette overlay
-    import math
-    cx, cy = width // 2, height // 2
-    max_dist = math.sqrt(cx ** 2 + cy ** 2)
-    vignette = Image.new("RGB", (width, height), (0, 0, 0))
-    vdraw = ImageDraw.Draw(vignette)
-    for y_pos in range(0, height, 4):
-        for x_pos in range(0, width, 4):
-            dist = math.sqrt((x_pos - cx) ** 2 + (y_pos - cy) ** 2)
-            ratio = dist / max_dist
-            # Stronger at edges
-            alpha = int(min(255, ratio * ratio * 300))
-            vdraw.rectangle(
-                [x_pos, y_pos, x_pos + 3, y_pos + 3],
-                fill=(alpha, alpha, alpha),
-            )
-    # Blend vignette (darken edges)
-    from PIL import ImageChops
-    vignette_inv = Image.eval(vignette, lambda v: 255 - v)
-    bg = ImageChops.multiply(bg, vignette_inv.point(lambda v: v / 255.0 * 255))
+    # Dark vignette overlay (numpy for performance — ~1000x faster than PIL loop)
+    import numpy as np
+    cx, cy = width / 2, height / 2
+    max_dist = np.sqrt(cx ** 2 + cy ** 2)
+    y_coords, x_coords = np.mgrid[0:height, 0:width]
+    dist = np.sqrt((x_coords - cx) ** 2 + (y_coords - cy) ** 2)
+    ratio = dist / max_dist
+    # Vignette strength: darken edges quadratically
+    darken = np.clip(1.0 - ratio * ratio * (300 / 255), 0, 1).astype(np.float32)
+    bg_arr = np.array(bg, dtype=np.float32)
+    bg_arr *= darken[:, :, np.newaxis]
+    bg = Image.fromarray(np.clip(bg_arr, 0, 255).astype(np.uint8))
 
     # Top gradient overlay (darkens top 30%)
     for y_pos in range(int(height * 0.3)):
