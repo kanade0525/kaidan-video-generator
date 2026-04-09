@@ -772,10 +772,77 @@ def burn_subtitles(
     return output_path
 
 
+def generate_scroll_image(
+    text: str,
+    output_path: Path,
+    max_chars: int = 19,
+    font_size: int = 48,
+    line_spacing: int = 48,
+    margin_x: int = 60,
+    image_width: int = 1080,
+    leading_pad: int = 0,
+) -> Path:
+    """Render subtitle text as a tall transparent PNG for scroll overlay.
+
+    The image is image_width wide, and as tall as needed to fit all lines.
+    Text is white with black outline on transparent background.
+
+    leading_pad: transparent padding at the top of the image (pixels).
+    Set to the visible scroll area height so that the first line enters
+    from the bottom and scrolls up naturally, rather than appearing all at once.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    font_path = _find_ffmpeg_font()
+    try:
+        font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
+
+    # Split text into lines
+    segments = _split_subtitle_text(text, max_chars=max_chars)
+
+    # Measure total height
+    line_height = font_size + line_spacing
+    text_height = line_height * len(segments) + line_spacing * 2
+    total_height = leading_pad + text_height
+
+    # Create transparent image
+    img = Image.new("RGBA", (image_width, total_height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # Draw each line centered with outline, offset by leading_pad
+    outline_width = 3
+    y = leading_pad + line_spacing
+    for seg in segments:
+        bbox = draw.textbbox((0, 0), seg, font=font)
+        text_w = bbox[2] - bbox[0]
+        x = (image_width - text_w) // 2
+
+        # Black outline
+        for dx in range(-outline_width, outline_width + 1):
+            for dy in range(-outline_width, outline_width + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                draw.text((x + dx, y + dy), seg, font=font, fill=(0, 0, 0, 255))
+        # White text
+        draw.text((x, y), seg, font=font, fill=(255, 255, 255, 255))
+        y += line_height
+
+    img.save(str(output_path), "PNG")
+    log.info("スクロール字幕画像生成: %dpx x %dpx (%d行)", image_width, total_height, len(segments))
+    return output_path
+
+
 def burn_all_overlays(
     input_path: Path,
     output_path: Path,
     subtitle_path: Path | None = None,
+    scroll_image_path: Path | None = None,
+    scroll_start_time: float = 0.0,
+    scroll_duration: float = 0.0,
+    scroll_top: int = 240,
+    scroll_bottom: int = 1600,
     banner_text: str | None = None,
     banner_font_size: int = 64,
     banner_font_color: str = "red",
@@ -785,17 +852,64 @@ def burn_all_overlays(
     credit_font_size: int = 52,
     credit_margin_bottom: int = 320,
 ) -> Path:
-    """Burn subtitles, title banner, and credit overlay in a single FFmpeg pass.
+    """Burn overlays in a single FFmpeg pass.
 
-    This replaces the previous 3-pass approach (burn_subtitles + add_title_banner
-    + add_credit_overlay) with a single re-encode, cutting encoding time by ~2/3.
+    Supports two subtitle modes:
+    - subtitle_path: ASS/SRT file burned with ass/subtitles filter
+    - scroll_image_path: transparent PNG scrolled vertically (endroll style)
+
+    scroll_image_path takes precedence if both are provided.
     """
     font_path = _find_ffmpeg_font()
 
-    filters: list[str] = []
+    # Track extra inputs and filter complexity
+    extra_inputs: list[str] = []
+    filter_parts: list[str] = []
+    current_stream = "[0:v]"
 
-    # 1. Subtitle filter (ASS or SRT)
-    if subtitle_path and subtitle_path.exists():
+    # 1. Scrolling subtitle image overlay (within safe area)
+    if scroll_image_path and scroll_image_path.exists() and scroll_duration > 0:
+        # Loop the PNG as video with fps so that 't' advances in crop filter.
+        extra_inputs.extend([
+            "-loop", "1", "-framerate", "30", "-i", str(scroll_image_path),
+        ])
+        input_idx = 1  # second input
+        visible_h = scroll_bottom - scroll_top  # safe area height
+
+        # Strategy:
+        # 1. Crop a visible_h window from the tall scroll image, animating
+        #    the crop y to scroll through the image over time.
+        # 2. Overlay the cropped window at fixed y=scroll_top.
+        #
+        # crop y: at t=start → 0 (top of image), at t=end → (img_h - visible_h)
+        # progress = (t - start) / duration
+        scroll_end = scroll_start_time + scroll_duration
+        crop_filter = (
+            f"[{input_idx}:v]"
+            f"crop="
+            f"w=iw"
+            f":h={visible_h}"
+            f":x=0"
+            f":y='max(0,min(ih-{visible_h},(ih-{visible_h})*(t-{scroll_start_time:.2f})/{scroll_duration:.2f}))'"
+            f"[scrollcrop]"
+        )
+        filter_parts.append(crop_filter)
+
+        overlay_filter = (
+            f"{current_stream}[scrollcrop]"
+            f"overlay="
+            f"x=(W-w)/2"
+            f":y={scroll_top}"
+            f":enable='between(t,{scroll_start_time:.2f},{scroll_end:.2f})'"
+            f":shortest=1"
+            f":format=auto"
+            f"[scrolled]"
+        )
+        filter_parts.append(overlay_filter)
+        current_stream = "[scrolled]"
+
+    elif subtitle_path and subtitle_path.exists():
+        # ASS/SRT subtitle filter (non-scroll fallback)
         sub_escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
         fonts_dir = ""
         if font_path:
@@ -811,14 +925,19 @@ def burn_all_overlays(
             if fonts_dir:
                 sub_filter = f"subtitles='{sub_escaped}':fontsdir='{fonts_dir}'"
 
-        filters.append(sub_filter)
+        filter_parts.append(f"{current_stream}{sub_filter}[subbed]")
+        current_stream = "[subbed]"
+
+    # Drawtext filters always run via -vf (not filter_complex),
+    # so standard single-quote escaping works.
 
     # 2. Title banner (drawtext at top)
+    drawtext_filters: list[str] = []
     if banner_text:
         escaped = banner_text.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
         font_opt = f":fontfile='{font_path}'" if font_path else ""
         enable = f":enable='gte(t,{banner_start_time:.2f})'" if banner_start_time > 0 else ""
-        filters.append(
+        drawtext_filters.append(
             f"drawtext=text='{escaped}'"
             f":fontsize={banner_font_size}"
             f":fontcolor={banner_font_color}"
@@ -837,7 +956,7 @@ def burn_all_overlays(
             escaped = line.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
             y_offset = credit_margin_bottom + i * (credit_font_size + 16)
             font_opt = f":fontfile='{font_path}'" if font_path else ""
-            filters.append(
+            drawtext_filters.append(
                 f"drawtext=text='{escaped}'"
                 f":fontsize={credit_font_size}"
                 f":fontcolor=white"
@@ -848,21 +967,67 @@ def burn_all_overlays(
                 f"{credit_enable}"
             )
 
-    if not filters:
-        # Nothing to do — just copy
+    if not filter_parts and not drawtext_filters:
         import shutil
         shutil.copy2(input_path, output_path)
         return output_path
 
-    vf = ",".join(filters)
-    run_ffmpeg([
-        "-i", str(input_path),
-        "-vf", vf,
-        "-c:v", "libx264",
-        "-c:a", "copy",
-        "-movflags", "+faststart",
-        str(output_path),
-    ])
+    # Strategy: if we have both overlay (filter_complex) and drawtext filters,
+    # run them in two passes. Mixing drawtext with Japanese text inside
+    # filter_complex causes escaping issues with 「」 and other characters.
+    if filter_parts and drawtext_filters:
+        # Pass 1: overlay (filter_complex)
+        temp_overlay = output_path.parent / f"_overlay_temp_{output_path.name}"
+        last_tag = filter_parts[-1].rsplit("[", 1)[-1].rstrip("]")
+        vf = ";".join(filter_parts)
+        cmd1 = ["-i", str(input_path)]
+        cmd1.extend(extra_inputs)
+        cmd1.extend([
+            "-filter_complex", vf,
+            "-map", f"[{last_tag}]", "-map", "0:a?",
+            "-c:v", "libx264", "-c:a", "copy",
+            "-movflags", "+faststart",
+            str(temp_overlay),
+        ])
+        run_ffmpeg(cmd1)
+
+        # Pass 2: drawtext (simple -vf, no escaping issues)
+        dt_chain = ",".join(drawtext_filters)
+        run_ffmpeg([
+            "-i", str(temp_overlay),
+            "-vf", dt_chain,
+            "-c:v", "libx264", "-c:a", "copy",
+            "-movflags", "+faststart",
+            str(output_path),
+        ])
+        temp_overlay.unlink(missing_ok=True)
+
+    elif filter_parts:
+        # Only overlay
+        last_tag = filter_parts[-1].rsplit("[", 1)[-1].rstrip("]")
+        vf = ";".join(filter_parts)
+        cmd = ["-i", str(input_path)]
+        cmd.extend(extra_inputs)
+        cmd.extend([
+            "-filter_complex", vf,
+            "-map", f"[{last_tag}]", "-map", "0:a?",
+            "-c:v", "libx264", "-c:a", "copy",
+            "-movflags", "+faststart",
+            str(output_path),
+        ])
+        run_ffmpeg(cmd)
+
+    else:
+        # Only drawtext
+        vf = ",".join(drawtext_filters)
+        run_ffmpeg([
+            "-i", str(input_path),
+            "-vf", vf,
+            "-c:v", "libx264", "-c:a", "copy",
+            "-movflags", "+faststart",
+            str(output_path),
+        ])
+
     return output_path
 
 

@@ -331,7 +331,7 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     from app.config import get as cfg_get
     from app.utils.ffmpeg import (
         burn_all_overlays,
-        generate_ass,
+        generate_scroll_image,
         get_audio_duration,
     )
 
@@ -384,38 +384,43 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         target_height=1920,
     )
 
-    # Step 2: Generate and burn subtitles (original text with kanji, not hiragana)
+    # Step 2: Generate scroll subtitle image and burn all overlays
     if progress_callback:
         progress_callback(2, 3)
-    # Step 2: Generate ASS subtitles and burn all overlays in single pass.
-    # Prefer original_chunks.json (kanji) for subtitle display text.
+
     orig_chunks_file = original_chunks_path(story.title, ct)
     hiragana_chunks_file = chunks_path(story.title, ct)
 
-    subtitle_chunks = None
-    hiragana_chunks = None
-    ass_path = None
+    subtitle_text = ""
     if orig_chunks_file.exists():
         subtitle_chunks = json.loads(orig_chunks_file.read_text(encoding="utf-8"))
-        if hiragana_chunks_file.exists():
-            hiragana_chunks = json.loads(hiragana_chunks_file.read_text(encoding="utf-8"))
+        subtitle_text = "".join(subtitle_chunks)
         log.info("[video:short] 字幕: 原文（漢字）使用")
     elif hiragana_chunks_file.exists():
         subtitle_chunks = json.loads(hiragana_chunks_file.read_text(encoding="utf-8"))
+        subtitle_text = "".join(subtitle_chunks)
         log.info("[video:short] 字幕: ひらがなテキスト使用（原文チャンクなし）")
 
-    if subtitle_chunks:
-        ass_path = sdir / "subtitles.ass"
-        subtitle_offset = title_clip_duration + lead
-        log.info("[video:short] 字幕オフセット: title=%.2fs + lead=%.2fs = %.2fs",
-                 title_clip_duration, lead, subtitle_offset)
-        generate_ass(subtitle_chunks, a_dir, ass_path,
-                     leading_silence=subtitle_offset, max_subtitle_chars=19,
-                     font_size=54, alignment=5, margin_v=0, margin_lr=40,
-                     video_width=1080, video_height=1920,
-                     timing_chunks=hiragana_chunks)
+    # Generate scroll subtitle image
+    scroll_img = None
+    narration_duration = get_audio_duration(narration)
+    scroll_start = title_clip_duration + lead
+    scroll_dur = narration_duration  # scroll exactly matches narration length
 
-    # Step 2: Burn subtitles + title banner + credit overlay in single FFmpeg pass
+    if subtitle_text:
+        scroll_img = sdir / "scroll_subtitle.png"
+        # leading_pad: start with 2 lines visible, rest scrolls in.
+        # visible area = 1180px, 2 lines = 2*(48+48) = 192px
+        scroll_visible_h = 1440 - 260  # 1180
+        generate_scroll_image(
+            subtitle_text, scroll_img,
+            max_chars=19, font_size=48, line_spacing=48,
+            margin_x=60, image_width=1080,
+            leading_pad=scroll_visible_h - 192,
+        )
+        log.info("[video:short] スクロール字幕画像生成完了")
+
+    # Load metadata for credit overlay
     meta_file = meta_path(story.title, ct)
     author = story.author
     if meta_file.exists():
@@ -430,9 +435,16 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     ]
 
     log.info("[video:short] 字幕・バナー・クレジットを一括焼き込み中...")
+    # Safe scroll area:
+    # Top: 160 (margin) + 64 (banner) + 20 (padding) = 244 → round to 260
+    # Bottom: credit top line = 1920 - 320 - 2*(52+16) = 1464, minus 20 padding = 1440
     burn_all_overlays(
         raw_output, output,
-        subtitle_path=ass_path,
+        scroll_image_path=scroll_img,
+        scroll_start_time=scroll_start,
+        scroll_duration=scroll_dur,
+        scroll_top=260,
+        scroll_bottom=1440,
         banner_text="ショート怪談",
         banner_font_size=64,
         banner_font_color="red",
