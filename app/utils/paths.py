@@ -61,3 +61,7 @@ def images_dir(title: str, content_type: str = "long") -> Path:
 
 def video_path(title: str, content_type: str = "long") -> Path:
     return story_dir(title, content_type) / f"{safe_dirname(title)}.mp4"
+
+
+def timestamps_path(title: str, content_type: str = "long") -> Path:
+    return story_dir(title, content_type) / "timestamps.json"

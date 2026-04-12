@@ -18,6 +18,10 @@ TOKEN_PATH = os.environ.get("YOUTUBE_TOKEN_PATH", "data/youtube_token.json")
 
 _youtube_service = None
 
+# In-memory store of OAuth flow state → code_verifier for PKCE.
+# Entries are removed after exchange.
+_oauth_pending: dict[str, str] = {}
+
 
 def is_configured() -> bool:
     """Check if YouTube credentials are set up."""
@@ -37,28 +41,52 @@ def is_authenticated() -> bool:
         return False
 
 
-def authenticate() -> bool:
-    """Run OAuth flow. Returns True if successful.
-
-    This opens a browser window for the user to authorize.
-    Must be run where a browser is available (not inside Docker).
-    """
+def _build_flow(redirect_uri: str):
+    """Build an OAuth Flow with the given redirect_uri."""
     if not is_configured():
         raise RuntimeError(
             f"client_secret.json が見つかりません: {CLIENT_SECRET_PATH}"
         )
+    from google_auth_oauthlib.flow import Flow
 
-    from google_auth_oauthlib.flow import InstalledAppFlow
+    return Flow.from_client_secrets_file(
+        CLIENT_SECRET_PATH, scopes=SCOPES, redirect_uri=redirect_uri,
+    )
 
-    flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_PATH, SCOPES)
-    credentials = flow.run_local_server(port=0, open_browser=False)
+
+def get_auth_url(redirect_uri: str) -> str:
+    """Build the Google OAuth consent URL for the given redirect_uri.
+
+    Stores the PKCE code_verifier keyed by state so the callback can
+    rebuild the Flow with the same verifier.
+    """
+    flow = _build_flow(redirect_uri)
+    auth_url, state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",  # Always return a fresh refresh_token
+    )
+    # Save code_verifier so exchange_code can rehydrate the flow
+    _oauth_pending[state] = flow.code_verifier
+    return auth_url
+
+
+def exchange_code(code: str, redirect_uri: str, state: str = "") -> None:
+    """Exchange an authorization code for tokens and save them."""
+    flow = _build_flow(redirect_uri)
+    # Restore the PKCE verifier saved during get_auth_url
+    verifier = _oauth_pending.pop(state, None)
+    if verifier:
+        flow.code_verifier = verifier
+    flow.fetch_token(code=code)
+    credentials = flow.credentials
 
     Path(TOKEN_PATH).parent.mkdir(parents=True, exist_ok=True)
     with open(TOKEN_PATH, "w") as f:
         f.write(credentials.to_json())
 
+    reset_service()
     log.info("YouTube認証成功、トークンを保存しました")
-    return True
 
 
 def _get_credentials():
@@ -138,6 +166,31 @@ def get_next_publish_time(
 
 
 @with_retry(max_attempts=3, base_delay=30.0)
+def set_thumbnail(video_id: str, thumbnail_path: str | Path) -> None:
+    """Set a custom thumbnail for a YouTube video.
+
+    Requires channel phone verification. Silently logs warning on failure.
+    """
+    from googleapiclient.http import MediaFileUpload
+
+    thumbnail_path = Path(thumbnail_path)
+    if not thumbnail_path.exists():
+        log.warning("サムネイル画像が見つかりません: %s", thumbnail_path)
+        return
+
+    service = _get_service()
+    media = MediaFileUpload(str(thumbnail_path), mimetype="image/png")
+
+    try:
+        service.thumbnails().set(
+            videoId=video_id,
+            media_body=media,
+        ).execute()
+        log.info("サムネイル設定完了: %s", video_id)
+    except Exception as e:
+        log.warning("サムネイル設定失敗（電話番号認証が必要な場合があります）: %s", e)
+
+
 def upload_video(
     video_path: str | Path,
     title: str,
@@ -146,6 +199,7 @@ def upload_video(
     category_id: str = "24",
     privacy_status: str = "private",
     publish_at: str | None = None,
+    thumbnail_path: str | Path | None = None,
     progress_callback=None,
 ) -> dict:
     """Upload a video to YouTube.
@@ -214,6 +268,11 @@ def upload_video(
     }
 
     log.info("YouTubeアップロード完了: %s", result["url"])
+
+    # Set custom thumbnail if provided
+    if thumbnail_path:
+        set_thumbnail(video_id, thumbnail_path)
+
     return result
 
 

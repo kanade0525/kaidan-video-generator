@@ -379,33 +379,44 @@ def recover_running() -> int:
 def get_stories_at_stage(
     stage: str, limit: int = 1, content_type: str | None = None,
 ) -> list[Story]:
-    """Get stories ready for processing at a given stage (input stage for workers)."""
+    """Get stories ready for processing at a given stage (input stage for workers).
+
+    Stories with an error set are skipped to prevent infinite retry loops.
+    Users must clear the error (e.g., via UI retry button) to re-queue.
+    """
     conn = _get_conn()
     if content_type:
         rows = conn.execute(
-            "SELECT * FROM stories WHERE stage = ? AND content_type = ? ORDER BY id ASC LIMIT ?",
+            "SELECT * FROM stories WHERE stage = ? AND content_type = ? "
+            "AND (error IS NULL OR error = '') ORDER BY id ASC LIMIT ?",
             (stage, content_type, limit),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM stories WHERE stage = ? ORDER BY id ASC LIMIT ?",
+            "SELECT * FROM stories WHERE stage = ? "
+            "AND (error IS NULL OR error = '') ORDER BY id ASC LIMIT ?",
             (stage, limit),
         ).fetchall()
     return _rows_to_stories(rows)
 
 
 def mark_running(story_id: int, stage: str) -> None:
-    """Mark a story as running for a given stage."""
+    """Mark a story as running for a given stage. Clears any previous error."""
     conn = _get_conn()
     conn.execute(
-        "UPDATE stories SET stage = ?, updated_at = ? WHERE id = ?",
+        "UPDATE stories SET stage = ?, error = NULL, updated_at = ? WHERE id = ?",
         (f"{stage}:running", _now(), story_id),
     )
     conn.commit()
 
 
 def mark_failed(story_id: int, stage: str, error: str, content_type: str = "long") -> None:
-    """Mark a story as failed."""
+    """Mark a story as failed without resetting stage.
+
+    The story keeps its current stage but gets an error flag.
+    get_stories_at_stage() skips stories with errors, preventing
+    infinite retry loops. Users can clear the error via UI to retry.
+    """
     conn = _get_conn()
     stage_list = stages_for(content_type)
     prev = stage_list[stage_list.index(stage) - 1] if stage_list.index(stage) > 0 else "pending"

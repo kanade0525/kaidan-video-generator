@@ -16,6 +16,7 @@ from app.utils.paths import (
     processed_text_path,
     raw_content_path,
     story_dir,
+    timestamps_path,
     video_path,
 )
 
@@ -455,12 +456,27 @@ def _show_youtube_upload(story):
         description_template = cfg_get("shorts_youtube_description_template" if is_short else "youtube_description_template")
         from app.services.voice_generator import get_speaker_name
         speaker_name = get_speaker_name()
+        playlist_url = cfg_get("youtube_playlist_url") or ""
         if is_short:
             yt_desc_val = description_template.format(
-                title=story.title, url=story.url, author=story.author, speaker=speaker_name,
+                title=story.title, url=story.url, author=story.author,
+                speaker=speaker_name, playlist_url=playlist_url,
             )
         else:
-            yt_desc_val = description_template.format(title=story.title, url=story.url, speaker=speaker_name)
+            yt_desc_val = description_template.format(
+                title=story.title, url=story.url, speaker=speaker_name,
+                playlist_url=playlist_url,
+            )
+
+        # Prepend timestamps if available
+        ts_file = timestamps_path(story.title, story.content_type)
+        if ts_file.exists():
+            import json as _json
+            from app.pipeline.stages import _format_timestamp
+            parts = _json.loads(ts_file.read_text(encoding="utf-8"))
+            ts_lines = [f"{_format_timestamp(p['start'])} {p['label']}" for p in parts]
+            yt_desc_val = "\n".join(ts_lines) + "\n\n" + yt_desc_val
+
         yt_desc = ui.textarea("説明", value=yt_desc_val).classes("w-full")
         tags_str = cfg_get("shorts_youtube_tags" if is_short else "youtube_tags")
         yt_tags = ui.input("タグ（カンマ区切り）", value=tags_str).classes("w-full")
@@ -552,6 +568,8 @@ def _show_youtube_upload(story):
                     def on_progress(cur, total):
                         upload_state["progress"] = cur / total if total > 0 else 0
 
+                    # Use title card as thumbnail
+                    thumb = images_dir(story.title, story.content_type) / "000_title_card.png"
                     result = youtube_uploader.upload_video(
                         video_path=video_path(story.title, story.content_type),
                         title=yt_title.value,
@@ -560,6 +578,7 @@ def _show_youtube_upload(story):
                         category_id=yt_category.value,
                         privacy_status=yt_privacy.value,
                         publish_at=publish_at,
+                        thumbnail_path=thumb if thumb.exists() else None,
                         progress_callback=on_progress,
                     )
                     db.set_youtube_video_id(story.id, result["video_id"])
@@ -595,6 +614,25 @@ def _show_youtube_upload(story):
         btn = ui.button(
             "承認してYouTubeにアップロード", on_click=do_upload, color="red"
         ).props("size=sm").classes("mt-2")
+
+    # Pinned comment section
+    comment_template = cfg_get("youtube_pinned_comment_template")
+    if comment_template:
+        playlist_url = cfg_get("youtube_playlist_url") or ""
+        comment_text = comment_template.format(
+            title=story.title, playlist_url=playlist_url,
+        )
+        ui.separator().classes("my-4")
+        ui.label("固定コメント用テキスト").classes("text-lg font-bold")
+        comment_area = ui.textarea(value=comment_text).classes("w-full").props("rows=6")
+
+        def copy_comment():
+            ui.run_javascript(
+                f'navigator.clipboard.writeText({comment_area.value!r})'
+            )
+            ui.notify("コピーしました", color="positive")
+
+        ui.button("コメントをコピー", on_click=copy_comment, icon="content_copy").props("size=sm outline")
 
 
 def _show_usage_report_tab(story):

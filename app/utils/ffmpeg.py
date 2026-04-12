@@ -781,7 +781,8 @@ def generate_scroll_image(
     margin_x: int = 60,
     image_width: int = 1080,
     leading_pad: int = 0,
-) -> Path:
+    pre_split_segments: list[str] | None = None,
+) -> tuple[Path, int]:
     """Render subtitle text as a tall transparent PNG for scroll overlay.
 
     The image is image_width wide, and as tall as needed to fit all lines.
@@ -790,6 +791,8 @@ def generate_scroll_image(
     leading_pad: transparent padding at the top of the image (pixels).
     Set to the visible scroll area height so that the first line enters
     from the bottom and scrolls up naturally, rather than appearing all at once.
+
+    Returns (output_path, total_image_height).
     """
     from PIL import Image, ImageDraw, ImageFont
 
@@ -799,8 +802,8 @@ def generate_scroll_image(
     except Exception:
         font = ImageFont.load_default()
 
-    # Split text into lines
-    segments = _split_subtitle_text(text, max_chars=max_chars)
+    # Use pre-split segments if provided, otherwise split text
+    segments = pre_split_segments if pre_split_segments else _split_subtitle_text(text, max_chars=max_chars)
 
     # Measure total height
     line_height = font_size + line_spacing
@@ -831,18 +834,21 @@ def generate_scroll_image(
 
     img.save(str(output_path), "PNG")
     log.info("スクロール字幕画像生成: %dpx x %dpx (%d行)", image_width, total_height, len(segments))
-    return output_path
+    return output_path, total_height
 
 
 def burn_all_overlays(
     input_path: Path,
     output_path: Path,
     subtitle_path: Path | None = None,
-    scroll_image_path: Path | None = None,
+    scroll_textfile: Path | None = None,
     scroll_start_time: float = 0.0,
     scroll_duration: float = 0.0,
-    scroll_top: int = 240,
-    scroll_bottom: int = 1600,
+    scroll_top: int = 260,
+    scroll_bottom: int = 1440,
+    scroll_font_size: int = 48,
+    scroll_line_spacing: int = 48,
+    scroll_margin_right: int = 200,
     banner_text: str | None = None,
     banner_font_size: int = 64,
     banner_font_color: str = "red",
@@ -856,56 +862,59 @@ def burn_all_overlays(
 
     Supports two subtitle modes:
     - subtitle_path: ASS/SRT file burned with ass/subtitles filter
-    - scroll_image_path: transparent PNG scrolled vertically (endroll style)
+    - scroll_textfile: plain text file scrolled via drawtext y animation
 
-    scroll_image_path takes precedence if both are provided.
+    scroll_textfile takes precedence if both are provided.
     """
     font_path = _find_ffmpeg_font()
 
-    # Track extra inputs and filter complexity
-    extra_inputs: list[str] = []
-    filter_parts: list[str] = []
+    # Track filter components
+    filter_parts: list[str] = []  # for filter_complex (ASS/overlay)
+    drawtext_filters: list[str] = []  # for -vf (drawtext chain)
     current_stream = "[0:v]"
+    extra_inputs: list[str] = []
 
-    # 1. Scrolling subtitle image overlay (within safe area)
-    if scroll_image_path and scroll_image_path.exists() and scroll_duration > 0:
-        # Loop the PNG as video with fps so that 't' advances in crop filter.
-        extra_inputs.extend([
-            "-loop", "1", "-framerate", "30", "-i", str(scroll_image_path),
-        ])
-        input_idx = 1  # second input
-        visible_h = scroll_bottom - scroll_top  # safe area height
-
-        # Strategy:
-        # 1. Crop a visible_h window from the tall scroll image, animating
-        #    the crop y to scroll through the image over time.
-        # 2. Overlay the cropped window at fixed y=scroll_top.
-        #
-        # crop y: at t=start → 0 (top of image), at t=end → (img_h - visible_h)
-        # progress = (t - start) / duration
+    # 1. Scrolling subtitle via Pillow image + FFmpeg overlay.
+    #    drawtext cannot render newlines correctly (shows · instead),
+    #    so we pre-render the entire subtitle as a transparent PNG and
+    #    overlay it with animated y position.
+    if scroll_textfile and scroll_textfile.exists() and scroll_duration > 0:
         scroll_end = scroll_start_time + scroll_duration
-        crop_filter = (
-            f"[{input_idx}:v]"
-            f"crop="
-            f"w=iw"
-            f":h={visible_h}"
-            f":x=0"
-            f":y='max(0,min(ih-{visible_h},(ih-{visible_h})*(t-{scroll_start_time:.2f})/{scroll_duration:.2f}))'"
-            f"[scrollcrop]"
-        )
-        filter_parts.append(crop_filter)
+        visible_h = scroll_bottom - scroll_top
 
-        overlay_filter = (
-            f"{current_stream}[scrollcrop]"
-            f"overlay="
-            f"x=(W-w)/2"
-            f":y={scroll_top}"
+        text_content = scroll_textfile.read_text(encoding="utf-8")
+        segments = [s for s in text_content.split("\n") if s.strip()]
+        line_h = scroll_font_size + scroll_line_spacing
+
+        # Generate scroll image with Pillow (narrower to avoid right-side buttons)
+        scroll_img_width = 1080 - scroll_margin_right
+        scroll_img_path = scroll_textfile.parent / "scroll_subtitle.png"
+        _, img_h = generate_scroll_image(
+            text="",
+            output_path=scroll_img_path,
+            font_size=scroll_font_size,
+            line_spacing=scroll_line_spacing,
+            image_width=scroll_img_width,
+            leading_pad=0,
+            pre_split_segments=segments,
+        )
+
+        # Add scroll image as extra FFmpeg input
+        extra_inputs.extend(["-i", str(scroll_img_path)])
+
+        # Start position: 2 lines already visible at scroll_top
+        start_y = scroll_top + visible_h - 2 * line_h
+        # Stop when the last line reaches the bottom of the visible area
+        end_y = scroll_bottom - img_h
+
+        # Overlay with animated y position
+        filter_parts.append(
+            f"{current_stream}[1:v]"
+            f"overlay=x=0"
+            f":y='{start_y}-({start_y}-({end_y}))*(t-{scroll_start_time:.2f})/{scroll_duration:.2f}'"
             f":enable='between(t,{scroll_start_time:.2f},{scroll_end:.2f})'"
-            f":shortest=1"
-            f":format=auto"
             f"[scrolled]"
         )
-        filter_parts.append(overlay_filter)
         current_stream = "[scrolled]"
 
     elif subtitle_path and subtitle_path.exists():
@@ -928,11 +937,24 @@ def burn_all_overlays(
         filter_parts.append(f"{current_stream}{sub_filter}[subbed]")
         current_stream = "[subbed]"
 
-    # Drawtext filters always run via -vf (not filter_complex),
-    # so standard single-quote escaping works.
+    # 1b. Masking boxes to clip scroll text to safe area.
+    # Draw opaque rectangles over banner and credit zones so scroll text
+    # that bleeds into those areas is hidden. Banner/credits render on top.
+    mask_enable = f":enable='gte(t,{banner_start_time:.2f})'" if banner_start_time > 0 else ""
+    # Top mask: y=0 to scroll_top
+    drawtext_filters.append(
+        f"drawbox=x=0:y=0:w=iw:h={scroll_top}"
+        f":color=black@0.85:t=fill"
+        f"{mask_enable}"
+    )
+    # Bottom mask: y=scroll_bottom to screen bottom
+    drawtext_filters.append(
+        f"drawbox=x=0:y={scroll_bottom}:w=iw:h=ih-{scroll_bottom}"
+        f":color=black@0.85:t=fill"
+        f"{mask_enable}"
+    )
 
     # 2. Title banner (drawtext at top)
-    drawtext_filters: list[str] = []
     if banner_text:
         escaped = banner_text.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
         font_opt = f":fontfile='{font_path}'" if font_path else ""
@@ -950,6 +972,7 @@ def burn_all_overlays(
         )
 
     # 3. Credit lines (drawtext at bottom, shown after title card)
+    # Background box covers any scroll text that bleeds into credit area.
     if credit_lines:
         credit_enable = f":enable='gte(t,{banner_start_time:.2f})'" if banner_start_time > 0 else ""
         for i, line in enumerate(reversed(credit_lines)):

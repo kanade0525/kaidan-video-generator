@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from fastapi import Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from nicegui import app as fastapi_app
 from nicegui import ui
 
 from app.database import init_db
@@ -61,6 +64,60 @@ def shorts_stories(page: int = 0):
 def shorts_results(keyword: str = "", id: int = 0):
     create_layout()
     results_page(keyword=keyword, story_id=id, content_type="short", base_path="/shorts/results")
+
+
+@fastapi_app.get("/youtube/auth")
+async def youtube_auth(request: Request):
+    """Start YouTube OAuth flow by redirecting to Google consent page."""
+    from app.services import youtube_uploader
+
+    base = f"{request.url.scheme}://{request.url.netloc}"
+    redirect_uri = f"{base}/oauth2callback"
+    try:
+        auth_url = youtube_uploader.get_auth_url(redirect_uri)
+    except Exception as e:
+        return HTMLResponse(
+            f"<h1>認証開始に失敗</h1><pre>{e}</pre>", status_code=500,
+        )
+    return RedirectResponse(auth_url)
+
+
+@fastapi_app.get("/oauth2callback")
+async def oauth2callback(
+    request: Request, code: str = "", state: str = "", error: str = "",
+):
+    """Handle Google OAuth redirect and save the token."""
+    from app.services import youtube_uploader
+
+    if error:
+        return HTMLResponse(
+            f"<h1>認証エラー</h1><p>{error}</p>"
+            f'<p><a href="/settings">設定ページに戻る</a></p>',
+            status_code=400,
+        )
+    if not code:
+        return HTMLResponse(
+            "<h1>認可コードがありません</h1>"
+            '<p><a href="/settings">設定ページに戻る</a></p>',
+            status_code=400,
+        )
+
+    base = f"{request.url.scheme}://{request.url.netloc}"
+    redirect_uri = f"{base}/oauth2callback"
+    try:
+        youtube_uploader.exchange_code(code, redirect_uri, state=state)
+    except Exception as e:
+        return HTMLResponse(
+            f"<h1>認証失敗</h1><pre>{e}</pre>"
+            f'<p><a href="/settings">設定ページに戻る</a></p>',
+            status_code=500,
+        )
+
+    return HTMLResponse(
+        "<h1>YouTube認証成功 🎉</h1>"
+        "<p>このタブを閉じて、アプリの設定ページに戻ってください。</p>"
+        '<p><a href="/settings">設定ページに戻る</a></p>',
+    )
 
 
 def main():

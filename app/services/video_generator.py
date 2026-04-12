@@ -37,10 +37,14 @@ def create_video(
     include_title_card: bool = True,
     target_width: int | None = None,
     target_height: int | None = None,
+    fade_in: float | None = None,
+    title_fade_in: float = 0.5,
+    title_fade_out: float = 0.5,
 ) -> Path:
     """Create the final video from images, narration, and optional BGM."""
     fps = cfg_get("fps")
-    fade_in = cfg_get("fade_in")
+    if fade_in is None:
+        fade_in = cfg_get("fade_in")
     bgm = bgm_path or cfg_get("bgm_path")
     bgm_volume = cfg_get("bgm_volume")
     lead_sil = leading_silence if leading_silence is not None else LEADING_SILENCE
@@ -95,11 +99,15 @@ def create_video(
         target_width=target_width, target_height=target_height,
     )
 
-    # Step 2: Add fade-in only (no fade-out, ED handles the ending)
+    # Step 2: Add fade-in only (skip if fade_in=0 to save a full re-encode)
     if progress_callback:
         progress_callback(2, 3)
-    log.info("フェードイン追加中...")
-    add_fade(slideshow_path, faded_path, fade_in=fade_in, fade_out=0)
+    if fade_in > 0:
+        log.info("フェードイン追加中...")
+        add_fade(slideshow_path, faded_path, fade_in=fade_in, fade_out=0)
+    else:
+        log.info("フェードインスキップ")
+        faded_path = slideshow_path
 
     # Step 3: Mix BGM if configured
     if progress_callback:
@@ -131,7 +139,8 @@ def create_video(
     title_clip_path = temp_dir / "title_clip.mp4"
     if include_title_card and title_card and title_card.exists() and title_audio and title_audio.exists():
         log.info("タイトルクリップ作成中...")
-        create_title_clip(title_card, title_audio, title_clip_path, fps=fps)
+        create_title_clip(title_card, title_audio, title_clip_path, fps=fps,
+                          fade_in=title_fade_in, fade_out=title_fade_out)
         parts.append(title_clip_path)
 
     parts.append(bgm_mixed_path)

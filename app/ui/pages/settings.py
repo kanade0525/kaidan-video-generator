@@ -175,11 +175,14 @@ def settings_page():
                 ui.label("未設定（data/client_secret.json を配置してください）").classes("text-red-500")
 
             def do_auth():
-                try:
-                    youtube_uploader.authenticate()
-                    ui.notify("YouTube認証成功！", color="positive")
-                except Exception as e:
-                    ui.notify(f"認証エラー: {e}", color="negative")
+                # Open OAuth flow in a new tab. The server will redirect
+                # to Google's consent page and handle the callback.
+                ui.run_javascript('window.open("/youtube/auth", "_blank")')
+                ui.notify(
+                    "新しいタブで認証を完了してください。"
+                    "完了後、このページをリロードしてください。",
+                    color="info",
+                )
 
             ui.button("YouTube認証", on_click=do_auth, color="red").props("size=sm")
 

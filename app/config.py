@@ -70,11 +70,13 @@ _DEFAULTS = {
     "youtube_category_id": "24",
     "youtube_privacy_status": "private",
     "youtube_title_template": "【怪談朗読】{title}｜怖い話・睡眠用・作業用BGM",
+    "youtube_playlist_url": "https://www.youtube.com/playlist?list=PLBj7GhxNHZWufHlq6pdSboVkOfx8uNGLY",
     "youtube_description_template": (
         "【怪談朗読】{title}\n\n"
         "百鬼朗読へようこそ。\n"
         "日本各地に伝わる怪談・不思議な話・人怖を朗読でお届けします。\n"
         "チャンネル登録・高評価よろしくお願いします。\n\n"
+        "▶ 怪談再生リスト: {playlist_url}\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "引用元:HHS図書館より\n"
         "「{title}」{url}\n\n"
@@ -87,6 +89,13 @@ _DEFAULTS = {
         "#怪談 #ホラー #朗読 #怖い話 #ホラホリ #百鬼朗読"
     ),
     "youtube_tags": "怪談,ホラー,朗読,怖い話,心霊,恐怖",
+    "youtube_pinned_comment_template": (
+        "ご視聴ありがとうございます！\n"
+        "チャンネル登録・高評価していただけると励みになります🙏\n\n"
+        "▶ 怪談再生リスト: {playlist_url}\n"
+        "他にもたくさんの怪談を朗読しています。ぜひご覧ください！\n\n"
+        "怖かったらコメントで教えてください👻"
+    ),
     "youtube_channel_name": "",
     "youtube_contact_email": "",
     "youtube_schedule_enabled": True,
@@ -94,7 +103,7 @@ _DEFAULTS = {
     "youtube_schedule_hour": 20,
     "youtube_schedule_minute": 0,
     # Shorts settings
-    "shorts_leading_silence": 0.5,
+    "shorts_leading_silence": 0.0,
     "shorts_trailing_silence": 0.5,
     "shorts_num_scenes": 2,
     "shorts_image_size": "1024x1792",
@@ -105,12 +114,21 @@ _DEFAULTS = {
     "shorts_speed": 1.15,
     "shorts_scrape_delay": 2.0,
     "shorts_bgm_volume": 0.1,
-    "shorts_youtube_title_template": "👻【怖い話】{title}",
+    "shorts_youtube_title_template": "【怪談朗読】{title}｜怖い話 #Shorts",
     "shorts_youtube_description_template": (
-        "【怖い話】{title}\n\n"
-        "#怪談 #怖い話 #心霊 #ホラー #Shorts"
+        "【怪談朗読】{title}\n\n"
+        "百鬼朗読へようこそ。\n"
+        "日本各地に伝わる怪談・不思議な話・人怖を朗読でお届けします。\n"
+        "チャンネル登録・高評価よろしくお願いします。\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "引用元: 怖い話投稿サイト 奇々怪々\n"
+        "「{title}」{url}\n"
+        "作者: {author}\n\n"
+        "音声: VOICEVOX:{speaker}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "#怪談 #ホラー #朗読 #怖い話 #Shorts #百鬼朗読"
     ),
-    "shorts_youtube_tags": "怪談,ホラー,朗読,怖い話,Shorts",
+    "shorts_youtube_tags": "怪談,ホラー,朗読,怖い話,Shorts,音読さん,都市伝説",
 }
 
 

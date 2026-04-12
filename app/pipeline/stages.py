@@ -18,6 +18,7 @@ from app.utils.paths import (
     processed_text_path,
     raw_content_path,
     story_dir,
+    timestamps_path,
     video_path,
 )
 
@@ -159,6 +160,66 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
         progress_callback=progress_callback,
     )
 
+    # Generate timestamps for YouTube description
+    _save_timestamps(story, title_card, title_audio)
+
+
+def _format_timestamp(seconds: float) -> str:
+    """Format seconds as M:SS or H:MM:SS."""
+    total = int(seconds)
+    h, remainder = divmod(total, 3600)
+    m, s = divmod(remainder, 60)
+    if h > 0:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def _save_timestamps(
+    story: Story,
+    title_card: Path | None,
+    title_audio: Path | None,
+) -> None:
+    """Calculate and save video part timestamps for YouTube description."""
+    from app.config import get as cfg_get
+    from app.utils.ffmpeg import get_audio_duration
+
+    ct = story.content_type
+    cursor = 0.0
+    parts = []
+
+    # OP
+    op_path = cfg_get("op_path")
+    if op_path and Path(op_path).exists():
+        parts.append({"label": "オープニング", "start": cursor})
+        op_dur = get_audio_duration(Path(op_path))
+        cursor += op_dur
+
+    # Title card
+    if title_card and title_card.exists() and title_audio and title_audio.exists():
+        parts.append({"label": "タイトル", "start": cursor})
+        title_dur = 1.0 + get_audio_duration(title_audio) + 1.0
+        cursor += title_dur
+
+    # Main content
+    parts.append({"label": "本編", "start": cursor})
+    narration = narration_path(story.title, ct)
+    if narration.exists():
+        lead = cfg_get("leading_silence") if cfg_get("leading_silence") else 2.0
+        narr_dur = get_audio_duration(narration)
+        trail = cfg_get("trailing_silence") if cfg_get("trailing_silence") else 2.0
+        cursor += lead + narr_dur + trail
+
+    # ED
+    ed_path = cfg_get("ed_path")
+    if ed_path and Path(ed_path).exists():
+        parts.append({"label": "エンディング", "start": cursor})
+
+    ts_file = timestamps_path(story.title, ct)
+    ts_file.write_text(
+        json.dumps(parts, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+    log.info("[video] タイムスタンプ保存: %s", ts_file)
+
 
 def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) -> None:
     """Stage: Upload video to YouTube."""
@@ -186,9 +247,20 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
     yt_title = title_template.format(title=story.title, category=category)
     description_template = cfg_get("youtube_description_template")
     speaker_name = get_speaker_name()
+    playlist_url = cfg_get("youtube_playlist_url") or ""
     description = description_template.format(
         title=story.title, url=story.url, speaker=speaker_name,
+        playlist_url=playlist_url,
     )
+
+    # Insert timestamps if available
+    ts_file = timestamps_path(story.title, ct)
+    if ts_file.exists():
+        parts = json.loads(ts_file.read_text(encoding="utf-8"))
+        ts_lines = [f"{_format_timestamp(p['start'])} {p['label']}" for p in parts]
+        timestamp_block = "\n".join(ts_lines)
+        description = f"{timestamp_block}\n\n{description}"
+
     tags = cfg_get("youtube_tags")
     category_id = cfg_get("youtube_category_id")
     privacy = cfg_get("youtube_privacy_status")
@@ -331,7 +403,7 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     from app.config import get as cfg_get
     from app.utils.ffmpeg import (
         burn_all_overlays,
-        generate_scroll_image,
+        _split_subtitle_text,
         get_audio_duration,
     )
 
@@ -382,6 +454,9 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         include_title_card=True,
         target_width=1080,
         target_height=1920,
+        fade_in=0,
+        title_fade_in=0,
+        title_fade_out=0,
     )
 
     # Step 2: Generate scroll subtitle image and burn all overlays
@@ -401,24 +476,18 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         subtitle_text = "".join(subtitle_chunks)
         log.info("[video:short] 字幕: ひらがなテキスト使用（原文チャンクなし）")
 
-    # Generate scroll subtitle image
-    scroll_img = None
+    # Generate scroll subtitle text file
+    scroll_txt = None
     narration_duration = get_audio_duration(narration)
     scroll_start = title_clip_duration + lead
-    scroll_dur = narration_duration  # scroll exactly matches narration length
+    scroll_dur = narration_duration
 
     if subtitle_text:
-        scroll_img = sdir / "scroll_subtitle.png"
-        # leading_pad: start with 2 lines visible, rest scrolls in.
-        # visible area = 1180px, 2 lines = 2*(48+48) = 192px
-        scroll_visible_h = 1440 - 260  # 1180
-        generate_scroll_image(
-            subtitle_text, scroll_img,
-            max_chars=19, font_size=48, line_spacing=48,
-            margin_x=60, image_width=1080,
-            leading_pad=scroll_visible_h - 192,
-        )
-        log.info("[video:short] スクロール字幕画像生成完了")
+        # Split into lines and write as plain text for drawtext textfile
+        segments = _split_subtitle_text(subtitle_text, max_chars=16)
+        scroll_txt = sdir / "scroll_subtitle.txt"
+        scroll_txt.write_text("\n".join(segments), encoding="utf-8")
+        log.info("[video:short] スクロール字幕テキスト生成: %d行", len(segments))
 
     # Load metadata for credit overlay
     meta_file = meta_path(story.title, ct)
@@ -435,16 +504,16 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     ]
 
     log.info("[video:short] 字幕・バナー・クレジットを一括焼き込み中...")
-    # Safe scroll area:
-    # Top: 160 (margin) + 64 (banner) + 20 (padding) = 244 → round to 260
-    # Bottom: credit top line = 1920 - 320 - 2*(52+16) = 1464, minus 20 padding = 1440
     burn_all_overlays(
         raw_output, output,
-        scroll_image_path=scroll_img,
+        scroll_textfile=scroll_txt,
         scroll_start_time=scroll_start,
         scroll_duration=scroll_dur,
         scroll_top=260,
         scroll_bottom=1440,
+        scroll_font_size=48,
+        scroll_line_spacing=48,
+        scroll_margin_right=200,
         banner_text="ショート怪談",
         banner_font_size=64,
         banner_font_color="red",
@@ -533,6 +602,9 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
     category_id = cfg_get("youtube_category_id")
     privacy = cfg_get("youtube_privacy_status")
 
+    # Use title card as thumbnail
+    thumbnail = images_dir(story.title, ct) / TITLE_CARD_FILENAME
+
     result = youtube_uploader.upload_video(
         video_path=vid,
         title=yt_title,
@@ -540,6 +612,7 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
         tags=tags if isinstance(tags, list) else [t.strip() for t in tags.split(",")],
         category_id=category_id,
         privacy_status=privacy,
+        thumbnail_path=thumbnail if thumbnail.exists() else None,
         progress_callback=progress_callback,
     )
 

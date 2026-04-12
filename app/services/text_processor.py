@@ -171,7 +171,6 @@ def split_into_n_chunks(text: str, n: int) -> list[str]:
     return chunks[:n]
 
 
-@with_retry(max_attempts=2, base_delay=3.0)
 def generate_shorts_metadata(title: str, text: str, author: str) -> dict[str, str]:
     """Generate engaging YouTube Shorts title and description using Gemini.
 

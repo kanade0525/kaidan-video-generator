@@ -5,7 +5,7 @@ from app.config import _DEFAULTS
 
 class TestShortsConfigDefaults:
     def test_shorts_leading_silence(self):
-        assert _DEFAULTS["shorts_leading_silence"] == 0.5
+        assert _DEFAULTS["shorts_leading_silence"] == 0.0
 
     def test_shorts_trailing_silence(self):
         assert _DEFAULTS["shorts_trailing_silence"] == 0.5
