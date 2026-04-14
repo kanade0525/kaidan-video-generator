@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-OUTPUT_BASE = Path("output")
+OUTPUT_BASE = Path(__file__).resolve().parent.parent.parent / "output"
 
 
 def safe_dirname(title: str, max_len: int = 50) -> str:

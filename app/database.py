@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app.models import STAGES, Story, stages_for
 
-DB_PATH = Path("data/kaidan.db")
+DB_PATH = Path(__file__).resolve().parent.parent / "data" / "kaidan.db"
 
 _local = threading.local()
 
