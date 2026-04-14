@@ -109,7 +109,13 @@ def pipeline_page():
             else:
                 ui.label("ログなし").classes("text-gray-500")
 
-    ui.timer(3.0, refresh)
+    def safe_refresh():
+        try:
+            refresh()
+        except RuntimeError:
+            pass
+
+    ui.timer(3.0, safe_refresh)
     refresh()
 
 

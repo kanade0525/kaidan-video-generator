@@ -183,21 +183,24 @@ def _retry_button(story, target_stage: str, label: str = "再処理"):
         """Timer callback to safely update UI from main thread."""
         if not state["running"]:
             return
-        progress.value = state["progress"]
-        if state["progress_text"]:
-            status_label.text = state["progress_text"]
-        if state["done"]:
+        try:
+            progress.value = state["progress"]
+            if state["progress_text"]:
+                status_label.text = state["progress_text"]
+            if state["done"]:
+                state["running"] = False
+                error = state["error"]
+                if error:
+                    progress.value = 0
+                    status_label.text = f"エラー: {error[:100]}"
+                    status_label.classes(replace="text-sm text-red-500")
+                else:
+                    progress.value = 1.0
+                    status_label.text = "完了! (ページを再読み込みで結果を確認)"
+                    status_label.classes(replace="text-sm text-green-500")
+                btn.enable()
+        except RuntimeError:
             state["running"] = False
-            error = state["error"]
-            if error:
-                progress.value = 0
-                status_label.text = f"エラー: {error[:100]}"
-                status_label.classes(replace="text-sm text-red-500")
-            else:
-                progress.value = 1.0
-                status_label.text = "完了! (ページを再読み込みで結果を確認)"
-                status_label.classes(replace="text-sm text-green-500")
-            btn.enable()
 
     ui.timer(0.5, poll)
 
@@ -597,17 +600,20 @@ def _show_youtube_upload(story):
         def poll_upload():
             if not upload_state["running"]:
                 return
-            progress.value = upload_state["progress"]
-            if upload_state["done"]:
+            try:
+                progress.value = upload_state["progress"]
+                if upload_state["done"]:
+                    upload_state["running"] = False
+                    if upload_state["error"]:
+                        status_label.text = f"エラー: {upload_state['error']}"
+                        status_label.classes(replace="text-sm text-red-500")
+                    else:
+                        status_label.text = upload_state["msg"]
+                        status_label.classes(replace="text-sm text-green-500")
+                        progress.value = 1.0
+                    btn.enable()
+            except RuntimeError:
                 upload_state["running"] = False
-                if upload_state["error"]:
-                    status_label.text = f"エラー: {upload_state['error']}"
-                    status_label.classes(replace="text-sm text-red-500")
-                else:
-                    status_label.text = upload_state["msg"]
-                    status_label.classes(replace="text-sm text-green-500")
-                    progress.value = 1.0
-                btn.enable()
 
         ui.timer(0.5, poll_upload)
 
@@ -720,17 +726,20 @@ def _show_usage_report_tab(story):
     def poll_report():
         if not report_state["running"]:
             return
-        if report_state["done"]:
+        try:
+            if report_state["done"]:
+                report_state["running"] = False
+                if report_state["error"]:
+                    progress.value = 0
+                    status_label.text = report_state["error"]
+                    status_label.classes(replace="text-sm text-red-500")
+                else:
+                    progress.value = 1.0
+                    status_label.text = "使用報告送信完了!"
+                    status_label.classes(replace="text-sm text-green-500")
+                btn.enable()
+        except RuntimeError:
             report_state["running"] = False
-            if report_state["error"]:
-                progress.value = 0
-                status_label.text = report_state["error"]
-                status_label.classes(replace="text-sm text-red-500")
-            else:
-                progress.value = 1.0
-                status_label.text = "使用報告送信完了!"
-                status_label.classes(replace="text-sm text-green-500")
-            btn.enable()
 
     ui.timer(0.5, poll_report)
 
