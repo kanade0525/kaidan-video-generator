@@ -37,12 +37,45 @@ SAMPLE_STORY_HTML = """
 <html><body>
 <h1>テスト怪談その1</h1>
 <a href="/member-info?user=1234">投稿者：太郎 (42)</a>
+<div class="single-sub-category">
 <a href="/tags/shinrei">心霊</a>
 <a href="/tags/obon">お盆</a>
+</div>
 <article>
   <p>これはテスト用の怪談です。ある日のこと、私は古い家に住んでいました。</p>
   <p>その家では毎晩不思議なことが起きていたのです。</p>
 </article>
+</body></html>
+"""
+
+SAMPLE_STORY_PAGE1_HTML = """
+<html><body>
+<h1>複数ページ怪談</h1>
+<a href="/member-info?user=1234">投稿者：太郎 (42)</a>
+<a href="/tags/shinrei">心霊</a>
+<div class="main-text">
+  <p>これは1ページ目の内容です。</p>
+</div>
+<a href="/99999/2">次のページ</a>
+</body></html>
+"""
+
+SAMPLE_STORY_PAGE2_HTML = """
+<html><body>
+<h1>複数ページ怪談</h1>
+<div class="main-text">
+  <p>これは2ページ目の内容です。</p>
+</div>
+<a href="/99999/3">次のページ</a>
+</body></html>
+"""
+
+SAMPLE_STORY_PAGE3_HTML = """
+<html><body>
+<h1>複数ページ怪談</h1>
+<div class="main-text">
+  <p>これは3ページ目の最後の内容です。</p>
+</div>
 </body></html>
 """
 
@@ -175,6 +208,29 @@ class TestFetchStoryContent:
         )
         assert metadata["char_count"] == len(text)
         assert metadata["char_count"] > 0
+
+
+    @patch("app.services.kikikaikai_scraper.cfg_get", return_value=0)
+    @patch("app.services.kikikaikai_scraper.requests.get")
+    def test_multi_page_story(self, mock_get, mock_cfg):
+        """Stories split across multiple pages should be concatenated."""
+        def side_effect(url, **kwargs):
+            if url.endswith("/2"):
+                return _mock_response(SAMPLE_STORY_PAGE2_HTML)
+            if url.endswith("/3"):
+                return _mock_response(SAMPLE_STORY_PAGE3_HTML)
+            return _mock_response(SAMPLE_STORY_PAGE1_HTML)
+
+        mock_get.side_effect = side_effect
+
+        text, metadata = kikikaikai_scraper.fetch_story_content(
+            "https://kikikaikai.kusuguru.co.jp/99999"
+        )
+        assert "1ページ目の内容" in text
+        assert "2ページ目の内容" in text
+        assert "3ページ目の最後の内容" in text
+        assert metadata["title"] == "複数ページ怪談"
+        assert mock_get.call_count == 3
 
 
 class TestFetchStoriesFromTag:

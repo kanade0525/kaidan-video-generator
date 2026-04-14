@@ -64,15 +64,16 @@ def _parse_story_link(link, href: str) -> dict | None:
     if not href.startswith("http"):
         href = f"{BASE_URL}/{story_id}"
 
-    # Try structured HTML first (tag pages)
-    h3 = link.select_one("h3")
-    if h3:
-        title = h3.get_text(strip=True)
-        author_el = link.select_one("p.author")
+    # Try structured HTML first
+    # Category pages use div.left-title, tag pages use h3
+    title_el = link.select_one("div.left-title") or link.select_one("h3")
+    if title_el:
+        title = title_el.get_text(strip=True)
+        author_el = link.select_one("div.left-creator-name") or link.select_one("p.author")
         author = ""
         if author_el:
-            author = author_el.get_text(strip=True).replace("投稿者：", "")
-        category_el = link.select_one("span.category")
+            author = author_el.get_text(strip=True).replace("投稿者：", "").strip()
+        category_el = link.select_one("span.cat-title") or link.select_one("span.category")
         category = category_el.get_text(strip=True) if category_el else ""
         return {
             "url": href,
@@ -173,10 +174,48 @@ def fetch_stories_from_category(category: str, max_pages: int = 5) -> list[dict]
     return _fetch_pages(f"/category/{category}", max_pages, label=f"category={category}")
 
 
+def _extract_story_text(soup: BeautifulSoup) -> str:
+    """Extract story body text from a parsed page."""
+    main_text = soup.select_one("div.main-text")
+    if main_text:
+        for tag in main_text.find_all(["script", "style", "ins"]):
+            tag.decompose()
+        return main_text.get_text("\n", strip=True)
+
+    # Fallback: try broader selectors
+    for selector in ["article", ".post-content", ".entry-content"]:
+        elem = soup.select_one(selector)
+        if elem and len(elem.get_text(strip=True)) > 50:
+            for tag in elem.find_all(["script", "style", "ins"]):
+                tag.decompose()
+            return elem.get_text("\n", strip=True)
+
+    # Fallback: get all <p> tags
+    paragraphs = []
+    for p in soup.find_all("p"):
+        p_text = p.get_text(strip=True)
+        if len(p_text) > 10 and "googletag" not in p_text:
+            paragraphs.append(p_text)
+    return "\n".join(paragraphs)
+
+
+def _find_next_page_url(soup: BeautifulSoup) -> str | None:
+    """Find the 'next page' link for multi-page stories."""
+    link = soup.find("a", string=re.compile(r"次のページ"))
+    if link and link.get("href"):
+        href = link["href"]
+        if href.startswith("/"):
+            return f"{BASE_URL}{href}"
+        if href.startswith("http"):
+            return href
+    return None
+
+
 @with_retry(max_attempts=3, base_delay=2.0)
 def fetch_story_content(url: str) -> tuple[str, dict]:
     """Fetch full story text and metadata from an individual story page.
 
+    Handles multi-page stories by following '次のページ' pagination links.
     Returns (text, metadata) where metadata includes author, tags, char_count.
     """
     r = requests.get(url, timeout=30)
@@ -197,8 +236,9 @@ def fetch_story_content(url: str) -> tuple[str, dict]:
         if "(" in author:
             author = author[:author.rfind("(")].strip()
 
-    # Tags
-    tag_links = soup.select(f'a[href*="/tags/"]')
+    # Tags — only from the story's own tag section (not sidebar)
+    related = soup.select_one("div.single-sub-category")
+    tag_links = related.select('a[href*="/tags/"]') if related else []
     tags = []
     for tl in tag_links:
         tag_text = tl.get_text(strip=True).lstrip("#")
@@ -206,32 +246,29 @@ def fetch_story_content(url: str) -> tuple[str, dict]:
             tags.append(tag_text)
     tags = list(dict.fromkeys(tags))  # Deduplicate preserving order
 
-    # Story text: extract from div.main-text (the actual story body)
-    text = ""
-    main_text = soup.select_one("div.main-text")
-    if main_text:
-        for tag in main_text.find_all(["script", "style", "ins"]):
-            tag.decompose()
-        text = main_text.get_text("\n", strip=True)
-    else:
-        # Fallback: try broader selectors
-        for selector in ["article", ".post-content", ".entry-content"]:
-            elem = soup.select_one(selector)
-            if elem and len(elem.get_text(strip=True)) > 50:
-                for tag in elem.find_all(["script", "style", "ins"]):
-                    tag.decompose()
-                text = elem.get_text("\n", strip=True)
-                break
+    # Story text: collect from all pages
+    text_parts = [_extract_story_text(soup)]
+    next_url = _find_next_page_url(soup)
+    page_num = 1
+    max_pages = 20  # safety limit
 
-    # Fallback: get all <p> tags
-    if not text:
-        paragraphs = []
-        for p in soup.find_all("p"):
-            p_text = p.get_text(strip=True)
-            if len(p_text) > 10 and "googletag" not in p_text:
-                paragraphs.append(p_text)
-        text = "\n".join(paragraphs)
+    while next_url and page_num < max_pages:
+        page_num += 1
+        delay = cfg_get("shorts_scrape_delay") or 2
+        time.sleep(delay)
+        log.info("Fetching story page %d: %s", page_num, next_url)
+        rn = requests.get(next_url, timeout=30)
+        rn.raise_for_status()
+        page_soup = BeautifulSoup(rn.content, "html.parser")
+        page_text = _extract_story_text(page_soup)
+        if page_text:
+            text_parts.append(page_text)
+        next_url = _find_next_page_url(page_soup)
 
+    if page_num > 1:
+        log.info("Collected %d pages for story: %s", page_num, title)
+
+    text = "\n".join(part for part in text_parts if part)
     char_count = len(text)
 
     metadata = {

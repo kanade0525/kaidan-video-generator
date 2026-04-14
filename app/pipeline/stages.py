@@ -344,6 +344,8 @@ def do_scrape_short(story: Story, progress_callback: ProgressCallback = None) ->
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8",
     )
 
+    db.update_char_count(story.id, len(text))
+
     if progress_callback:
         progress_callback(1, 1)
     log.info("[scrape:short] 保存: %s (%d chars)", story.title, len(text))

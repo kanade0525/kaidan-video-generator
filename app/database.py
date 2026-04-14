@@ -317,6 +317,16 @@ def update_stage(story_id: int, stage: str, error: str | None = None) -> None:
     conn.commit()
 
 
+def update_char_count(story_id: int, char_count: int) -> None:
+    """Update the character count for a story."""
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE stories SET char_count = ?, updated_at = ? WHERE id = ?",
+        (char_count, _now(), story_id),
+    )
+    conn.commit()
+
+
 def set_youtube_video_id(story_id: int, video_id: str) -> None:
     """Store the YouTube video ID for a story."""
     conn = _get_conn()
@@ -385,16 +395,18 @@ def get_stories_at_stage(
     Users must clear the error (e.g., via UI retry button) to re-queue.
     """
     conn = _get_conn()
+    # Prioritize by char_count ASC (shorter stories first), fallback to id ASC
+    order = "ORDER BY COALESCE(char_count, 999999) ASC, id ASC"
     if content_type:
         rows = conn.execute(
-            "SELECT * FROM stories WHERE stage = ? AND content_type = ? "
-            "AND (error IS NULL OR error = '') ORDER BY id ASC LIMIT ?",
+            f"SELECT * FROM stories WHERE stage = ? AND content_type = ? "
+            f"AND (error IS NULL OR error = '') {order} LIMIT ?",
             (stage, content_type, limit),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM stories WHERE stage = ? "
-            "AND (error IS NULL OR error = '') ORDER BY id ASC LIMIT ?",
+            f"SELECT * FROM stories WHERE stage = ? "
+            f"AND (error IS NULL OR error = '') {order} LIMIT ?",
             (stage, limit),
         ).fetchall()
     return _rows_to_stories(rows)
