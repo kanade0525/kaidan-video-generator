@@ -113,6 +113,7 @@ _DEFAULTS = {
     "shorts_vhs_enabled": True,
     "shorts_speed": 1.15,
     "shorts_scrape_delay": 2.0,
+    "shorts_endscreen_duration": 5.0,
     "shorts_bgm_volume": 0.1,
     "shorts_youtube_title_template": "【怪談朗読】{title}｜怖い話 #Shorts",
     "shorts_youtube_description_template": (

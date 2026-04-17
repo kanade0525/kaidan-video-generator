@@ -1054,6 +1054,26 @@ def burn_all_overlays(
     return output_path
 
 
+def generate_black_clip(
+    output: Path,
+    duration: float,
+    width: int = 1080,
+    height: int = 1920,
+    fps: int = 30,
+) -> Path:
+    """Generate a silent black video clip for end screen."""
+    run_ffmpeg([
+        "-f", "lavfi", "-i", f"color=black:s={width}x{height}:r={fps}:d={duration:.3f}",
+        "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo",
+        "-t", f"{duration:.3f}",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        str(output),
+    ])
+    return output
+
+
 def concat_videos(
     parts: list[Path],
     output_path: Path,

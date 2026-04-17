@@ -371,13 +371,14 @@ def do_voice_short(story: Story, progress_callback: ProgressCallback = None) -> 
     duration = get_audio_duration(narr)
     lead = cfg_get("shorts_leading_silence")
     trail = cfg_get("shorts_trailing_silence")
-    total = duration + lead + trail
+    endscreen = cfg_get("shorts_endscreen_duration") or 0.0
+    total = duration + lead + trail + endscreen
     max_duration = 180.0
 
     if total > max_duration:
         raise RuntimeError(
             f"ショート動画の尺制限超過: {total:.1f}s > {max_duration:.0f}s "
-            f"(ナレーション: {duration:.1f}s + 無音: {lead + trail:.1f}s)"
+            f"(ナレーション: {duration:.1f}s + 無音: {lead + trail:.1f}s + 終了画面: {endscreen:.1f}s)"
         )
     log.info("[voice:short] 尺OK: %.1fs (制限: %.0fs)", total, max_duration)
 
@@ -406,6 +407,8 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     from app.utils.ffmpeg import (
         burn_all_overlays,
         _split_subtitle_text,
+        concat_videos,
+        generate_black_clip,
         get_audio_duration,
     )
 
@@ -526,6 +529,18 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         credit_margin_bottom=320,
     )
     raw_output.unlink(missing_ok=True)
+
+    # Append black end screen clip for YouTube end screen (min 5s required)
+    endscreen_dur = cfg_get("shorts_endscreen_duration")
+    if endscreen_dur and endscreen_dur > 0:
+        log.info("[video:short] 終了画面用黒画面追加中 (%.1fs)...", endscreen_dur)
+        endscreen_clip = sdir / "endscreen_black.mp4"
+        generate_black_clip(endscreen_clip, endscreen_dur, width=1080, height=1920)
+        final_with_endscreen = sdir / "final_with_endscreen.mp4"
+        concat_videos([output, endscreen_clip], final_with_endscreen, width=1080, height=1920)
+        output.unlink(missing_ok=True)
+        final_with_endscreen.rename(output)
+        endscreen_clip.unlink(missing_ok=True)
 
     if progress_callback:
         progress_callback(3, 3)
