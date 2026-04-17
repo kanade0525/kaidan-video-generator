@@ -95,10 +95,11 @@ def text_to_speech(
     return r.content
 
 
-def generate_title_audio(title: str, output_path: Path, speed: float | None = None) -> Path:
+def generate_title_audio(title: str, output_path: Path, title_furigana: str | None = None, speed: float | None = None) -> Path:
     """Generate title narration audio via VOICEVOX."""
-    log.info("タイトル読み上げ音声生成中: %s", title)
-    audio_data = text_to_speech(title, speed=speed)
+    text = title_furigana if title_furigana else title
+    log.info("タイトル読み上げ音声生成中: %s", text)
+    audio_data = text_to_speech(text, speed=speed)
     output_path.write_bytes(audio_data)
     log.info("タイトル音声保存: %s", output_path.name)
     return output_path

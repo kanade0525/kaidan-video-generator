@@ -65,6 +65,7 @@ class Story:
     id: int = 0
     url: str = ""
     title: str = ""
+    title_furigana: str = ""
     pub_date: str = ""
     stage: str = "pending"
     error: str | None = None

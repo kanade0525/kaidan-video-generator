@@ -149,7 +149,7 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
     title_audio = None
     if title_card.exists():
         title_audio = sdir / "title_narration.wav"
-        voice_generator.generate_title_audio(story.title, title_audio)
+        voice_generator.generate_title_audio(story.title, title_audio, story.title_furigana)
 
     output = video_path(story.title, ct)
     video_generator.create_video(
@@ -438,7 +438,7 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     shorts_speed = cfg_get("shorts_speed")
     if title_card.exists():
         title_audio = sdir / "title_narration.wav"
-        voice_generator.generate_title_audio(story.title, title_audio, speed=shorts_speed)
+        voice_generator.generate_title_audio(story.title, title_audio, story.title_furigana, speed=shorts_speed)
         # Title clip duration = silence_before(1.0) + audio + silence_after(1.0)
         title_clip_duration = 1.0 + get_audio_duration(title_audio) + 1.0
 

@@ -40,9 +40,60 @@ def process_text(text: str, prompt_template: str | None = None, model: str | Non
     # Remove repetition loops (Gemini sometimes generates infinite repeats)
     result = _remove_repetitions(result)
 
+    # If any kanji remain after LLM conversion, convert them deterministically
+    # using MeCab readings so VOICEVOX receives hiragana as much as possible.
+    if re.search(r"[一-龯]", result):
+        result = _convert_kanji_to_hiragana(result)
+
     # Post-process: convert particle は→わ, へ→え using MeCab
     result = _fix_particles(result)
     return result
+
+
+def _convert_kanji_to_hiragana(text: str) -> str:
+    """Convert remaining kanji in text to hiragana using MeCab readings."""
+    try:
+        import MeCab
+
+        tagger = MeCab.Tagger()
+        tagger.parse("")
+        output: list[str] = []
+        node = tagger.parseToNode(text)
+        while node:
+            surface = node.surface
+            if not surface:
+                node = node.next
+                continue
+
+            feature = node.feature.split(",")
+            reading = None
+            if len(feature) >= 10 and feature[9] != "*":
+                reading = feature[9]
+            elif len(feature) >= 8 and feature[7] != "*":
+                reading = feature[7]
+            elif len(feature) >= 9 and feature[8] != "*":
+                reading = feature[8]
+
+            if re.search(r"[一-龯]", surface) and reading:
+                output.append(_katakana_to_hiragana(reading))
+            else:
+                output.append(surface)
+            node = node.next
+
+        return "".join(output)
+    except ImportError:
+        log.warning("MeCab not installed, skipping kanji fallback conversion")
+        return text
+    except Exception as e:
+        log.warning("MeCab error during kanji conversion: %s", e)
+        return text
+
+
+def _katakana_to_hiragana(text: str) -> str:
+    return "".join(
+        chr(ord(ch) - 0x60) if "ァ" <= ch <= "ン" else ch
+        for ch in text
+    )
 
 
 def _remove_repetitions(text: str, min_pattern_len: int = 8, max_repeats: int = 2) -> str:

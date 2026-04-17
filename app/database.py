@@ -73,6 +73,7 @@ def init_db() -> None:
         ("content_type", "TEXT DEFAULT 'long'"),
         ("author", "TEXT DEFAULT ''"),
         ("char_count", "INTEGER"),
+        ("title_furigana", "TEXT DEFAULT ''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE stories ADD COLUMN {col} {definition}")
@@ -114,6 +115,7 @@ def _row_to_story(
         id=row["id"],
         url=row["url"],
         title=row["title"],
+        title_furigana=row["title_furigana"] if "title_furigana" in keys else "",
         pub_date=row["pub_date"] or "",
         stage=row["stage"],
         error=row["error"],
@@ -168,6 +170,7 @@ def _rows_to_stories(rows: list[sqlite3.Row]) -> list[Story]:
 def add_story(
     url: str,
     title: str = "",
+    title_furigana: str = "",
     pub_date: str = "",
     categories: list[str] | None = None,
     content_type: str = "long",
@@ -179,10 +182,10 @@ def add_story(
     now = _now()
     try:
         cur = conn.execute(
-            "INSERT INTO stories (url, title, pub_date, stage, added_at, updated_at,"
+            "INSERT INTO stories (url, title, title_furigana, pub_date, stage, added_at, updated_at,"
             " content_type, author, char_count) "
-            "VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
-            (url, title, pub_date, now, now, content_type, author, char_count),
+            "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+            (url, title, title_furigana, pub_date, now, now, content_type, author, char_count),
         )
         story_id = cur.lastrowid
         for cat in categories or []:
@@ -323,6 +326,16 @@ def update_char_count(story_id: int, char_count: int) -> None:
     conn.execute(
         "UPDATE stories SET char_count = ?, updated_at = ? WHERE id = ?",
         (char_count, _now(), story_id),
+    )
+    conn.commit()
+
+
+def update_title_furigana(story_id: int, title_furigana: str) -> None:
+    """Update the title furigana for a story."""
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE stories SET title_furigana = ?, updated_at = ? WHERE id = ?",
+        (title_furigana, _now(), story_id),
     )
     conn.commit()
 

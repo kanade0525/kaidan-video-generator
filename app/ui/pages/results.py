@@ -74,7 +74,12 @@ def results_page(
                 story_stages = stages_for(story.content_type)
                 stage_idx = story_stages.index(story.stage) if story.stage in story_stages else 0
                 for i, s in enumerate(story_stages):
-                    color = "green" if i <= stage_idx else "gray"
+                    if i < stage_idx:
+                        color = "green"
+                    elif i == stage_idx:
+                        color = "blue"
+                    else:
+                        color = "gray"
                     label = STAGE_LABELS.get(s, s)
                     ui.badge(label, color=color).classes("text-xs")
 
@@ -233,7 +238,8 @@ def _show_text_result(story):
         text = proc_path.read_text(encoding="utf-8")
         char_label = ui.label(f"文字数: {len(text)}").classes("text-sm text-gray-500")
         edited = {"text": text}
-        ui.textarea(value=text, on_change=lambda e: edited.update(text=e.value)).classes("w-full").props("rows=10")
+        textarea = ui.textarea(value=text).classes("w-full").props("rows=10")
+        textarea.on_value_change(lambda e: edited.update(text=e.value))
 
         chunk_file = chunks_path(story.title, story.content_type)
         if chunk_file.exists():
@@ -257,6 +263,19 @@ def _show_text_result(story):
             ui.notify(f"処理済みテキストを保存（{len(new_chunks)}チャンク）", color="positive")
 
         ui.button("テキストを保存", on_click=save_processed, color="green").props("size=sm")
+
+        # Title furigana editing
+        ui.separator().classes("my-4")
+        ui.label("タイトルふりがな").classes("text-lg font-semibold")
+        furigana_input = ui.input(value=story.title_furigana, placeholder="ひらがな/カタカナで入力").classes("w-full")
+
+        def save_furigana():
+            new_furigana = furigana_input.value
+            from app.database import update_title_furigana
+            update_title_furigana(story.id, new_furigana)
+            ui.notify("タイトルふりがなを保存しました", color="positive")
+
+        ui.button("ふりがなを保存", on_click=save_furigana, color="blue").props("size=sm")
     else:
         ui.label("未処理").classes("text-gray-500")
 

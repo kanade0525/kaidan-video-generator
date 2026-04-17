@@ -35,6 +35,7 @@ def main():
             continue
 
         title = s.get("title", "")
+        title_furigana = s.get("title_furigana", "")
         pub_date = s.get("pub_date", "")
         categories = s.get("categories", [])
         stage = s.get("stage", "pending")
@@ -51,7 +52,7 @@ def main():
             stage = STAGES[max(0, idx - 1)]
 
         # Insert story
-        result = add_story(url=url, title=title, pub_date=pub_date, categories=categories)
+        result = add_story(url=url, title=title, title_furigana=title_furigana, pub_date=pub_date, categories=categories)
         if result is None:
             skipped += 1
             continue
