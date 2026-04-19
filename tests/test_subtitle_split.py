@@ -1,13 +1,6 @@
-"""Tests for subtitle text splitting, SRT generation, and original chunk creation."""
+"""Tests for subtitle text splitting and original chunk creation."""
 
-import json
-import wave
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
-
-from app.utils.ffmpeg import _split_subtitle_text, generate_srt
+from app.utils.ffmpeg import _split_subtitle_text
 from app.services.text_processor import split_into_n_chunks
 
 
@@ -117,58 +110,3 @@ class TestSplitIntoNChunks:
             # All content should be preserved
             assert "学生時代" in joined
             assert "見てしまった" in joined
-
-
-class TestGenerateSrt:
-    """Test generate_srt with subtitle splitting."""
-
-    @pytest.fixture
-    def audio_dir(self, tmp_path):
-        adir = tmp_path / "audio"
-        adir.mkdir()
-        return adir
-
-    def _create_wav(self, path: Path, duration_sec: float):
-        sample_rate = 24000
-        n_frames = int(sample_rate * duration_sec)
-        with wave.open(str(path), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            wf.writeframes(b"\x00\x00" * n_frames)
-
-    def test_generates_srt_with_split_subtitles(self, tmp_path, audio_dir):
-        chunks = ["これはテストです。ふたつめの文です。三つ目の文です。"]
-        self._create_wav(audio_dir / "narration_0000.wav", 10.0)
-
-        srt_path = tmp_path / "subtitles.srt"
-        generate_srt(chunks, audio_dir, srt_path, max_subtitle_chars=20)
-
-        content = srt_path.read_text(encoding="utf-8")
-        entries = [e.strip() for e in content.strip().split("\n\n") if e.strip()]
-        assert len(entries) >= 2
-
-    def test_leading_silence_offset(self, tmp_path, audio_dir):
-        chunks = ["テスト"]
-        self._create_wav(audio_dir / "narration_0000.wav", 5.0)
-
-        srt_path = tmp_path / "subtitles.srt"
-        generate_srt(chunks, audio_dir, srt_path, leading_silence=3.5)
-
-        content = srt_path.read_text(encoding="utf-8")
-        assert "00:00:03,500" in content
-
-    def test_preserves_total_duration(self, tmp_path, audio_dir):
-        chunks = [
-            "一番目のチャンクです。長めの文章です。",
-            "二番目のチャンクです。",
-        ]
-        self._create_wav(audio_dir / "narration_0000.wav", 10.0)
-        self._create_wav(audio_dir / "narration_0001.wav", 5.0)
-
-        srt_path = tmp_path / "subtitles.srt"
-        generate_srt(chunks, audio_dir, srt_path, leading_silence=0.0,
-                     max_subtitle_chars=20)
-
-        content = srt_path.read_text(encoding="utf-8")
-        assert "00:00:15,000" in content

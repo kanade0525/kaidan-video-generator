@@ -46,11 +46,3 @@ def get_openai():
 
         _openai = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
     return _openai
-
-
-def reset_all():
-    """Reset all cached clients (useful for testing)."""
-    global _gemini_text, _gemini_image, _openai
-    _gemini_text = None
-    _gemini_image = None
-    _openai = None
