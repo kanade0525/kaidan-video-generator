@@ -479,7 +479,13 @@ def _text_reference_panel(story):
     Placed below audio/video players so the user can cross-check scraped
     vs processed content while reviewing playback.
     """
-    ui.label("テキスト参照").classes("text-sm font-bold text-gray-500 mb-1")
+    with ui.row().classes("items-center gap-3 mb-1"):
+        ui.label("テキスト参照").classes("text-sm font-bold text-gray-500")
+        if story.url:
+            ui.label("元ソース:").classes("text-xs text-gray-500")
+            ui.link(story.url, story.url, new_tab=True).classes(
+                "text-xs text-blue-500 underline break-all"
+            )
     with ui.row().classes("w-full gap-4 items-start no-wrap"):
         with ui.column().classes("flex-1 min-w-0"):
             raw_path = raw_content_path(story.title, story.content_type)
