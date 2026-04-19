@@ -8,6 +8,7 @@ from app.utils.log import get_logger
 log = get_logger("kaidan.ui.results")
 from app.models import STAGE_LABELS, STAGES, stages_for
 from app.pipeline.executor import pipeline, shorts_pipeline
+from app.ui.category_colors import category_color
 from app.utils.paths import (
     audio_dir,
     chunks_path,
@@ -69,6 +70,12 @@ def results_page(
         with detail_container:
             # Progress indicator
             ui.label(f"「{story.title}」").classes("text-xl font-bold mb-2")
+
+            if story.categories:
+                with ui.row().classes("gap-1 mb-3 items-center"):
+                    ui.label("カテゴリ:").classes("text-sm text-gray-500")
+                    for c in story.categories:
+                        ui.badge(c, color=category_color(c)).classes("text-xs")
 
             with ui.row().classes("gap-1 mb-4"):
                 story_stages = stages_for(story.content_type)
