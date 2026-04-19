@@ -77,6 +77,7 @@ def pipeline_page():
             "voice_generated": "text_processed",
             "images_generated": "voice_generated",
             "video_complete": "images_generated",
+            "youtube_uploaded": "video_complete",
         }
         for stage, input_stage in input_stages.items():
             if stage in stage_cards:

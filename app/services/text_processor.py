@@ -12,7 +12,21 @@ log = get_logger("kaidan.text")
 
 @with_retry(max_attempts=3, base_delay=5.0)
 def process_text(text: str, prompt_template: str | None = None, model: str | None = None) -> str:
-    """Convert kanji text to hiragana using LLM API."""
+    """Convert kanji text to hiragana.
+
+    Strategy: MeCab-first deterministic conversion (kanji→reading, particle
+    は→わ, へ→え). If MeCab is unavailable, falls back to LLM-only conversion.
+    """
+    mecab_result = _mecab_to_hiragana(text)
+    if mecab_result is not None:
+        return mecab_result
+
+    log.warning("MeCab先行変換が失敗したためLLMフォールバックに切替")
+    return _llm_convert(text, prompt_template, model)
+
+
+def _llm_convert(text: str, prompt_template: str | None, model: str | None) -> str:
+    """LLM-only conversion (used as fallback when MeCab unavailable)."""
     model_name = model or cfg_get("text_model") or "gemini-2.5-flash"
     template = prompt_template or cfg_get("text_prompt")
 
@@ -33,25 +47,93 @@ def process_text(text: str, prompt_template: str | None = None, model: str | Non
         response = client.models.generate_content(model=model_name, contents=prompt)
         result = response.text or ""
 
-    # Strip markdown code blocks
     result = re.sub(r"```[\s\S]*?```", "", result)
     result = result.strip()
-
-    # Remove repetition loops (Gemini sometimes generates infinite repeats)
     result = _remove_repetitions(result)
 
-    # If any kanji remain after LLM conversion, convert them deterministically
-    # using MeCab readings so VOICEVOX receives hiragana as much as possible.
     if re.search(r"[一-龯]", result):
         result = _convert_kanji_to_hiragana(result)
 
-    # Post-process: convert particle は→わ, へ→え using MeCab
-    result = _fix_particles(result)
     return result
 
 
+# Surface → hiragana overrides for readings MeCab gets stylistically wrong
+# for 怪談朗読. Add entries here when a word is consistently mis-read.
+_READING_OVERRIDES: dict[str, str] = {
+    "私": "わたし",  # MeCab default: わたくし
+}
+
+
+def _mecab_to_hiragana(text: str) -> str | None:
+    """Convert text to hiragana using MeCab (kanji→reading + particle は/へ→わ/え).
+
+    Returns None if MeCab is unavailable so the caller can fall back.
+    """
+    try:
+        import MeCab
+    except ImportError:
+        log.warning("MeCab未インストール")
+        return None
+
+    try:
+        tagger = MeCab.Tagger()
+        tagger.parse("")
+        output: list[str] = []
+        node = tagger.parseToNode(text)
+        while node:
+            surface = node.surface
+            if not surface:
+                node = node.next
+                continue
+
+            feature = node.feature.split(",")
+            pos = feature[0] if feature else ""
+            pron = _extract_reading(feature)
+
+            has_kanji = bool(re.search(r"[一-龯々〆]", surface))
+            is_particle = pos == "助詞"
+
+            if surface in _READING_OVERRIDES:
+                output.append(_READING_OVERRIDES[surface])
+            elif has_kanji and pron:
+                output.append(_katakana_to_hiragana(pron))
+            elif is_particle and surface == "は":
+                output.append("わ")
+            elif is_particle and surface == "へ":
+                output.append("え")
+            else:
+                output.append(surface)
+            node = node.next
+
+        return "".join(output)
+    except Exception as e:
+        log.warning("MeCab変換エラー: %s", e)
+        return None
+
+
+def _extract_reading(feature: list[str]) -> str | None:
+    """Extract katakana reading matching the surface form.
+
+    Priority (unidic-lite / ipadic aware):
+    1. feature[17] — surface-form kana in proper orthography (unidic-lite):
+       handles inflected verbs correctly (覚まし→サマシ, not レンマの サマス).
+    2. feature[6] — lForm reading (unidic-lite base-form fallback).
+    3. feature[9] — pron (uses "ー" for long vowels, last resort).
+    4. feature[7] / feature[8] — ipadic reading / pron.
+
+    Only katakana-only values are accepted to guard against lemma fields
+    that contain kanji.
+    """
+    for idx in (17, 6, 9, 7, 8):
+        if idx < len(feature) and feature[idx] != "*":
+            val = feature[idx]
+            if re.fullmatch(r"[ァ-ヴー]+", val):
+                return val
+    return None
+
+
 def _convert_kanji_to_hiragana(text: str) -> str:
-    """Convert remaining kanji in text to hiragana using MeCab readings."""
+    """Convert only remaining kanji in text to hiragana (fallback path)."""
     try:
         import MeCab
 
@@ -66,15 +148,9 @@ def _convert_kanji_to_hiragana(text: str) -> str:
                 continue
 
             feature = node.feature.split(",")
-            reading = None
-            if len(feature) >= 10 and feature[9] != "*":
-                reading = feature[9]
-            elif len(feature) >= 8 and feature[7] != "*":
-                reading = feature[7]
-            elif len(feature) >= 9 and feature[8] != "*":
-                reading = feature[8]
+            reading = _extract_reading(feature)
 
-            if re.search(r"[一-龯]", surface) and reading:
+            if re.search(r"[一-龯々〆]", surface) and reading:
                 output.append(_katakana_to_hiragana(reading))
             else:
                 output.append(surface)
@@ -114,37 +190,6 @@ def _remove_repetitions(text: str, min_pattern_len: int = 8, max_repeats: int = 
                 text = text[:i + pattern_len * max_repeats] + text[j:]
             i += 1
     return text
-
-
-def _fix_particles(text: str) -> str:
-    """Convert particle は to わ and へ to え using MeCab morphological analysis."""
-    try:
-        import MeCab
-        tagger = MeCab.Tagger()
-        tagger.parse("")  # Initialize
-
-        output = []
-        node = tagger.parseToNode(text)
-        while node:
-            surface = node.surface
-            feature = node.feature.split(",")
-            pos = feature[0] if feature else ""
-
-            if surface == "は" and pos == "助詞":
-                output.append("わ")
-            elif surface == "へ" and pos == "助詞":
-                output.append("え")
-            else:
-                output.append(surface)
-            node = node.next
-
-        return "".join(output)
-    except ImportError:
-        log.warning("MeCab not installed, skipping particle conversion")
-        return text
-    except Exception as e:
-        log.warning("MeCab error: %s", e)
-        return text
 
 
 def split_into_chunks(text: str, max_length: int | None = None) -> list[str]:

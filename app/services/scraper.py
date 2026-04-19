@@ -20,12 +20,28 @@ CONTENT_SELECTORS = [
 ]
 
 
+_NOISE_SELECTORS = (
+    "figure.wp-block-embed",
+    "figure.wp-block-embed-youtube",
+    "iframe",
+    "script",
+    "style",
+    "div.entry-links",
+)
+
+
 @with_retry(max_attempts=3, base_delay=2.0)
 def fetch_story_content(url: str) -> str:
     """Fetch story text content from a URL."""
     r = requests.get(url, timeout=30)
     r.raise_for_status()
     soup = BeautifulSoup(r.content, "html.parser")
+
+    # Strip YouTube reader credits and other non-body embeds (HHS appends
+    # <figure class="wp-block-embed-youtube"> blocks with 朗読: ... captions).
+    for selector in _NOISE_SELECTORS:
+        for elem in soup.select(selector):
+            elem.decompose()
 
     for selector in CONTENT_SELECTORS:
         elem = soup.select_one(selector)

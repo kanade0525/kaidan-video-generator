@@ -17,8 +17,8 @@ def shorts_pipeline_page():
         ui.button("全て停止", on_click=lambda: _stop_all(), color="red")
         ui.button("スタック回復", on_click=lambda: _recover())
 
-    # Stage cards (skip 'pending' and stages not in auto pipeline)
-    auto_stages = STAGES_SHORT[1:-1]  # scraped through video_complete
+    # Stage cards (skip 'pending')
+    auto_stages = STAGES_SHORT[1:]  # scraped through youtube_uploaded
     stage_cards = {}
     with ui.grid(columns=5).classes("w-full gap-4"):
         for stage in auto_stages:
@@ -76,6 +76,7 @@ def shorts_pipeline_page():
             "voice_generated": "text_processed",
             "images_generated": "voice_generated",
             "video_complete": "images_generated",
+            "youtube_uploaded": "video_complete",
         }
         for stage, input_stage in input_stages.items():
             if stage in stage_cards:
