@@ -342,6 +342,9 @@ def _show_voice_result(story):
 
     _retry_button(story, "voice_generated", "音声再生成")
 
+    ui.separator().classes("my-4")
+    _text_reference_panel(story)
+
 
 def _show_images_result(story):
     import json as _json
@@ -465,6 +468,42 @@ def _show_video_result(story):
         ui.label("未生成").classes("text-gray-500")
 
     _retry_button(story, "video_complete", "動画再生成")
+
+    ui.separator().classes("my-4")
+    _text_reference_panel(story)
+
+
+def _text_reference_panel(story):
+    """Read-only side-by-side preview of raw and processed text.
+
+    Placed below audio/video players so the user can cross-check scraped
+    vs processed content while reviewing playback.
+    """
+    ui.label("テキスト参照").classes("text-sm font-bold text-gray-500 mb-1")
+    with ui.row().classes("w-full gap-4 items-start no-wrap"):
+        with ui.column().classes("flex-1 min-w-0"):
+            raw_path = raw_content_path(story.title, story.content_type)
+            ui.label("スクレイピング原文").classes("text-sm font-semibold")
+            if raw_path.exists():
+                raw_text = raw_path.read_text(encoding="utf-8")
+                ui.label(f"{len(raw_text)}文字").classes("text-xs text-gray-500")
+                ui.textarea(value=raw_text).props(
+                    "readonly dense autogrow"
+                ).classes("w-full").style("font-size: 15px; line-height: 1.6;")
+            else:
+                ui.label("未取得").classes("text-gray-500 text-sm")
+
+        with ui.column().classes("flex-1 min-w-0"):
+            proc_path = processed_text_path(story.title, story.content_type)
+            ui.label("処理後テキスト (ひらがな)").classes("text-sm font-semibold")
+            if proc_path.exists():
+                proc_text = proc_path.read_text(encoding="utf-8")
+                ui.label(f"{len(proc_text)}文字").classes("text-xs text-gray-500")
+                ui.textarea(value=proc_text).props(
+                    "readonly dense autogrow"
+                ).classes("w-full").style("font-size: 15px; line-height: 1.6;")
+            else:
+                ui.label("未処理").classes("text-gray-500 text-sm")
 
 
 def _show_youtube_upload_tab(story):
