@@ -9,6 +9,7 @@ log = get_logger("kaidan.ui.results")
 from app.models import STAGE_LABELS, STAGES, stages_for
 from app.pipeline.executor import pipeline, shorts_pipeline
 from app.ui.category_colors import category_color
+from app.utils.shorts_duration import estimate_shorts_total_duration
 from app.utils.paths import (
     audio_dir,
     chunks_path,
@@ -76,6 +77,9 @@ def results_page(
                     ui.label("カテゴリ:").classes("text-sm text-gray-500")
                     for c in story.categories:
                         ui.badge(c, color=category_color(c)).classes("text-xs")
+
+            if story.content_type == "short":
+                _render_shorts_duration_badge(story)
 
             with ui.row().classes("gap-1 mb-4"):
                 story_stages = stages_for(story.content_type)
@@ -217,6 +221,36 @@ def _retry_button(story, target_stage: str, label: str = "再処理"):
     ui.timer(0.5, poll)
 
     btn = ui.button(label, on_click=do_retry, color="orange").props("size=sm")
+
+
+_DURATION_BADGE_COLORS = {
+    "ok": "green-7",
+    "warning": "amber-8",
+    "over": "red-7",
+}
+
+_DURATION_BADGE_LABELS = {
+    "ok": "尺OK",
+    "warning": "尺注意",
+    "over": "180秒超過",
+}
+
+
+def _render_shorts_duration_badge(story):
+    """Show Shorts duration badge (180s limit) in the story detail header."""
+    est = estimate_shorts_total_duration(story)
+    if est.seconds is None:
+        return
+    cls = est.classification
+    if cls == "unknown":
+        return
+    base = _DURATION_BADGE_LABELS.get(cls, "")
+    color = _DURATION_BADGE_COLORS.get(cls, "grey")
+    with ui.row().classes("gap-1 mb-3 items-center"):
+        ui.label("尺:").classes("text-sm text-gray-500")
+        ui.badge(f"{base} ({est.seconds:.0f}s)", color=color).classes("text-xs")
+        if not est.actual:
+            ui.label("（音声からの予測）").classes("text-xs text-gray-400")
 
 
 def _show_scrape_result(story):
