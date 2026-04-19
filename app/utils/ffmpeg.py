@@ -626,6 +626,9 @@ def burn_all_overlays(
     scroll_font_size: int = 48,
     scroll_line_spacing: int = 48,
     scroll_margin_right: int = 200,
+    scroll_video_width: int = 1080,
+    scroll_overlay_x: int = 0,
+    mask_zones: bool = True,
     banner_text: str | None = None,
     banner_font_size: int = 64,
     banner_font_color: str = "red",
@@ -664,7 +667,7 @@ def burn_all_overlays(
         line_h = scroll_font_size + scroll_line_spacing
 
         # Generate scroll image with Pillow (narrower to avoid right-side buttons)
-        scroll_img_width = 1080 - scroll_margin_right
+        scroll_img_width = scroll_video_width - scroll_margin_right
         scroll_img_path = scroll_textfile.parent / "scroll_subtitle.png"
         _, img_h = generate_scroll_image(
             text="",
@@ -684,10 +687,11 @@ def burn_all_overlays(
         # Stop when the last line reaches the bottom of the visible area
         end_y = scroll_bottom - img_h
 
-        # Overlay with animated y position
+        # Overlay with animated y position (linear from start_y to end_y
+        # over scroll_duration seconds).
         filter_parts.append(
             f"{current_stream}[1:v]"
-            f"overlay=x=0"
+            f"overlay=x={scroll_overlay_x}"
             f":y='{start_y}-({start_y}-({end_y}))*(t-{scroll_start_time:.2f})/{scroll_duration:.2f}'"
             f":enable='between(t,{scroll_start_time:.2f},{scroll_end:.2f})'"
             f"[scrolled]"
@@ -717,19 +721,20 @@ def burn_all_overlays(
     # 1b. Masking boxes to clip scroll text to safe area.
     # Draw opaque rectangles over banner and credit zones so scroll text
     # that bleeds into those areas is hidden. Banner/credits render on top.
-    mask_enable = f":enable='gte(t,{banner_start_time:.2f})'" if banner_start_time > 0 else ""
-    # Top mask: y=0 to scroll_top
-    drawtext_filters.append(
-        f"drawbox=x=0:y=0:w=iw:h={scroll_top}"
-        f":color=black@0.85:t=fill"
-        f"{mask_enable}"
-    )
-    # Bottom mask: y=scroll_bottom to screen bottom
-    drawtext_filters.append(
-        f"drawbox=x=0:y={scroll_bottom}:w=iw:h=ih-{scroll_bottom}"
-        f":color=black@0.85:t=fill"
-        f"{mask_enable}"
-    )
+    if mask_zones:
+        mask_enable = f":enable='gte(t,{banner_start_time:.2f})'" if banner_start_time > 0 else ""
+        # Top mask: y=0 to scroll_top
+        drawtext_filters.append(
+            f"drawbox=x=0:y=0:w=iw:h={scroll_top}"
+            f":color=black@0.85:t=fill"
+            f"{mask_enable}"
+        )
+        # Bottom mask: y=scroll_bottom to screen bottom
+        drawtext_filters.append(
+            f"drawbox=x=0:y={scroll_bottom}:w=iw:h=ih-{scroll_bottom}"
+            f":color=black@0.85:t=fill"
+            f"{mask_enable}"
+        )
 
     # 2. Title banner (drawtext at top)
     if banner_text:

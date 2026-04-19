@@ -151,17 +151,99 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
         title_audio = sdir / "title_narration.wav"
         voice_generator.generate_title_audio(story.title, title_audio, story.title_furigana)
 
-    output = video_path(story.title, ct)
+    raw_output = sdir / "raw_long.mp4"
     video_generator.create_video(
-        images, narration, output,
+        images, narration, raw_output,
         durations=durations,
         title_card=title_card if title_card.exists() else None,
         title_audio=title_audio,
         progress_callback=progress_callback,
     )
 
+    # Burn scrolling subtitle (original text) if assets are available
+    output = video_path(story.title, ct)
+    _burn_long_scroll_subtitles(story, raw_output, output, title_card, title_audio)
+    if raw_output.exists() and raw_output != output:
+        raw_output.unlink()
+
     # Generate timestamps for YouTube description
     _save_timestamps(story, title_card, title_audio)
+
+
+def _burn_long_scroll_subtitles(
+    story: Story,
+    raw_video: Path,
+    final_output: Path,
+    title_card: Path | None,
+    title_audio: Path | None,
+) -> None:
+    """Burn a full-screen scrolling subtitle (original text) onto the long video.
+
+    Uses the same `generate_scroll_image` + overlay approach as Shorts, but
+    with 1920x1080 coordinates. Timing is length-proportional across the whole
+    narration, avoiding chunk-to-chunk drift from hiragana/kanji length mismatch.
+
+    Falls back to copying `raw_video` → `final_output` if the required inputs
+    (original chunks, narration audio) are missing.
+    """
+    from app.config import get as cfg_get
+    from app.utils.ffmpeg import _split_subtitle_text, burn_all_overlays, get_audio_duration
+
+    ct = story.content_type
+    sdir = story_dir(story.title, ct)
+    orig_chunks_file = original_chunks_path(story.title, ct)
+    narration = narration_path(story.title, ct)
+
+    if not orig_chunks_file.exists() or not narration.exists():
+        log.info("[video] 原文チャンクまたはナレーションなし、字幕焼き込みスキップ")
+        raw_video.rename(final_output)
+        return
+
+    subtitle_chunks = json.loads(orig_chunks_file.read_text(encoding="utf-8"))
+    subtitle_text = "".join(subtitle_chunks)
+    if not subtitle_text.strip():
+        log.info("[video] 字幕テキストが空、焼き込みスキップ")
+        raw_video.rename(final_output)
+        return
+
+    segments = _split_subtitle_text(subtitle_text, max_chars=40)
+    scroll_txt = sdir / "scroll_subtitle_long.txt"
+    scroll_txt.write_text("\n".join(segments), encoding="utf-8")
+
+    # Scroll timing spans the entire narration.
+    # Offset = OP + title_clip + leading_silence
+    offset = 0.0
+    op_path = cfg_get("op_path")
+    if op_path and Path(op_path).exists():
+        offset += get_audio_duration(Path(op_path))
+    if title_card and title_card.exists() and title_audio and title_audio.exists():
+        offset += 1.0 + get_audio_duration(title_audio) + 1.0
+    offset += cfg_get("leading_silence") if cfg_get("leading_silence") is not None else 2.0
+
+    # Extend scroll animation past narration end so the last lines reach
+    # the bottom a few seconds after the audio finishes. Scroll speed is
+    # effectively unchanged (read_tail is ~1-2% of a typical narration).
+    read_tail = 5.0
+    scroll_dur = get_audio_duration(narration) + read_tail
+
+    log.info(
+        "[video] スクロール字幕焼き込み: %d 行, start=%.2fs, duration=%.1fs",
+        len(segments), offset, scroll_dur,
+    )
+    burn_all_overlays(
+        raw_video, final_output,
+        scroll_textfile=scroll_txt,
+        scroll_start_time=offset,
+        scroll_duration=scroll_dur,
+        scroll_top=120,
+        scroll_bottom=960,
+        scroll_font_size=44,
+        scroll_line_spacing=32,
+        scroll_margin_right=120,
+        scroll_video_width=1920,
+        scroll_overlay_x=60,
+        mask_zones=False,
+    )
 
 
 def _format_timestamp(seconds: float) -> str:
