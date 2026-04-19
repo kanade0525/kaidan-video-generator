@@ -196,19 +196,23 @@ class TestStageDispatch:
 
 
 class TestVoiceShortDurationValidation:
-    """Test that do_voice_short rejects stories that are too long."""
+    """Test that do_voice_short tolerates long stories (YouTube Shorts
+    制限は後段 upload で弾く。voice は TikTok 等のために常に完走させる)."""
 
-    def test_rejects_over_180_seconds(self, output_base):
+    def test_over_180_seconds_does_not_raise(self, output_base):
+        """180s超過でも voice ステージは正常完了（警告ログのみ）。"""
         story = Story(id=1, title="長すぎる話", content_type="short")
 
-        # Write chunks file
         chunks = chunks_path("長すぎる話", "short")
         chunks.write_text(json.dumps(["chunk1", "chunk2"]))
 
+        narr = narration_path("長すぎる話", "short")
+        narr.write_bytes(b"dummy")
+
         with patch("app.services.voice_generator.generate_narration"):
-            with patch("app.utils.ffmpeg.get_audio_duration", return_value=185.0):
-                with pytest.raises(RuntimeError, match="尺制限超過"):
-                    do_voice_short(story)
+            with patch("app.utils.ffmpeg.get_audio_duration", return_value=300.0):
+                # Should not raise — voice生成は尺に関係なく完走
+                do_voice_short(story)
 
     def test_accepts_under_180_seconds(self, output_base):
         story = Story(id=1, title="ちょうどよい話", content_type="short")
@@ -216,11 +220,9 @@ class TestVoiceShortDurationValidation:
         chunks = chunks_path("ちょうどよい話", "short")
         chunks.write_text(json.dumps(["chunk1"]))
 
-        # Create a dummy narration file
         narr = narration_path("ちょうどよい話", "short")
         narr.write_bytes(b"dummy")
 
         with patch("app.services.voice_generator.generate_narration"):
             with patch("app.utils.ffmpeg.get_audio_duration", return_value=90.0):
-                # Should not raise
                 do_voice_short(story)

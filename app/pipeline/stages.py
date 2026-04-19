@@ -265,6 +265,14 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
     category_id = cfg_get("youtube_category_id")
     privacy = cfg_get("youtube_privacy_status")
 
+    publish_at = None
+    if cfg_get("youtube_schedule_enabled"):
+        publish_at = youtube_uploader.get_next_publish_time(
+            day=cfg_get("youtube_schedule_day") or "saturday",
+            hour=cfg_get("youtube_schedule_hour") or 20,
+            minute=cfg_get("youtube_schedule_minute") or 0,
+        )
+
     result = youtube_uploader.upload_video(
         video_path=vid,
         title=yt_title,
@@ -272,6 +280,7 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
         tags=tags if isinstance(tags, list) else [t.strip() for t in tags.split(",")],
         category_id=category_id,
         privacy_status=privacy,
+        publish_at=publish_at,
         progress_callback=progress_callback,
     )
 
@@ -366,21 +375,24 @@ def do_voice_short(story: Story, progress_callback: ProgressCallback = None) -> 
         speed=shorts_speed,
     )
 
-    # Duration validation
+    # Duration notice (non-blocking).
+    # YouTube Shorts制限 (180s) は upload stage で弾く。voice 段階では警告のみ。
     narr = narration_path(story.title, ct)
     duration = get_audio_duration(narr)
     lead = cfg_get("shorts_leading_silence")
     trail = cfg_get("shorts_trailing_silence")
     endscreen = cfg_get("shorts_endscreen_duration") or 0.0
     total = duration + lead + trail + endscreen
-    max_duration = 180.0
+    shorts_limit = 180.0
 
-    if total > max_duration:
-        raise RuntimeError(
-            f"ショート動画の尺制限超過: {total:.1f}s > {max_duration:.0f}s "
-            f"(ナレーション: {duration:.1f}s + 無音: {lead + trail:.1f}s + 終了画面: {endscreen:.1f}s)"
+    if total > shorts_limit:
+        log.warning(
+            "[voice:short] YouTube Shorts尺制限超過: %.1fs > %.0fs "
+            "(TikTok等の長尺プラットフォーム向けに動画は生成継続。YouTube Shortsアップロードは後段でスキップされます)",
+            total, shorts_limit,
         )
-    log.info("[voice:short] 尺OK: %.1fs (制限: %.0fs)", total, max_duration)
+    else:
+        log.info("[voice:short] 尺OK: %.1fs (制限: %.0fs)", total, shorts_limit)
 
 
 def do_images_short(story: Story, progress_callback: ProgressCallback = None) -> None:
@@ -566,6 +578,19 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
     if not youtube_uploader.is_authenticated():
         raise RuntimeError("YouTube未認証。設定ページから認証を実行してください。")
 
+    # YouTube Shorts の180秒上限を超える動画はアップロード対象外（TikTok等専用）
+    from app.utils.ffmpeg import get_audio_duration
+    shorts_limit = 180.0
+    try:
+        vid_dur = get_audio_duration(vid)
+    except Exception:
+        vid_dur = 0.0
+    if vid_dur > shorts_limit:
+        raise RuntimeError(
+            f"YouTube Shorts尺制限超過のためアップロードスキップ: "
+            f"{vid_dur:.1f}s > {shorts_limit:.0f}s"
+        )
+
     # Load metadata for author
     meta_file = meta_path(story.title, ct)
     author = story.author
@@ -619,6 +644,14 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
     category_id = cfg_get("youtube_category_id")
     privacy = cfg_get("youtube_privacy_status")
 
+    publish_at = None
+    if cfg_get("youtube_schedule_enabled"):
+        publish_at = youtube_uploader.get_next_publish_time(
+            day=cfg_get("youtube_schedule_day") or "saturday",
+            hour=cfg_get("youtube_schedule_hour") or 20,
+            minute=cfg_get("youtube_schedule_minute") or 0,
+        )
+
     # Use title card as thumbnail
     thumbnail = images_dir(story.title, ct) / TITLE_CARD_FILENAME
 
@@ -629,6 +662,7 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
         tags=tags if isinstance(tags, list) else [t.strip() for t in tags.split(",")],
         category_id=category_id,
         privacy_status=privacy,
+        publish_at=publish_at,
         thumbnail_path=thumbnail if thumbnail.exists() else None,
         progress_callback=progress_callback,
     )
@@ -637,16 +671,18 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
 
 
 # Stage function registry: maps (content_type, output_stage) -> processing function
-# youtube_uploaded and report_submitted are excluded - triggered manually via UI
+# report_submitted is excluded - triggered manually via UI
 STAGE_FUNCTIONS: dict[tuple[str, str], Callable] = {
     ("long", "scraped"): do_scrape,
     ("long", "text_processed"): do_text,
     ("long", "voice_generated"): do_voice,
     ("long", "images_generated"): do_images,
     ("long", "video_complete"): do_video,
+    ("long", "youtube_uploaded"): do_youtube_upload,
     ("short", "scraped"): do_scrape_short,
     ("short", "text_processed"): do_text,
     ("short", "voice_generated"): do_voice_short,
     ("short", "images_generated"): do_images_short,
     ("short", "video_complete"): do_video_short,
+    ("short", "youtube_uploaded"): do_youtube_upload_short,
 }
