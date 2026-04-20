@@ -57,11 +57,42 @@ def _llm_convert(text: str, prompt_template: str | None, model: str | None) -> s
     return result
 
 
-# Surface → hiragana overrides for readings MeCab gets stylistically wrong
-# for 怪談朗読. Add entries here when a word is consistently mis-read.
-_READING_OVERRIDES: dict[str, str] = {
+# Hardcoded defaults for the narration dictionaries. These are merged with
+# user additions from config.toml (`reading_overrides` / `compound_replacements`
+# / `keep_as_kanji`) at runtime, so the UI can add entries without redeploying.
+
+# Surface → hiragana overrides for readings MeCab gets stylistically wrong.
+_DEFAULT_READING_OVERRIDES: dict[str, str] = {
     "私": "わたし",  # MeCab default: わたくし
 }
+
+# Compound words that MeCab splits into multiple tokens, producing wrong
+# per-token readings (e.g. お父さん → お+父+さん → おちちさん).
+# Applied as a string replacement BEFORE tokenization.
+_DEFAULT_COMPOUND_REPLACEMENTS: dict[str, str] = {
+    "お父さん": "おとうさん",
+    "お母さん": "おかあさん",
+}
+
+# Kanji to keep as-is (skip hiragana conversion) because VOICEVOX mis-reads
+# the hiragana form. Verified via VOICEVOX audio_query API:
+#   母 → ハハ (正しい)  /  はは → ワワ (誤: 両方の"は"が助詞扱いされる)
+_DEFAULT_KEEP_AS_KANJI: set[str] = {"母"}
+
+
+def _reading_overrides() -> dict[str, str]:
+    user = cfg_get("reading_overrides") or {}
+    return {**_DEFAULT_READING_OVERRIDES, **user}
+
+
+def _compound_replacements() -> dict[str, str]:
+    user = cfg_get("compound_replacements") or {}
+    return {**_DEFAULT_COMPOUND_REPLACEMENTS, **user}
+
+
+def _keep_as_kanji() -> set[str]:
+    user = cfg_get("keep_as_kanji") or []
+    return _DEFAULT_KEEP_AS_KANJI | set(user)
 
 
 def _mecab_to_hiragana(text: str) -> str | None:
@@ -74,6 +105,12 @@ def _mecab_to_hiragana(text: str) -> str | None:
     except ImportError:
         log.warning("MeCab未インストール")
         return None
+
+    for src, dst in _compound_replacements().items():
+        text = text.replace(src, dst)
+
+    reading_overrides = _reading_overrides()
+    keep_as_kanji = _keep_as_kanji()
 
     try:
         tagger = MeCab.Tagger()
@@ -93,8 +130,10 @@ def _mecab_to_hiragana(text: str) -> str | None:
             has_kanji = bool(re.search(r"[一-龯々〆]", surface))
             is_particle = pos == "助詞"
 
-            if surface in _READING_OVERRIDES:
-                output.append(_READING_OVERRIDES[surface])
+            if surface in keep_as_kanji:
+                output.append(surface)
+            elif surface in reading_overrides:
+                output.append(reading_overrides[surface])
             elif has_kanji and pron:
                 output.append(_katakana_to_hiragana(pron))
             elif is_particle and surface == "は":
@@ -139,6 +178,7 @@ def _convert_kanji_to_hiragana(text: str) -> str:
 
         tagger = MeCab.Tagger()
         tagger.parse("")
+        keep_as_kanji = _keep_as_kanji()
         output: list[str] = []
         node = tagger.parseToNode(text)
         while node:
@@ -150,7 +190,9 @@ def _convert_kanji_to_hiragana(text: str) -> str:
             feature = node.feature.split(",")
             reading = _extract_reading(feature)
 
-            if re.search(r"[一-龯々〆]", surface) and reading:
+            if surface in keep_as_kanji:
+                output.append(surface)
+            elif re.search(r"[一-龯々〆]", surface) and reading:
                 output.append(_katakana_to_hiragana(reading))
             else:
                 output.append(surface)

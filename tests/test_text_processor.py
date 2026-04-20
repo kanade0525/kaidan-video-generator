@@ -92,6 +92,46 @@ class TestMecabToHiragana:
         assert "わたし" in result
         assert "わたくし" not in result
 
+    def test_compound_otousan(self):
+        """複合語置換: お父さん → おとうさん（MeCab分割で 父→ちち になるのを防ぐ）。"""
+        result = _mecab_to_hiragana("お父さんは走った")
+        assert "おとうさん" in result
+        assert "おちち" not in result
+
+    def test_compound_okaasan(self):
+        """複合語置換: お母さん → おかあさん（MeCab分割で 母→はは になるのを防ぐ）。"""
+        result = _mecab_to_hiragana("お母さんは優しい")
+        assert "おかあさん" in result
+        assert "おはは" not in result
+
+    def test_keep_haha_as_kanji(self):
+        """母は漢字のまま保持（VOICEVOXが "はは" を "ワワ" と誤読するため）。"""
+        result = _mecab_to_hiragana("3人で母を見た")
+        assert "母" in result
+        assert "はは" not in result
+
+    def test_user_config_merges_with_defaults(self, tmp_path, monkeypatch):
+        """UIから追加した辞書エントリがデフォルトとマージされて適用される。"""
+        import app.config as config_module
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
+        config_module.save_config({
+            "reading_overrides": {"某": "ぼう"},
+            "compound_replacements": {"お爺さん": "おじいさん"},
+            "keep_as_kanji": ["葉"],
+        })
+        # User-added reading override applied
+        assert "ぼう" in _mecab_to_hiragana("某氏が来た")
+        # User-added compound replacement applied
+        assert "おじいさん" in _mecab_to_hiragana("お爺さんは優しい")
+        # User-added keep-as-kanji applied
+        result = _mecab_to_hiragana("葉が落ちた")
+        assert "葉" in result
+        # Default 母→漢字保持 still works
+        assert "母" in _mecab_to_hiragana("母を見た")
+        # Default 私→わたし still works
+        assert "わたし" in _mecab_to_hiragana("私は行く")
+
     def test_inflected_verb_reading(self):
         """活用形の動詞はsurface形の読みを使う（レンマ形ではない）。"""
         # 覚ました → さました (not さまする)
