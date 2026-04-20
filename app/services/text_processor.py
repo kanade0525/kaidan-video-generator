@@ -72,12 +72,51 @@ _DEFAULT_READING_OVERRIDES: dict[str, str] = {
 _DEFAULT_COMPOUND_REPLACEMENTS: dict[str, str] = {
     "お父さん": "おとうさん",
     "お母さん": "おかあさん",
+    # "の臭い" は名詞(におい)ほぼ確定だが、後続の と/だ などで MeCab が
+    # 形容詞(くさい)に倒れることがある。先に置換して曖昧性を除去する。
+    # 形容詞用法(例: 「魚が臭い」「靴が臭くて」)はMeCabが正しく判別するので
+    # 置換対象外。
+    "の臭い": "のにおい",
+    # 「間」の慣用読み ま (MeCabは多くの場合「あいだ」を返すが、下記は ま が
+    # 固定): いつの間(に)(か), 知らない/ぬ間に, あっという間。
+    # 少しの間/その間/この間 等の「あいだ」読みは MeCab に任せる。
+    "いつの間にか": "いつのまにか",
+    "いつの間に": "いつのまに",
+    "知らない間に": "しらないまに",
+    "知らぬ間に": "しらぬまに",
+    "あっという間": "あっというま",
 }
 
 # Kanji to keep as-is (skip hiragana conversion) because VOICEVOX mis-reads
-# the hiragana form. Verified via VOICEVOX audio_query API:
-#   母 → ハハ (正しい)  /  はは → ワワ (誤: 両方の"は"が助詞扱いされる)
-_DEFAULT_KEEP_AS_KANJI: set[str] = {"母"}
+# the hiragana form as a particle は. Verified via VOICEVOX audio_query API:
+# many は-start 2-mora nouns get their first は interpreted as a particle
+# when preceded by adjective/genitive patterns (e.g., 「こわいはなし」 →
+# コワイ**ワ**ナシ, 「きれいなはだ」 → キレイナ**ワ**ダ). Keeping the kanji
+# disambiguates for VOICEVOX.
+_DEFAULT_KEEP_AS_KANJI: set[str] = {
+    "母",   # はは → ワワ
+    "話",   # はなし → ワナシ
+    "花",   # はな → ワナ
+    "鼻",   # はな → ワナ
+    "羽",   # はね → ワネ
+    "肌",   # はだ → ワダ
+    "箱",   # はこ → ワコ
+    "葉",   # は → ワ
+    "歯",   # は → ワ
+    "腹",   # はら → ワラ (な-連体形文脈で誤読)
+}
+
+# Counter kanji whose correct reading depends on 促音/連濁/lexicalized rules
+# (e.g., 一泊→いっぱく, 三本→さんぼん, 二日→ふつか). MeCab tokenizes 数詞+カウンター
+# separately and concatenates bare readings, producing 「いちはく/さんほん/ふたか」.
+# VOICEVOX handles these correctly when given the kanji form, so we keep the
+# counter kanji as-is only when preceded by a number (数詞).
+_COUNTER_KANJI: set[str] = {
+    "日", "人", "月", "年", "本", "泊", "時", "個", "匹", "回",
+    "分", "週", "階", "度", "枚", "台", "冊", "歳", "才", "歩",
+    "杯", "軒", "着", "組", "口", "戸", "袋", "缶", "つ", "番",
+    "秒", "円", "通",
+}
 
 
 def _reading_overrides() -> dict[str, str]:
@@ -112,6 +151,11 @@ def _mecab_to_hiragana(text: str) -> str | None:
     reading_overrides = _reading_overrides()
     keep_as_kanji = _keep_as_kanji()
 
+    # Protect "数字+カウンター漢字" spans so MeCab does not split them and
+    # emit wrong per-token readings (e.g. 一泊二日 → いち泊ふた日 with bad
+    # 促音/連濁). VOICEVOX reads the original kanji form correctly.
+    text, counter_placeholders = _protect_counter_spans(text)
+
     try:
         tagger = MeCab.Tagger()
         tagger.parse("")
@@ -144,10 +188,39 @@ def _mecab_to_hiragana(text: str) -> str | None:
                 output.append(surface)
             node = node.next
 
-        return "".join(output)
+        result = "".join(output)
+        for placeholder, original in counter_placeholders.items():
+            result = result.replace(placeholder, original)
+        return result
     except Exception as e:
         log.warning("MeCab変換エラー: %s", e)
         return None
+
+
+# Counter spans may have a trailing suffix kanji that belongs to the counter
+# phrase lexically (e.g., 3日"間", 6年"生", 5分"間"). Include these so MeCab
+# does not re-tokenize them standalone and pick the wrong reading.
+_COUNTER_SPAN_RE = re.compile(
+    r"[0-9０-９一二三四五六七八九十百千万]+"
+    r"(?:[" + "".join(_COUNTER_KANJI) + r"][間生]?)+"
+)
+
+
+def _protect_counter_spans(text: str) -> tuple[str, dict[str, str]]:
+    """Replace 数字+カウンター漢字 spans with placeholders to shield them from MeCab.
+
+    Uses Private Use Area codepoints as placeholders since they are guaranteed
+    not to appear in real text and are treated as opaque symbols by MeCab.
+    """
+    placeholders: dict[str, str] = {}
+
+    def _repl(m: re.Match) -> str:
+        key = f"\uE000{len(placeholders):04d}\uE001"
+        placeholders[key] = m.group(0)
+        return key
+
+    protected = _COUNTER_SPAN_RE.sub(_repl, text)
+    return protected, placeholders
 
 
 def _extract_reading(feature: list[str]) -> str | None:

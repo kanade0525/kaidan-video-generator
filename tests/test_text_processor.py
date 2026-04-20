@@ -110,6 +110,102 @@ class TestMecabToHiragana:
         assert "母" in result
         assert "はは" not in result
 
+    def test_keep_hanashi_as_kanji(self):
+        """話は漢字のまま保持（「こわいはなし」等で VOICEVOX が はなし→ワナシ と誤読）。"""
+        result = _mecab_to_hiragana("怖い話")
+        assert "話" in result
+        assert "はなし" not in result
+
+    def test_keep_hana_kanji(self):
+        """花/鼻は漢字のまま保持（VOICEVOX が はな→ワナ と誤読）。"""
+        assert "花" in _mecab_to_hiragana("きれいな花")
+        assert "鼻" in _mecab_to_hiragana("赤い鼻")
+
+    def test_keep_body_parts_kanji(self):
+        """肌/羽など、VOICEVOX が は→ワ と誤読する1-2モーラ名詞を漢字保持。"""
+        assert "肌" in _mecab_to_hiragana("きれいな肌")
+        assert "羽" in _mecab_to_hiragana("長い羽")
+        assert "箱" in _mecab_to_hiragana("この箱")
+
+    def test_hanasu_verb_form_still_hiragana(self):
+        """話す(動詞)などの活用形はひらがなに変換される（surface が 話 単独ではないため）。"""
+        # MeCabは「話す」を1トークンで返すため、_KEEP_AS_KANJI(話)には合致せず
+        # 通常の漢字→ひらがな変換が適用される
+        assert "はなす" in _mecab_to_hiragana("彼は話す")
+        assert "はなした" in _mecab_to_hiragana("彼が話した")
+
+    def test_compound_kanji_still_converted(self):
+        """会話/昔話/花火 などの複合語も1トークンで処理されひらがな変換される。"""
+        assert "かいわ" in _mecab_to_hiragana("静かな会話")
+        assert "むかしばなし" in _mecab_to_hiragana("昔話を聞く")
+        assert "はなび" in _mecab_to_hiragana("夏の花火")
+
+    def test_noun_nioi_after_no(self):
+        """の臭い は名詞(におい)として読む。MeCab が後続文脈で形容詞に倒れるのを防ぐ。"""
+        result = _mecab_to_hiragana("石油ヒーターの臭いと、機械音")
+        assert "におい" in result
+        assert "くさい" not in result
+
+    def test_counter_span_preserved_kanji(self):
+        """数字+カウンター漢字は漢字のまま保持（VOICEVOXが正しい促音/連濁で読むため）。"""
+        # 一泊二日: MeCab分解だと いち+はく+ふた+か になり誤読
+        result = _mecab_to_hiragana("一泊二日の旅")
+        assert "一泊二日" in result, f"expected 一泊二日 preserved, got: {result}"
+
+    def test_counter_span_with_arabic_digits(self):
+        """アラビア数字+カウンター漢字も保持される。"""
+        result = _mecab_to_hiragana("3人は1泊2日で")
+        assert "3人" in result
+        assert "1泊2日" in result
+
+    def test_counter_nichikan_preserved(self):
+        """日間 (duration counter) も 数詞+日間 として保持される。"""
+        result = _mecab_to_hiragana("3日間ずっと")
+        assert "3日間" in result
+
+    def test_counter_nensei_preserved(self):
+        """年生 (学年) も 数詞+年生 として保持され MeCab で生→なま と誤変換されない。"""
+        result = _mecab_to_hiragana("6年生の子供")
+        assert "6年生" in result
+        assert "なま" not in result
+
+    def test_non_counter_sei_still_converted(self):
+        """カウンター文脈にない 生 は従来通り変換される（なま/い）。"""
+        assert "なま" in _mecab_to_hiragana("生卵")
+        assert "うまれる" in _mecab_to_hiragana("生まれる")
+
+    def test_non_counter_kanji_still_converted(self):
+        """カウンター文脈にない同じ漢字は従来通り変換される。"""
+        # その日 の 日 は名詞(単独)なので ひ に変換
+        result = _mecab_to_hiragana("その日のこと")
+        assert "ひ" in result
+        assert "日" not in result
+        # 月が綺麗 の 月 も名詞
+        result = _mecab_to_hiragana("月が綺麗")
+        assert "つき" in result
+        assert "月" not in result
+
+    def test_itsunomanika_idiom(self):
+        """「いつの間にか」は慣用句で 間→ま 固定（MeCab は間→あいだと誤読）。"""
+        result = _mecab_to_hiragana("いつの間にか眠っていた")
+        assert "いつのまにか" in result
+        assert "いつのあいだ" not in result
+
+    def test_shiranu_maani_idiom(self):
+        """「知らない間に」「知らぬ間に」も 間→ま 固定。"""
+        assert "しらないまに" in _mecab_to_hiragana("知らない間に消えた")
+        assert "しらぬまに" in _mecab_to_hiragana("知らぬ間に")
+
+    def test_atto_iu_ma_idiom(self):
+        """「あっという間」は 間→ま 固定。"""
+        result = _mecab_to_hiragana("あっという間に終わった")
+        assert "あっというま" in result
+
+    def test_adjective_kusai_preserved(self):
+        """形容詞用法の 臭い はくさい として読まれる（MeCab が正しく判別する）。"""
+        result = _mecab_to_hiragana("魚が臭い")
+        assert "くさい" in result
+
     def test_user_config_merges_with_defaults(self, tmp_path, monkeypatch):
         """UIから追加した辞書エントリがデフォルトとマージされて適用される。"""
         import app.config as config_module
