@@ -151,6 +151,8 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
         title_audio = sdir / "title_narration.wav"
         voice_generator.generate_title_audio(story.title, title_audio, story.title_furigana)
 
+    # Create video WITHOUT ED first; ED is concatenated after subtitles are
+    # burned so the scrolling subtitle's read-tail does not overlap the ED.
     raw_output = sdir / "raw_long.mp4"
     video_generator.create_video(
         images, narration, raw_output,
@@ -158,16 +160,35 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
         title_card=title_card if title_card.exists() else None,
         title_audio=title_audio,
         progress_callback=progress_callback,
+        include_ed=False,
     )
 
-    # Burn scrolling subtitle (original text) if assets are available
+    # Burn scrolling subtitle (original text) onto the ED-less video
     output = video_path(story.title, ct)
-    _burn_long_scroll_subtitles(story, raw_output, output, title_card, title_audio)
-    if raw_output.exists() and raw_output != output:
-        raw_output.unlink()
+    subtitled = sdir / "subtitled_long.mp4"
+    _burn_long_scroll_subtitles(story, raw_output, subtitled, title_card, title_audio)
+    raw_output.unlink(missing_ok=True)
+
+    # Append ED after subtitles are burned
+    _append_ed(subtitled, output)
 
     # Generate timestamps for YouTube description
     _save_timestamps(story, title_card, title_audio)
+
+
+def _append_ed(src: Path, dst: Path) -> None:
+    """Append ED video (if configured) to src, writing to dst. No-op if no ED."""
+    from pathlib import Path as _P
+
+    from app.config import get as cfg_get
+    from app.utils.ffmpeg import concat_videos
+
+    ed_path = cfg_get("ed_path")
+    if ed_path and _P(ed_path).exists():
+        concat_videos([src, _P(ed_path)], dst, width=1920, height=1080)
+        src.unlink(missing_ok=True)
+    else:
+        src.rename(dst)
 
 
 def _burn_long_scroll_subtitles(

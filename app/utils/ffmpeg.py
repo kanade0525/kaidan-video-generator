@@ -780,6 +780,13 @@ def burn_all_overlays(
     # Strategy: if we have both overlay (filter_complex) and drawtext filters,
     # run them in two passes. Mixing drawtext with Japanese text inside
     # filter_complex causes escaping issues with 「」 and other characters.
+    # Burn can take longer than default 600s for 5+ minute videos; use fast
+    # preset and scale timeout with input length.
+    try:
+        burn_timeout = max(1800, int(get_audio_duration(input_path) * 6))
+    except Exception:
+        burn_timeout = 1800
+
     if filter_parts and drawtext_filters:
         # Pass 1: overlay (filter_complex)
         temp_overlay = output_path.parent / f"_overlay_temp_{output_path.name}"
@@ -790,21 +797,21 @@ def burn_all_overlays(
         cmd1.extend([
             "-filter_complex", vf,
             "-map", f"[{last_tag}]", "-map", "0:a?",
-            "-c:v", "libx264", "-c:a", "copy",
+            "-c:v", "libx264", "-preset", "veryfast", "-c:a", "copy",
             "-movflags", "+faststart",
             str(temp_overlay),
         ])
-        run_ffmpeg(cmd1)
+        run_ffmpeg(cmd1, timeout=burn_timeout)
 
         # Pass 2: drawtext (simple -vf, no escaping issues)
         dt_chain = ",".join(drawtext_filters)
         run_ffmpeg([
             "-i", str(temp_overlay),
             "-vf", dt_chain,
-            "-c:v", "libx264", "-c:a", "copy",
+            "-c:v", "libx264", "-preset", "veryfast", "-c:a", "copy",
             "-movflags", "+faststart",
             str(output_path),
-        ])
+        ], timeout=burn_timeout)
         temp_overlay.unlink(missing_ok=True)
 
     elif filter_parts:
@@ -816,11 +823,11 @@ def burn_all_overlays(
         cmd.extend([
             "-filter_complex", vf,
             "-map", f"[{last_tag}]", "-map", "0:a?",
-            "-c:v", "libx264", "-c:a", "copy",
+            "-c:v", "libx264", "-preset", "veryfast", "-c:a", "copy",
             "-movflags", "+faststart",
             str(output_path),
         ])
-        run_ffmpeg(cmd)
+        run_ffmpeg(cmd, timeout=burn_timeout)
 
     else:
         # Only drawtext
@@ -828,10 +835,10 @@ def burn_all_overlays(
         run_ffmpeg([
             "-i", str(input_path),
             "-vf", vf,
-            "-c:v", "libx264", "-c:a", "copy",
+            "-c:v", "libx264", "-preset", "veryfast", "-c:a", "copy",
             "-movflags", "+faststart",
             str(output_path),
-        ])
+        ], timeout=burn_timeout)
 
     return output_path
 
