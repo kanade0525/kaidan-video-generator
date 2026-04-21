@@ -121,6 +121,9 @@ _DEFAULT_COMPOUND_REPLACEMENTS: dict[str, str] = {
     "ではいって": "で入って",
     "にはいった": "に入った",
     "ではいった": "で入った",
+    # 「床に就く」(就寝の意) の 床 は とこ、就 は つ。MeCab は 床→ユカ、
+    # 就く→ズク と誤解析する。床に就(く/き/いた) すべてに効くよう接頭3文字で置換。
+    "床に就": "とこにつ",
 }
 
 # Kanji to keep as-is (skip hiragana conversion) because VOICEVOX mis-reads
