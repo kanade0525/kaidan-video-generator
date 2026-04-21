@@ -760,6 +760,12 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
     description += credit
 
     tags = cfg_get("shorts_youtube_tags")
+    # HHS由来 Short のみ #ホラホリ タグを付与（規約上の出典タグ慣習）
+    if is_hhs:
+        tag_list = [t.strip() for t in tags.split(",")] if isinstance(tags, str) else list(tags)
+        if "ホラホリ" not in tag_list:
+            tag_list.append("ホラホリ")
+        tags = tag_list
     category_id = cfg_get("youtube_category_id")
     privacy = cfg_get("youtube_privacy_status")
 

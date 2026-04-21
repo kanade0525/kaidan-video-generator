@@ -149,7 +149,12 @@ _DEFAULTS = {
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "#怪談 #ホラー #朗読 #怖い話 #Shorts #ホラホリ #百鬼朗読"
     ),
-    "shorts_youtube_tags": "怪談,ホラー,朗読,怖い話,Shorts,音読さん,都市伝説",
+    # Shorts 特化タグ: 睡眠用/作業用BGM 等の長尺向けは除外。
+    # ホラホリは HHS由来 Short のみ upload 時に追加（source依存）。
+    "shorts_youtube_tags": (
+        "怪談,ホラー,朗読,怖い話,心霊,恐怖,怪談朗読,実話怪談,都市伝説,"
+        "百鬼朗読,VOICEVOX,怖い話朗読,人怖,不思議な話,Shorts"
+    ),
     # Narration dictionary customization (user additions on top of hardcoded defaults)
     "reading_overrides": {},      # surface(漢字等) → ひらがな読み
     "compound_replacements": {},  # 置換元 → 置換後（MeCab前に適用）
