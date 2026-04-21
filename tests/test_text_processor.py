@@ -185,6 +185,30 @@ class TestMecabToHiragana:
         assert "つき" in result
         assert "月" not in result
 
+    def test_keep_nani_as_kanji(self):
+        """何は漢字のまま保持（VOICEVOXが文脈で ナニを/ナンラ/ナンニン 等を使い分ける）。"""
+        # 何+を → ナニ読み (MeCab は常に ナン を返すので hiragana だと誤読)
+        result = _mecab_to_hiragana("何を言う")
+        assert "何" in result
+        assert "なん" not in result
+
+    def test_keep_ato_as_kanji(self):
+        """後は漢字のまま保持（文境界直後で MeCab が 接尾辞/ゴ と誤解析する対策）。"""
+        # 文境界直後の 後から を MeCab は ご と読むが VOICEVOX は漢字なら アト
+        result = _mecab_to_hiragana("なぜだろう？後から聞いた")
+        assert "後" in result
+        assert "ごから" not in result
+        # 複合語(午後/最後)は1トークンで処理されひらがな化される（副作用なし）
+        assert "ごご" in _mecab_to_hiragana("午後になる")
+        assert "さいご" in _mecab_to_hiragana("最後の夜")
+
+    def test_nani_counter_span(self):
+        """何+カウンター漢字 (何人/何年/何回) は counter span として保護される。"""
+        result = _mecab_to_hiragana("何人いるのか")
+        assert "何人" in result
+        result = _mecab_to_hiragana("何年経った")
+        assert "何年" in result
+
     def test_itsunomanika_idiom(self):
         """「いつの間にか」は慣用句で 間→ま 固定（MeCab は間→あいだと誤読）。"""
         result = _mecab_to_hiragana("いつの間にか眠っていた")
@@ -200,6 +224,19 @@ class TestMecabToHiragana:
         """「あっという間」は 間→ま 固定。"""
         result = _mecab_to_hiragana("あっという間に終わった")
         assert "あっというま" in result
+
+    def test_counter_kurai_approximately(self):
+        """カウンター+位 は「〜くらい(約)」。4０代位→4０代くらい で VOICEVOX が
+        ヨンジュウダイクライ と読めるようにする（代位→ダイイ 誤読を回避）。"""
+        result = _mecab_to_hiragana("4０代位の女の人")
+        assert "くらい" in result
+        assert "だいい" not in result
+
+    def test_counter_kurai_various(self):
+        """代/年/時/分 等、各種カウンター+位 すべて処理される。"""
+        assert "くらい" in _mecab_to_hiragana("5時位に帰る")
+        assert "くらい" in _mecab_to_hiragana("20年位前")
+        assert "くらい" in _mecab_to_hiragana("10人位集まった")
 
     def test_adjective_kusai_preserved(self):
         """形容詞用法の 臭い はくさい として読まれる（MeCab が正しく判別する）。"""

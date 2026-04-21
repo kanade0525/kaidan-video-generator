@@ -85,6 +85,34 @@ _DEFAULT_COMPOUND_REPLACEMENTS: dict[str, str] = {
     "知らない間に": "しらないまに",
     "知らぬ間に": "しらぬまに",
     "あっという間": "あっというま",
+    # カウンター+位 は「〜くらい(約)」の意。MeCabは 代位/年位 等を1トークン化して
+    # ダイイ/ネンイ と誤読するので、先に 位→くらい に展開して数字+カウンターと
+    # くらいに分離する。(「10位」「1位」等のランキング用 位 は数詞+位のみで
+    # カウンターを挟まないため影響なし)
+    "代位": "代くらい",
+    "年位": "年くらい",
+    "時位": "時くらい",
+    "分位": "分くらい",
+    "秒位": "秒くらい",
+    "人位": "人くらい",
+    "日位": "日くらい",
+    "回位": "回くらい",
+    "度位": "度くらい",
+    "月位": "月くらい",
+    "歳位": "歳くらい",
+    "才位": "才くらい",
+    "週間位": "週間くらい",
+    "日間位": "日間くらい",
+    "年間位": "年間くらい",
+    "時間位": "時間くらい",
+    "分間位": "分間くらい",
+    "本位": "本くらい",
+    "個位": "個くらい",
+    "枚位": "枚くらい",
+    "匹位": "匹くらい",
+    "階位": "階くらい",
+    "台位": "台くらい",
+    "円位": "円くらい",
 }
 
 # Kanji to keep as-is (skip hiragana conversion) because VOICEVOX mis-reads
@@ -104,6 +132,13 @@ _DEFAULT_KEEP_AS_KANJI: set[str] = {
     "葉",   # は → ワ
     "歯",   # は → ワ
     "腹",   # はら → ワラ (な-連体形文脈で誤読)
+    # 何: MeCab は常に ナン を返すが、VOICEVOX は漢字なら文脈で ナニを/ナンラ/
+    # ナンネン 等に使い分ける。ひらがな「なん」を渡すと VOICEVOX も常に ナン。
+    "何",
+    # 後: 文境界(?/。/？)直後の「後から」を MeCab が 接尾辞/ゴ と誤解析する
+    # ことがある。VOICEVOX は漢字なら全文脈で正読 (後ろ→ウシロ, 後から→
+    # アトカラ, 最後→サイゴ, 午後→ゴゴ, 後半→コオハン)。
+    "後",
 }
 
 # Counter kanji whose correct reading depends on 促音/連濁/lexicalized rules
@@ -200,8 +235,11 @@ def _mecab_to_hiragana(text: str) -> str | None:
 # Counter spans may have a trailing suffix kanji that belongs to the counter
 # phrase lexically (e.g., 3日"間", 6年"生", 5分"間"). Include these so MeCab
 # does not re-tokenize them standalone and pick the wrong reading.
+# 「何」 is included in the number-like prefix class so 何人/何年/何回 等も
+# 1トークンの カウンタースパンとして保護される (VOICEVOX は漢字組合せを見て
+# ナン+カウンター の正しい読みに倒す)。
 _COUNTER_SPAN_RE = re.compile(
-    r"[0-9０-９一二三四五六七八九十百千万]+"
+    r"[0-9０-９一二三四五六七八九十百千万何]+"
     r"(?:[" + "".join(_COUNTER_KANJI) + r"][間生]?)+"
 )
 
