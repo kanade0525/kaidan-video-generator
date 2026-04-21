@@ -80,6 +80,8 @@ def results_page(
 
             if story.content_type == "short":
                 _render_shorts_duration_badge(story)
+            else:
+                _render_shorts_duration_badge(story, label_prefix="Shorts移送判定: ")
 
             with ui.row().classes("gap-1 mb-4"):
                 story_stages = stages_for(story.content_type)
@@ -94,6 +96,9 @@ def results_page(
                     label = STAGE_LABELS.get(s, s)
                     ui.badge(label, color=color).classes("text-xs")
 
+            if story.content_type == "long":
+                _render_convert_to_short_button(story, on_done=lambda: show_detail(sid))
+
             if story.error:
                 ui.label(f"エラー: {story.error}").classes("text-red-500 mb-2")
 
@@ -105,9 +110,9 @@ def results_page(
                 images_tab = ui.tab("画像")
                 video_tab = ui.tab("動画")
                 youtube_tab = ui.tab("YouTube")
-                report_tab = None
-                if story.content_type != "short":
-                    report_tab = ui.tab("HHS使用報告")
+                # HHS使用報告 is required whenever story is HHS-sourced
+                # (includes long-form and migrated shorts)
+                report_tab = ui.tab("HHS使用報告") if story.source == "hhs" else None
 
             with ui.tab_panels(tabs, value=scrape_tab).classes("w-full"):
                 with ui.tab_panel(scrape_tab):
@@ -236,7 +241,7 @@ _DURATION_BADGE_LABELS = {
 }
 
 
-def _render_shorts_duration_badge(story):
+def _render_shorts_duration_badge(story, label_prefix: str = "尺: "):
     """Show Shorts duration badge (180s limit) in the story detail header."""
     est = estimate_shorts_total_duration(story)
     if est.seconds is None:
@@ -247,10 +252,72 @@ def _render_shorts_duration_badge(story):
     base = _DURATION_BADGE_LABELS.get(cls, "")
     color = _DURATION_BADGE_COLORS.get(cls, "grey")
     with ui.row().classes("gap-1 mb-3 items-center"):
-        ui.label("尺:").classes("text-sm text-gray-500")
+        ui.label(label_prefix).classes("text-sm text-gray-500")
         ui.badge(f"{base} ({est.seconds:.0f}s)", color=color).classes("text-xs")
         if not est.actual:
             ui.label("（音声からの予測）").classes("text-xs text-gray-400")
+
+
+def _render_convert_to_short_button(story, on_done):
+    """Button to migrate a long-form story to the Shorts pipeline.
+
+    Enabled only when audio duration estimate is ≤180s (ok/warning).
+    HHS-sourced stories carry the `source="hhs"` field into the Shorts
+    pipeline so the correct 引用元 template is used and HHS使用報告 is
+    still required after the Shorts upload.
+    """
+    est = estimate_shorts_total_duration(story)
+    cls = est.classification
+    disabled = cls in ("over", "unknown")
+    tooltip = None
+    if cls == "over":
+        tooltip = f"180秒超過のため Shorts 化不可 ({est.seconds:.0f}s)"
+    elif cls == "unknown":
+        tooltip = "ナレーション未生成のため判定不可"
+    elif cls == "warning":
+        tooltip = f"尺が180秒ギリギリ ({est.seconds:.0f}s). 移送後に再確認推奨"
+
+    def do_migrate():
+        def confirm():
+            dlg.close()
+            try:
+                db.convert_to_short(story.id)
+                msg = "Shortsパイプラインに移送しました"
+                if story.source == "hhs":
+                    msg += "（HHS使用報告が別途必要です）"
+                ui.notify(msg, color="positive")
+                on_done()
+            except Exception as e:
+                log.exception("convert_to_short failed")
+                ui.notify(f"移送失敗: {e}", color="negative")
+
+        with ui.dialog() as dlg, ui.card():
+            ui.label(f"「{story.title}」をShortsに移送しますか？").classes("text-lg font-bold")
+            ui.label(
+                "・content_type を short に切替、stage を音声生成済みに巻き戻し\n"
+                "・画像/動画/YouTube を Shorts 設定で再生成\n"
+                "・long 側の成果物は残置（手動削除可）"
+            ).classes("text-sm whitespace-pre-line")
+            if story.source == "hhs":
+                ui.label(
+                    "※ HHS由来: 移送後の Shorts に対しても別途「HHS使用報告」が必要です "
+                    "(規約準拠)。"
+                ).classes("text-sm text-orange-600")
+            with ui.row().classes("gap-2 mt-3 justify-end"):
+                ui.button("キャンセル", on_click=dlg.close).props("flat")
+                ui.button("移送実行", on_click=confirm, color="primary")
+        dlg.open()
+
+    with ui.row().classes("gap-2 mb-3 items-center"):
+        btn = ui.button(
+            "Shortsへ移送",
+            on_click=do_migrate,
+            color="orange" if cls == "warning" else "primary",
+        ).props("size=sm icon=content_copy")
+        if disabled:
+            btn.disable()
+        if tooltip:
+            btn.tooltip(tooltip)
 
 
 def _show_scrape_result(story):

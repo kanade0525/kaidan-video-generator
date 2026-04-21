@@ -162,6 +162,92 @@ class TestMarkFailed:
         assert story.stage == "scraped"
 
 
+class TestSource:
+    def test_long_default_source_hhs(self):
+        story = db.add_story(url="https://hhs.parasite.jp/hhslibrary/?p=1", content_type="long")
+        assert story.source == "hhs"
+
+    def test_short_inferred_source_kikikaikai(self):
+        story = db.add_story(
+            url="https://kikikaikai.kusuguru.co.jp/12345", content_type="short",
+        )
+        assert story.source == "kikikaikai"
+
+    def test_explicit_source_wins(self):
+        story = db.add_story(
+            url="https://example.com/custom", content_type="short", source="hhs",
+        )
+        assert story.source == "hhs"
+
+    def test_source_column_persists(self):
+        s = db.add_story(url="https://hhs.parasite.jp/a", content_type="long")
+        fresh = db.get_story_by_id(s.id)
+        assert fresh.source == "hhs"
+
+
+class TestConvertToShort:
+    def test_basic_conversion(self):
+        s = db.add_story(
+            url="https://hhs.parasite.jp/hhslibrary/?p=1",
+            title="HHS Test", content_type="long",
+        )
+        db.update_stage(s.id, "scraped")
+        db.update_stage(s.id, "text_processed")
+        db.update_stage(s.id, "voice_generated")
+        db.update_stage(s.id, "images_generated")
+        db.update_stage(s.id, "video_complete")
+        db.update_stage(s.id, "youtube_uploaded")
+        db.set_youtube_video_id(s.id, "LONG_ID")
+
+        db.convert_to_short(s.id)
+
+        fresh = db.get_story_by_id(s.id)
+        assert fresh.content_type == "short"
+        assert fresh.stage == "voice_generated"
+        assert fresh.source == "hhs"  # preserved
+        assert fresh.youtube_video_id is None  # cleared for new short upload
+
+    def test_later_stage_completions_cleared(self):
+        s = db.add_story(url="https://hhs.parasite.jp/2", content_type="long")
+        for stg in ["scraped", "text_processed", "voice_generated",
+                    "images_generated", "video_complete", "youtube_uploaded"]:
+            db.update_stage(s.id, stg)
+
+        db.convert_to_short(s.id)
+
+        conn = db._get_conn()
+        remaining = conn.execute(
+            "SELECT stage FROM stage_completions WHERE story_id = ?", (s.id,),
+        ).fetchall()
+        stages = {r["stage"] for r in remaining}
+        # Up to and including voice_generated should remain
+        assert "voice_generated" in stages
+        # Later stages should be cleared
+        assert "images_generated" not in stages
+        assert "youtube_uploaded" not in stages
+
+    def test_kikikaikai_source_preserved(self):
+        """Converting an already-short kikikaikai story (rare case) still keeps source."""
+        s = db.add_story(
+            url="https://kikikaikai.kusuguru.co.jp/99",
+            content_type="long",  # intentionally marked long to test conversion
+            source="kikikaikai",
+        )
+        db.update_stage(s.id, "voice_generated")
+        db.convert_to_short(s.id)
+
+        fresh = db.get_story_by_id(s.id)
+        assert fresh.source == "kikikaikai"
+        assert fresh.content_type == "short"
+
+
+class TestShortsStagesIncludeReport:
+    """STAGES_SHORT must include report_submitted for HHS-sourced shorts."""
+
+    def test_report_submitted_in_shorts_stages(self):
+        assert "report_submitted" in STAGES_SHORT
+
+
 class TestRecoverRunning:
     def test_recover_short_running(self):
         s = db.add_story(url="https://a.com/1", content_type="short")

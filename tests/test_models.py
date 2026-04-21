@@ -1,6 +1,14 @@
 """Tests for models module."""
 
-from app.models import STAGE_LABELS, STAGES, Story, next_stage, prev_stage
+from app.models import (
+    STAGE_LABELS,
+    STAGES,
+    STAGES_SHORT,
+    Story,
+    infer_source_from_url,
+    next_stage,
+    prev_stage,
+)
 
 
 class TestStages:
@@ -56,9 +64,29 @@ class TestStory:
         assert s.error is None
         assert s.categories == []
         assert s.youtube_video_id is None
+        assert s.source == "hhs"
 
     def test_categories_not_shared(self):
         s1 = Story()
         s2 = Story()
         s1.categories.append("test")
         assert s2.categories == []
+
+
+class TestInferSourceFromUrl:
+    def test_hhs_url(self):
+        assert infer_source_from_url("https://hhs.parasite.jp/hhslibrary/?p=123") == "hhs"
+
+    def test_kikikaikai_url(self):
+        assert infer_source_from_url("https://kikikaikai.kusuguru.co.jp/99") == "kikikaikai"
+
+    def test_unknown_url_defaults_hhs(self):
+        """Unknown host → hhs (the long-form default, the safer side since it enforces
+        usage reporting)."""
+        assert infer_source_from_url("https://example.com/x") == "hhs"
+
+
+class TestStagesShortIncludesReport:
+    def test_report_submitted_present(self):
+        """Shorts pipeline must include report_submitted for HHS-sourced shorts."""
+        assert "report_submitted" in STAGES_SHORT

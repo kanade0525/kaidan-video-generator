@@ -135,6 +135,20 @@ _DEFAULTS = {
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "#怪談 #ホラー #朗読 #怖い話 #Shorts #百鬼朗読"
     ),
+    # HHS-sourced stories migrated to Shorts pipeline use this template instead
+    # (HHS 規約で正しい引用元表記が必要なため)。`#ホラホリ` タグも付与。
+    "shorts_hhs_youtube_description_template": (
+        "【怪談朗読】{title} #Shorts\n\n"
+        "百鬼朗読へようこそ。\n"
+        "日本各地に伝わる怪談・不思議な話・人怖を朗読でお届けします。\n"
+        "チャンネル登録・高評価よろしくお願いします。\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "引用元:HHS図書館より\n"
+        "「{title}」{url}\n\n"
+        "音声: VOICEVOX:{speaker}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "#怪談 #ホラー #朗読 #怖い話 #Shorts #ホラホリ #百鬼朗読"
+    ),
     "shorts_youtube_tags": "怪談,ホラー,朗読,怖い話,Shorts,音読さん,都市伝説",
     # Narration dictionary customization (user additions on top of hardcoded defaults)
     "reading_overrides": {},      # surface(漢字等) → ひらがな読み

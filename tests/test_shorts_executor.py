@@ -27,9 +27,11 @@ class TestPipelineContentType:
         for stage in STAGES[1:]:
             assert stage in p.executors
 
-    def test_short_pipeline_excludes_report_submitted(self):
+    def test_short_pipeline_includes_report_submitted(self):
+        # HHS-sourced shorts (migrated from long) require usage reporting,
+        # so report_submitted is now part of STAGES_SHORT and Pipeline executors.
         p = Pipeline(content_type="short")
-        assert "report_submitted" not in p.executors
+        assert "report_submitted" in p.executors
 
     def test_short_pipeline_has_correct_stages(self):
         p = Pipeline(content_type="short")

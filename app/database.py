@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.models import STAGES, Story, stages_for
+from app.models import STAGES, Story, infer_source_from_url, stages_for
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "kaidan.db"
 
@@ -74,6 +74,7 @@ def init_db() -> None:
         ("author", "TEXT DEFAULT ''"),
         ("char_count", "INTEGER"),
         ("title_furigana", "TEXT DEFAULT ''"),
+        ("source", "TEXT DEFAULT 'hhs'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE stories ADD COLUMN {col} {definition}")
@@ -81,6 +82,12 @@ def init_db() -> None:
             pass  # Column already exists
     conn.execute("CREATE INDEX IF NOT EXISTS idx_content_type ON stories(content_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_content_type_stage ON stories(content_type, stage)")
+    # Backfill source for rows where it was defaulted but should differ based on URL/content_type.
+    # Existing shorts are all from kikikaikai; existing longs are all from hhs.
+    conn.execute(
+        "UPDATE stories SET source = 'kikikaikai' "
+        "WHERE content_type = 'short' AND (source IS NULL OR source = '' OR source = 'hhs')"
+    )
     conn.commit()
 
 
@@ -127,6 +134,7 @@ def _row_to_story(
         content_type=row["content_type"] if "content_type" in keys else "long",
         author=row["author"] if "author" in keys else "",
         char_count=row["char_count"] if "char_count" in keys else None,
+        source=(row["source"] if "source" in keys and row["source"] else "hhs"),
     )
 
 
@@ -176,16 +184,18 @@ def add_story(
     content_type: str = "long",
     author: str = "",
     char_count: int | None = None,
+    source: str | None = None,
 ) -> Story | None:
     """Add a new story. Returns None if URL already exists."""
     conn = _get_conn()
     now = _now()
+    src = source or infer_source_from_url(url)
     try:
         cur = conn.execute(
             "INSERT INTO stories (url, title, title_furigana, pub_date, stage, added_at, updated_at,"
-            " content_type, author, char_count) "
-            "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
-            (url, title, title_furigana, pub_date, now, now, content_type, author, char_count),
+            " content_type, author, char_count, source) "
+            "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
+            (url, title, title_furigana, pub_date, now, now, content_type, author, char_count, src),
         )
         story_id = cur.lastrowid
         for cat in categories or []:
@@ -373,6 +383,38 @@ def reset_to_stage(story_id: int, target_stage: str) -> None:
 def delete_story(story_id: int) -> None:
     conn = _get_conn()
     conn.execute("DELETE FROM stories WHERE id = ?", (story_id,))
+    conn.commit()
+
+
+def convert_to_short(story_id: int) -> None:
+    """Migrate a long-form story to the Shorts pipeline.
+
+    Rewinds stage to 'voice_generated' (case A: reuse existing audio) and
+    flips content_type. The `source` field is preserved so HHS-sourced
+    long stories keep their HHS attribution in the Shorts pipeline.
+
+    Deletes stage_completions beyond voice_generated so the Shorts pipeline
+    re-runs image/video/upload/(report) stages on the new content_type.
+    """
+    conn = _get_conn()
+    now = _now()
+    target_stage = "voice_generated"
+    # STAGES_SHORT is now used for clearing completions
+    from app.models import STAGES_SHORT
+    idx = STAGES_SHORT.index(target_stage)
+    later_stages = STAGES_SHORT[idx + 1:]
+
+    conn.execute(
+        "UPDATE stories SET content_type = 'short', stage = ?, error = NULL, "
+        "youtube_video_id = NULL, updated_at = ? WHERE id = ?",
+        (target_stage, now, story_id),
+    )
+    if later_stages:
+        placeholders = ",".join("?" * len(later_stages))
+        conn.execute(
+            f"DELETE FROM stage_completions WHERE story_id = ? AND stage IN ({placeholders})",
+            [story_id, *later_stages],
+        )
     conn.commit()
 
 

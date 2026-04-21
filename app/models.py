@@ -21,6 +21,7 @@ STAGES_SHORT = [
     "images_generated",
     "video_complete",
     "youtube_uploaded",
+    "report_submitted",
 ]
 
 STAGE_LABELS = {
@@ -77,3 +78,13 @@ class Story:
     content_type: str = "long"
     author: str = ""
     char_count: int | None = None
+    # "hhs" (HHS図書館) or "kikikaikai" (奇々怪々). Determines which credit template
+    # and whether usage report is required (HHS mandates reporting per 規約).
+    source: str = "hhs"
+
+
+def infer_source_from_url(url: str) -> str:
+    """Infer story source from URL host. Falls back to 'hhs' (the long-form default)."""
+    if "kikikaikai" in url:
+        return "kikikaikai"
+    return "hhs"
