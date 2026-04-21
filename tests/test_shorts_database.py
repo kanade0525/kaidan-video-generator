@@ -287,6 +287,48 @@ class TestShortsStagesIncludeReport:
         assert "report_submitted" in STAGES_SHORT
 
 
+class TestGetStoriesOrdering:
+    def test_default_order_by_updated_at_desc(self):
+        """Stories ordered by updated_at DESC (most recently processed first)."""
+        import time
+        a = db.add_story(url="https://a.com/1", title="A")
+        time.sleep(0.01)
+        b = db.add_story(url="https://b.com/2", title="B")
+        time.sleep(0.01)
+        c = db.add_story(url="https://c.com/3", title="C")
+        # Touch 'a' last so it becomes most recent
+        time.sleep(0.01)
+        db.update_stage(a.id, "scraped")
+
+        stories = db.get_stories(limit=10)
+        ids = [s.id for s in stories]
+        # a updated last → first
+        assert ids[0] == a.id
+
+    def test_order_by_id_opt(self):
+        """order_by='id' falls back to insertion order."""
+        a = db.add_story(url="https://a.com/1", title="A")
+        b = db.add_story(url="https://b.com/2", title="B")
+        c = db.add_story(url="https://c.com/3", title="C")
+        stories = db.get_stories(limit=10, order_by="id")
+        ids = [s.id for s in stories]
+        # id DESC → c, b, a
+        assert ids == [c.id, b.id, a.id]
+
+
+class TestGetStoriesCategoryFilter:
+    def test_filter_by_category(self):
+        a = db.add_story(url="https://a.com/1", title="A", categories=["怪談"])
+        b = db.add_story(url="https://b.com/2", title="B", categories=["人怖"])
+        c = db.add_story(url="https://c.com/3", title="C", categories=["怪談", "人怖"])
+
+        kaidan = db.get_stories(category="怪談")
+        assert {s.id for s in kaidan} == {a.id, c.id}
+
+        hitokowa = db.get_stories(category="人怖")
+        assert {s.id for s in hitokowa} == {b.id, c.id}
+
+
 class TestRecoverRunning:
     def test_recover_short_running(self):
         s = db.add_story(url="https://a.com/1", content_type="short")

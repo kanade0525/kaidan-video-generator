@@ -25,10 +25,20 @@ from app.utils.paths import (
 
 def results_page(
     keyword: str = "", story_id: int = 0, content_type: str | None = None,
-    base_path: str = "/results",
+    base_path: str = "/results", category: str = "",
 ):
     """Results viewer page."""
     ui.label("生成結果").classes("text-2xl font-bold mb-4")
+
+    # Long 側のみカテゴリフィルタ（Short は kikikaikai 由来でカテゴリ未使用）
+    show_category_filter = content_type != "short"
+    category_options: dict[str, str] = {}
+    if show_category_filter:
+        try:
+            cats = db.get_categories()
+            category_options = {"": "全て", **{c: c for c in cats}}
+        except Exception:
+            category_options = {"": "全て"}
 
     # Filters (stage resets on reload so updated stories always appear)
     with ui.row().classes("gap-2 mb-4 items-end"):
@@ -37,6 +47,14 @@ def results_page(
             value="",
             label="ステージ",
         ).classes("w-48")
+
+        category_filter = None
+        if show_category_filter:
+            category_filter = ui.select(
+                category_options,
+                value=category if category in category_options else "",
+                label="カテゴリ",
+            ).classes("w-48")
 
         search_input = ui.input("タイトル検索", value=keyword).classes("w-64")
         ui.button("検索", on_click=lambda: update_story_list()).props("size=sm")
@@ -50,10 +68,12 @@ def results_page(
     def _update_url(selected_id=None):
         """Update URL query params to preserve search state."""
         from app.ui.url_state import build_results_url
+        cat = category_filter.value if category_filter else ""
         url = build_results_url(
             keyword=search_input.value or "",
             story_id=selected_id,
             base_path=base_path,
+            category=cat or "",
         )
         ui.run_javascript(f'window.history.replaceState(null, "", "{url}")')
 
@@ -140,7 +160,11 @@ def results_page(
     def update_story_list():
         s = stage_filter.value or None
         kw = search_input.value.strip() if search_input.value else None
-        stories = db.get_stories(stage=s, keyword=kw, limit=200, content_type=content_type)
+        cat = (category_filter.value if category_filter else None) or None
+        # Default order: most recently processed first (updated_at DESC)
+        stories = db.get_stories(
+            stage=s, keyword=kw, category=cat, limit=200, content_type=content_type,
+        )
 
         select_container.clear()
         detail_container.clear()
@@ -162,6 +186,8 @@ def results_page(
                 _update_url()
 
     stage_filter.on_value_change(lambda _: update_story_list())
+    if category_filter:
+        category_filter.on_value_change(lambda _: update_story_list())
     search_input.on("keydown.enter", lambda _: update_story_list())
 
     update_story_list()

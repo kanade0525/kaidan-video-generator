@@ -83,6 +83,21 @@ class TestBuildResultsUrl:
         url = build_results_url(keyword="   ")
         assert url == "/results"
 
+    def test_category_only(self):
+        url = build_results_url(category="怪談")
+        assert "/results?" in url
+        assert "category=" in url
+
+    def test_all_params(self):
+        url = build_results_url(keyword="test", story_id=10, category="人怖")
+        assert "keyword=test" in url
+        assert "id=10" in url
+        assert "category=" in url
+
+    def test_empty_category_ignored(self):
+        url = build_results_url(category="")
+        assert url == "/results"
+
 
 class TestResolveInitialStory:
     """Story selection must survive page reload via URL ?id= param."""

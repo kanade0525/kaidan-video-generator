@@ -263,14 +263,20 @@ def get_stories(
     limit: int = 50,
     offset: int = 0,
     content_type: str | None = None,
+    order_by: str = "updated_at",
 ) -> list[Story]:
-    """Query stories with optional filters."""
+    """Query stories with optional filters.
+
+    order_by: "updated_at" (default, most recently processed first) or "id"
+    (insertion order). Both DESC.
+    """
     conn = _get_conn()
     query, params = _build_story_filter(
         "SELECT DISTINCT s.*", stage=stage, category=category, keyword=keyword,
         content_type=content_type,
     )
-    query += " ORDER BY s.id DESC LIMIT ? OFFSET ?"
+    order_col = "s.updated_at" if order_by == "updated_at" else "s.id"
+    query += f" ORDER BY {order_col} DESC, s.id DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     rows = conn.execute(query, params).fetchall()
     return _rows_to_stories(rows)
