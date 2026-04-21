@@ -58,3 +58,24 @@ class TestSaveConfig:
         with patch("app.config.CONFIG_PATH", config_path):
             save_config({"fps": 30})
         assert config_path.exists()
+
+    def test_saves_list(self, tmp_path):
+        config_path = tmp_path / "data" / "config.toml"
+        with patch("app.config.CONFIG_PATH", config_path):
+            save_config({"keep_as_kanji": ["母", "葉"]})
+            config = load_config()
+        assert config["keep_as_kanji"] == ["母", "葉"]
+
+    def test_saves_dict(self, tmp_path):
+        config_path = tmp_path / "data" / "config.toml"
+        with patch("app.config.CONFIG_PATH", config_path):
+            save_config({"reading_overrides": {"私": "わたし", "所々": "ところどころ"}})
+            config = load_config()
+        assert config["reading_overrides"] == {"私": "わたし", "所々": "ところどころ"}
+
+    def test_saves_dict_with_quotes(self, tmp_path):
+        config_path = tmp_path / "data" / "config.toml"
+        with patch("app.config.CONFIG_PATH", config_path):
+            save_config({"reading_overrides": {'a"b': 'c"d'}})
+            config = load_config()
+        assert config["reading_overrides"] == {'a"b': 'c"d'}

@@ -136,6 +136,10 @@ _DEFAULTS = {
         "#怪談 #ホラー #朗読 #怖い話 #Shorts #百鬼朗読"
     ),
     "shorts_youtube_tags": "怪談,ホラー,朗読,怖い話,Shorts,音読さん,都市伝説",
+    # Narration dictionary customization (user additions on top of hardcoded defaults)
+    "reading_overrides": {},      # surface(漢字等) → ひらがな読み
+    "compound_replacements": {},  # 置換元 → 置換後（MeCab前に適用）
+    "keep_as_kanji": [],          # 漢字のまま残す語のリスト
 }
 
 
@@ -147,6 +151,11 @@ def load_config() -> dict:
             user_config = tomllib.load(f)
         return {**_DEFAULTS, **user_config}
     return dict(_DEFAULTS)
+
+
+def _toml_quote(s: str) -> str:
+    """Escape a string for inclusion in a TOML basic string."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def save_config(config: dict) -> None:
@@ -165,6 +174,15 @@ def save_config(config: dict) -> None:
             lines.append(f"{key} = {value}")
         elif isinstance(value, int):
             lines.append(f"{key} = {value}")
+        elif isinstance(value, list):
+            items = ", ".join(_toml_quote(str(v)) for v in value)
+            lines.append(f"{key} = [{items}]")
+        elif isinstance(value, dict):
+            items = ", ".join(
+                f"{_toml_quote(str(k))} = {_toml_quote(str(v))}"
+                for k, v in value.items()
+            )
+            lines.append(f"{key} = {{{items}}}")
         else:
             lines.append(f"{key} = {value!r}")
     CONFIG_PATH.write_text("\n".join(lines) + "\n")

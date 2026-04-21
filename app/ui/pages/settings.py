@@ -159,6 +159,157 @@ def settings_page():
             "テキスト処理プロンプト", value=config.get("text_prompt", "")
         ).classes("w-full")
 
+    # Narration dictionary settings
+    with ui.card().classes("w-full mb-4 p-4"):
+        ui.label("朗読辞書").classes("text-lg font-bold mb-2")
+        ui.label(
+            "VOICEVOX朗読用のカスタム辞書。ハードコードされたデフォルトに追加・上書きする形で適用されます。"
+        ).classes("text-xs text-gray-500 mb-2")
+
+        reading_overrides_state: dict[str, str] = dict(config.get("reading_overrides", {}))
+        compound_replacements_state: dict[str, str] = dict(config.get("compound_replacements", {}))
+        keep_as_kanji_state: list[str] = list(config.get("keep_as_kanji", []))
+
+        # Reading overrides
+        ui.label("① 読み上書き (語 → ひらがな読み)").classes("font-bold mt-2")
+        ui.label("MeCabの読み誤りを修正。例: 所々 → ところどころ").classes("text-xs text-gray-500")
+        reading_rows = ui.column().classes("gap-1")
+
+        def refresh_reading():
+            reading_rows.clear()
+            with reading_rows:
+                for surface, reading in list(reading_overrides_state.items()):
+                    with ui.row().classes("gap-2 items-center"):
+                        ui.label(f"{surface} → {reading}").classes("w-80 font-mono text-sm")
+                        ui.button(
+                            "削除",
+                            on_click=lambda s=surface: (
+                                reading_overrides_state.pop(s, None),
+                                refresh_reading(),
+                            ),
+                            color="red",
+                        ).props("size=sm flat")
+
+        with ui.row().classes("gap-2 items-end"):
+            new_reading_surface = ui.input("語").classes("w-32")
+            new_reading_value = ui.input("ひらがな読み").classes("w-32")
+
+            def add_reading():
+                s = (new_reading_surface.value or "").strip()
+                r = (new_reading_value.value or "").strip()
+                if s and r:
+                    reading_overrides_state[s] = r
+                    new_reading_surface.set_value("")
+                    new_reading_value.set_value("")
+                    refresh_reading()
+
+            ui.button("追加", on_click=add_reading, color="green").props("size=sm")
+        refresh_reading()
+
+        # Compound replacements
+        ui.separator().classes("my-3")
+        ui.label("② 複合語置換 (置換元 → 置換後)").classes("font-bold mt-2")
+        ui.label(
+            "MeCab分割で誤読される複合語をMeCab前に置換。例: お父さん → おとうさん"
+        ).classes("text-xs text-gray-500")
+        compound_rows = ui.column().classes("gap-1")
+
+        def refresh_compound():
+            compound_rows.clear()
+            with compound_rows:
+                for src, dst in list(compound_replacements_state.items()):
+                    with ui.row().classes("gap-2 items-center"):
+                        ui.label(f"{src} → {dst}").classes("w-80 font-mono text-sm")
+                        ui.button(
+                            "削除",
+                            on_click=lambda s=src: (
+                                compound_replacements_state.pop(s, None),
+                                refresh_compound(),
+                            ),
+                            color="red",
+                        ).props("size=sm flat")
+
+        with ui.row().classes("gap-2 items-end"):
+            new_compound_src = ui.input("置換元").classes("w-32")
+            new_compound_dst = ui.input("置換後").classes("w-32")
+
+            def add_compound():
+                s = (new_compound_src.value or "").strip()
+                d = (new_compound_dst.value or "").strip()
+                if s and d:
+                    compound_replacements_state[s] = d
+                    new_compound_src.set_value("")
+                    new_compound_dst.set_value("")
+                    refresh_compound()
+
+            ui.button("追加", on_click=add_compound, color="green").props("size=sm")
+        refresh_compound()
+
+        # Keep as kanji
+        ui.separator().classes("my-3")
+        ui.label("③ 漢字のまま残す語").classes("font-bold mt-2")
+        ui.label(
+            "VOICEVOXがひらがなだと誤読する語。例: 母 (はは→ワワ と読まれるため漢字のまま)"
+        ).classes("text-xs text-gray-500")
+        keep_rows = ui.column().classes("gap-1")
+
+        def refresh_keep():
+            keep_rows.clear()
+            with keep_rows:
+                for word in list(keep_as_kanji_state):
+                    with ui.row().classes("gap-2 items-center"):
+                        ui.label(word).classes("w-80 font-mono text-sm")
+                        ui.button(
+                            "削除",
+                            on_click=lambda w=word: (
+                                keep_as_kanji_state.remove(w),
+                                refresh_keep(),
+                            ),
+                            color="red",
+                        ).props("size=sm flat")
+
+        with ui.row().classes("gap-2 items-end"):
+            new_keep_word = ui.input("漢字のまま残す語").classes("w-32")
+
+            def add_keep():
+                w = (new_keep_word.value or "").strip()
+                if w and w not in keep_as_kanji_state:
+                    keep_as_kanji_state.append(w)
+                    new_keep_word.set_value("")
+                    refresh_keep()
+
+            ui.button("追加", on_click=add_keep, color="green").props("size=sm")
+        refresh_keep()
+
+        # Preview
+        ui.separator().classes("my-3")
+        ui.label("変換テスト").classes("font-bold mt-2")
+        ui.label(
+            "現在の辞書内容で変換結果を確認します（保存してから実行）。"
+        ).classes("text-xs text-gray-500")
+        preview_input = ui.textarea(
+            "テスト文章", value="お父さんは3人で母を見た。"
+        ).classes("w-full")
+        preview_output = ui.label("").classes(
+            "w-full p-2 bg-gray-100 font-mono whitespace-pre-wrap"
+        )
+
+        def run_preview():
+            from app.services.text_processor import _mecab_to_hiragana
+
+            current = load_config()
+            current["reading_overrides"] = dict(reading_overrides_state)
+            current["compound_replacements"] = dict(compound_replacements_state)
+            current["keep_as_kanji"] = list(keep_as_kanji_state)
+            save_config(current)
+
+            text = preview_input.value or ""
+            result = _mecab_to_hiragana(text) or "(変換失敗)"
+            preview_output.set_text(result)
+            ui.notify("辞書を保存してプレビュー実行", color="positive")
+
+        ui.button("保存して変換テスト", on_click=run_preview, color="blue").props("size=sm")
+
     # YouTube settings
     with ui.card().classes("w-full mb-4 p-4"):
         ui.label("YouTube設定").classes("text-lg font-bold mb-2")
@@ -288,6 +439,9 @@ def settings_page():
             "youtube_schedule_day": yt_schedule_day.value,
             "youtube_schedule_hour": int(yt_schedule_hour.value),
             "youtube_schedule_minute": int(yt_schedule_minute.value),
+            "reading_overrides": dict(reading_overrides_state),
+            "compound_replacements": dict(compound_replacements_state),
+            "keep_as_kanji": list(keep_as_kanji_state),
         }
         save_config(new_config)
         ui.notify("設定を保存しました", color="positive")
