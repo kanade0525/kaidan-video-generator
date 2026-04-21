@@ -389,21 +389,22 @@ def delete_story(story_id: int) -> None:
 def convert_to_short(story_id: int) -> None:
     """Migrate a long-form story to the Shorts pipeline.
 
-    Rewinds stage to 'voice_generated' (case A: reuse existing audio/text) and
-    flips content_type. The `source` field is preserved so HHS-sourced
-    long stories keep their HHS attribution in the Shorts pipeline.
+    Rewinds stage to 'text_processed' so the Shorts pipeline re-runs the
+    voice stage. Long speed (0.9) and Shorts speed (1.15) differ, so the
+    long narration cannot be reused — only the scraped/processed text is
+    reusable. The `source` field is preserved.
 
-    Deletes stage_completions beyond voice_generated so the Shorts pipeline
-    re-runs image/video/upload/(report) stages on the new content_type.
+    Deletes stage_completions beyond text_processed so the Shorts pipeline
+    re-runs voice/image/video/upload/(report) stages on the new content_type.
 
-    ALSO copies reusable artifacts (raw/processed/chunks/narration/audio) from
-    the long output dir to the short output dir, so the Shorts pipeline workers
-    find them at the expected short paths without re-scraping/re-processing.
-    The long-side files are preserved intact (not moved) for easy rollback.
+    Copies reusable artifacts (raw_content/processed_text/chunks/original_chunks)
+    from the long output dir to the short output dir, so the Shorts pipeline
+    workers find them at the expected short paths without re-scraping /
+    re-processing text. The long-side files are preserved intact for rollback.
     """
     conn = _get_conn()
     now = _now()
-    target_stage = "voice_generated"
+    target_stage = "text_processed"
     # STAGES_SHORT is now used for clearing completions
     from app.models import STAGES_SHORT
     idx = STAGES_SHORT.index(target_stage)
@@ -433,46 +434,37 @@ def convert_to_short(story_id: int) -> None:
 
 
 def _copy_long_artifacts_to_short(title: str) -> None:
-    """Copy scraped/processed/voice artifacts from long dir to short dir.
+    """Copy scraped text + processed hiragana artifacts from long dir to short dir.
+
+    Narration and per-chunk audio are intentionally NOT copied — long uses
+    speed=0.9 but Shorts uses speed=1.15, so voice must be regenerated.
 
     Missing files are silently skipped (e.g. stories that haven't reached
-    voice_generated won't have narration files).
+    text_processed won't have processed_text.txt / chunks.json).
     """
     import shutil
 
     from app.utils.paths import (
-        audio_dir,
         chunks_path,
-        narration_path,
         original_chunks_path,
         processed_text_path,
         raw_content_path,
         story_dir,
     )
 
-    long_sdir = story_dir(title, "long")
-    short_sdir = story_dir(title, "short")  # ensures short dir exists
+    story_dir(title, "short")  # ensures short dir exists
 
-    # Copy individual reusable files
-    for long_path_fn, short_path_fn in [
-        (raw_content_path, raw_content_path),
-        (processed_text_path, processed_text_path),
-        (chunks_path, chunks_path),
-        (original_chunks_path, original_chunks_path),
-        (narration_path, narration_path),
-    ]:
-        src = long_path_fn(title, "long")
+    for path_fn in (
+        raw_content_path,
+        processed_text_path,
+        chunks_path,
+        original_chunks_path,
+    ):
+        src = path_fn(title, "long")
         if src.exists():
-            dst = short_path_fn(title, "short")
+            dst = path_fn(title, "short")
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
-
-    # Copy per-chunk audio directory (narration_NNNN.wav files)
-    long_audio = audio_dir(title, "long")
-    short_audio = audio_dir(title, "short")
-    if long_audio.exists():
-        for wav in long_audio.glob("*.wav"):
-            shutil.copy2(wav, short_audio / wav.name)
 
 
 def recover_running() -> int:

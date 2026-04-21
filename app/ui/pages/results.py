@@ -294,8 +294,10 @@ def _render_convert_to_short_button(story, on_done):
         with ui.dialog() as dlg, ui.card():
             ui.label(f"「{story.title}」をShortsに移送しますか？").classes("text-lg font-bold")
             ui.label(
-                "・content_type を short に切替、stage を音声生成済みに巻き戻し\n"
-                "・画像/動画/YouTube を Shorts 設定で再生成\n"
+                "・content_type を short に切替、stage を テキスト処理済み に巻き戻し\n"
+                "・スクレイピング/処理済テキストは流用（再処理なし）\n"
+                "・音声/画像/動画/YouTube を Shorts 設定で再生成\n"
+                "  （Shorts は speed=1.15 で long の 0.9 と異なるため音声は作り直し必須）\n"
                 "・long 側の成果物は残置（手動削除可）"
             ).classes("text-sm whitespace-pre-line")
             if story.source == "hhs":

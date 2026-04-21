@@ -203,7 +203,8 @@ class TestConvertToShort:
 
         fresh = db.get_story_by_id(s.id)
         assert fresh.content_type == "short"
-        assert fresh.stage == "voice_generated"
+        # Stage rewinds to text_processed: voice must regenerate at shorts speed
+        assert fresh.stage == "text_processed"
         assert fresh.source == "hhs"  # preserved
         assert fresh.youtube_video_id is None  # cleared for new short upload
 
@@ -220,9 +221,10 @@ class TestConvertToShort:
             "SELECT stage FROM stage_completions WHERE story_id = ?", (s.id,),
         ).fetchall()
         stages = {r["stage"] for r in remaining}
-        # Up to and including voice_generated should remain
-        assert "voice_generated" in stages
-        # Later stages should be cleared
+        # Up to and including text_processed should remain
+        assert "text_processed" in stages
+        # voice/video/etc. cleared so shorts pipeline regenerates them
+        assert "voice_generated" not in stages
         assert "images_generated" not in stages
         assert "youtube_uploaded" not in stages
 
@@ -240,9 +242,13 @@ class TestConvertToShort:
         assert fresh.source == "kikikaikai"
         assert fresh.content_type == "short"
 
-    def test_artifacts_copied_to_short_dir(self, tmp_path, monkeypatch):
-        """Long→Short migration copies reusable artifacts so the Shorts pipeline
-        finds raw/processed/voice at the expected short paths (no re-generation)."""
+    def test_text_artifacts_copied_to_short_dir(self, tmp_path, monkeypatch):
+        """Long→Short migration copies scraped/processed text artifacts so the
+        Shorts pipeline skips scraping/text_processed stages.
+
+        Voice files are intentionally NOT copied because long speed (0.9) ≠
+        shorts speed (1.15) — voice must regenerate.
+        """
         import app.utils.paths as paths
         monkeypatch.setattr(paths, "OUTPUT_BASE", tmp_path / "out")
 
@@ -255,19 +261,21 @@ class TestConvertToShort:
         (long_dir / "narration_complete.wav").write_bytes(b"WAV")
         (long_dir / "audio").mkdir()
         (long_dir / "audio" / "narration_0000.wav").write_bytes(b"C0")
-        (long_dir / "audio" / "narration_0001.wav").write_bytes(b"C1")
 
         s = db.add_story(url="https://hhs.parasite.jp/1", title=title, content_type="long")
         db.update_stage(s.id, "voice_generated")
         db.convert_to_short(s.id)
 
         short_dir = paths.story_dir(title, "short")
+        # Text artifacts copied
         assert (short_dir / "raw_content.txt").read_text() == "RAW"
         assert (short_dir / "processed_text.txt").read_text() == "PROC"
-        assert (short_dir / "narration_complete.wav").read_bytes() == b"WAV"
-        assert (short_dir / "audio" / "narration_0000.wav").read_bytes() == b"C0"
-        assert (short_dir / "audio" / "narration_0001.wav").read_bytes() == b"C1"
-        # Long-side originals must remain (for rollback / reference)
+        assert (short_dir / "chunks.json").read_text() == "[]"
+        assert (short_dir / "original_chunks.json").read_text() == "[]"
+        # Voice NOT copied (shorts will regenerate at correct speed)
+        assert not (short_dir / "narration_complete.wav").exists()
+        assert not (short_dir / "audio" / "narration_0000.wav").exists()
+        # Long-side originals must remain
         assert (long_dir / "raw_content.txt").exists()
         assert (long_dir / "narration_complete.wav").exists()
 
