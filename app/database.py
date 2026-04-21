@@ -389,12 +389,17 @@ def delete_story(story_id: int) -> None:
 def convert_to_short(story_id: int) -> None:
     """Migrate a long-form story to the Shorts pipeline.
 
-    Rewinds stage to 'voice_generated' (case A: reuse existing audio) and
+    Rewinds stage to 'voice_generated' (case A: reuse existing audio/text) and
     flips content_type. The `source` field is preserved so HHS-sourced
     long stories keep their HHS attribution in the Shorts pipeline.
 
     Deletes stage_completions beyond voice_generated so the Shorts pipeline
     re-runs image/video/upload/(report) stages on the new content_type.
+
+    ALSO copies reusable artifacts (raw/processed/chunks/narration/audio) from
+    the long output dir to the short output dir, so the Shorts pipeline workers
+    find them at the expected short paths without re-scraping/re-processing.
+    The long-side files are preserved intact (not moved) for easy rollback.
     """
     conn = _get_conn()
     now = _now()
@@ -403,6 +408,11 @@ def convert_to_short(story_id: int) -> None:
     from app.models import STAGES_SHORT
     idx = STAGES_SHORT.index(target_stage)
     later_stages = STAGES_SHORT[idx + 1:]
+
+    # Fetch title before updating so we can copy files using the correct title
+    story = get_story_by_id(story_id)
+    if story is None:
+        raise ValueError(f"Story {story_id} not found")
 
     conn.execute(
         "UPDATE stories SET content_type = 'short', stage = ?, error = NULL, "
@@ -416,6 +426,53 @@ def convert_to_short(story_id: int) -> None:
             [story_id, *later_stages],
         )
     conn.commit()
+
+    # Copy reusable artifacts to the short directory so the Shorts pipeline
+    # can reuse them without re-running scraping/text-processing/voice stages.
+    _copy_long_artifacts_to_short(story.title)
+
+
+def _copy_long_artifacts_to_short(title: str) -> None:
+    """Copy scraped/processed/voice artifacts from long dir to short dir.
+
+    Missing files are silently skipped (e.g. stories that haven't reached
+    voice_generated won't have narration files).
+    """
+    import shutil
+
+    from app.utils.paths import (
+        audio_dir,
+        chunks_path,
+        narration_path,
+        original_chunks_path,
+        processed_text_path,
+        raw_content_path,
+        story_dir,
+    )
+
+    long_sdir = story_dir(title, "long")
+    short_sdir = story_dir(title, "short")  # ensures short dir exists
+
+    # Copy individual reusable files
+    for long_path_fn, short_path_fn in [
+        (raw_content_path, raw_content_path),
+        (processed_text_path, processed_text_path),
+        (chunks_path, chunks_path),
+        (original_chunks_path, original_chunks_path),
+        (narration_path, narration_path),
+    ]:
+        src = long_path_fn(title, "long")
+        if src.exists():
+            dst = short_path_fn(title, "short")
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+    # Copy per-chunk audio directory (narration_NNNN.wav files)
+    long_audio = audio_dir(title, "long")
+    short_audio = audio_dir(title, "short")
+    if long_audio.exists():
+        for wav in long_audio.glob("*.wav"):
+            shutil.copy2(wav, short_audio / wav.name)
 
 
 def recover_running() -> int:

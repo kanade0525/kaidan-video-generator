@@ -240,6 +240,37 @@ class TestConvertToShort:
         assert fresh.source == "kikikaikai"
         assert fresh.content_type == "short"
 
+    def test_artifacts_copied_to_short_dir(self, tmp_path, monkeypatch):
+        """Long→Short migration copies reusable artifacts so the Shorts pipeline
+        finds raw/processed/voice at the expected short paths (no re-generation)."""
+        import app.utils.paths as paths
+        monkeypatch.setattr(paths, "OUTPUT_BASE", tmp_path / "out")
+
+        title = "テスト話"
+        long_dir = paths.story_dir(title, "long")
+        (long_dir / "raw_content.txt").write_text("RAW")
+        (long_dir / "processed_text.txt").write_text("PROC")
+        (long_dir / "chunks.json").write_text("[]")
+        (long_dir / "original_chunks.json").write_text("[]")
+        (long_dir / "narration_complete.wav").write_bytes(b"WAV")
+        (long_dir / "audio").mkdir()
+        (long_dir / "audio" / "narration_0000.wav").write_bytes(b"C0")
+        (long_dir / "audio" / "narration_0001.wav").write_bytes(b"C1")
+
+        s = db.add_story(url="https://hhs.parasite.jp/1", title=title, content_type="long")
+        db.update_stage(s.id, "voice_generated")
+        db.convert_to_short(s.id)
+
+        short_dir = paths.story_dir(title, "short")
+        assert (short_dir / "raw_content.txt").read_text() == "RAW"
+        assert (short_dir / "processed_text.txt").read_text() == "PROC"
+        assert (short_dir / "narration_complete.wav").read_bytes() == b"WAV"
+        assert (short_dir / "audio" / "narration_0000.wav").read_bytes() == b"C0"
+        assert (short_dir / "audio" / "narration_0001.wav").read_bytes() == b"C1"
+        # Long-side originals must remain (for rollback / reference)
+        assert (long_dir / "raw_content.txt").exists()
+        assert (long_dir / "narration_complete.wav").exists()
+
 
 class TestShortsStagesIncludeReport:
     """STAGES_SHORT must include report_submitted for HHS-sourced shorts."""
