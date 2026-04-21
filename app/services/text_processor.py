@@ -113,6 +113,14 @@ _DEFAULT_COMPOUND_REPLACEMENTS: dict[str, str] = {
     "階位": "階くらい",
     "台位": "台くらい",
     "円位": "円くらい",
+    # 「にはいって」「ではいって」等 particle+はいって は VOICEVOX が は→ワ と
+    # 助詞誤解析して「ワイッテ」と読むのを防ぐ。漢字「入って」に戻すと _KEEP_AS_KANJI
+    # の「入っ」ルールで漢字保持され、VOICEVOX が正しく ハイッテ と読む。
+    # (「家に入って」のように原文が既に漢字の場合は影響なし)
+    "にはいって": "に入って",
+    "ではいって": "で入って",
+    "にはいった": "に入った",
+    "ではいった": "で入った",
 }
 
 # Kanji to keep as-is (skip hiragana conversion) because VOICEVOX mis-reads
@@ -132,6 +140,11 @@ _DEFAULT_KEEP_AS_KANJI: set[str] = {
     "葉",   # は → ワ
     "歯",   # は → ワ
     "腹",   # はら → ワラ (な-連体形文脈で誤読)
+    "墓",   # はか → ワカ (句読点後の「、はかわ…」で誤読)
+    # 入っ: 入って/入った の surface。ひらがな「はいって」が「は+いって」と
+    # 誤解析され「ワイッテ」になるのを防ぐ。入る/入った/入ろう 等 他の活用と
+    # 入学/入れる/気に入る 等の複合語・別語は surface が異なるため影響なし。
+    "入っ",
     # 何: MeCab は常に ナン を返すが、VOICEVOX は漢字なら文脈で ナニを/ナンラ/
     # ナンネン 等に使い分ける。ひらがな「なん」を渡すと VOICEVOX も常に ナン。
     "何",
@@ -179,6 +192,10 @@ def _mecab_to_hiragana(text: str) -> str | None:
     except ImportError:
         log.warning("MeCab未インストール")
         return None
+
+    # Apply furigana annotations 「漢字（ふりがな）」 first: author-provided
+    # readings override everything else (e.g., 優曇華（うどんげ） → うどんげ).
+    text = _apply_furigana(text)
 
     for src, dst in _compound_replacements().items():
         text = text.replace(src, dst)
@@ -242,6 +259,45 @@ _COUNTER_SPAN_RE = re.compile(
     r"[0-9０-９一二三四五六七八九十百千万何]+"
     r"(?:[" + "".join(_COUNTER_KANJI) + r"][間生]?)+"
 )
+
+
+_FURIGANA_RE = re.compile(r"([一-龯々〆]+)[（(]([ぁ-んァ-ヴー]+)[）)]")
+
+
+def _apply_furigana(text: str) -> str:
+    """Replace 「漢字（ふりがな）」 with the furigana reading, and propagate each
+    author-provided reading to all other occurrences of the same kanji in the
+    text (authors typically annotate only the first mention).
+
+    Also handles the common case where okurigana follows the closing paren
+    and duplicates the last mora of the furigana (e.g., 「掴（つかみ）み取って」
+    → 「つかみ取って」, not 「つかみみ取って」).
+    """
+    # First pass: collect kanji → furigana map from annotations, and build
+    # text with parens stripped (keep the kanji for second-pass replacement).
+    mapping: dict[str, str] = {}
+    out: list[str] = []
+    i = 0
+    for m in _FURIGANA_RE.finditer(text):
+        out.append(text[i:m.start()])
+        kanji = m.group(1)
+        kana = m.group(2)
+        mapping[kanji] = kana
+        out.append(kanji)
+        i = m.end()
+        # If the char right after the paren matches the last mora of the
+        # furigana, remember to skip it during second-pass replacement of
+        # this kanji. Handled by storing the kana → consumption hint.
+        if i < len(text) and text[i] == kana[-1]:
+            i += 1  # drop the duplicate mora here too
+    out.append(text[i:])
+    stripped = "".join(out)
+
+    # Second pass: replace every occurrence of each annotated kanji with its
+    # furigana reading. Longest kanji first to avoid partial overshadowing.
+    for kanji in sorted(mapping, key=len, reverse=True):
+        stripped = stripped.replace(kanji, mapping[kanji])
+    return stripped
 
 
 def _protect_counter_spans(text: str) -> tuple[str, dict[str, str]]:

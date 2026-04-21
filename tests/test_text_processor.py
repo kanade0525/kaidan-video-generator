@@ -127,6 +127,12 @@ class TestMecabToHiragana:
         assert "羽" in _mecab_to_hiragana("長い羽")
         assert "箱" in _mecab_to_hiragana("この箱")
 
+    def test_keep_haka_kanji(self):
+        """墓 は漢字のまま保持（、はかわ… で VOICEVOX が ワカ と誤読するため）。"""
+        result = _mecab_to_hiragana("結局、墓は移してもらった")
+        assert "墓" in result
+        assert "はか" not in result
+
     def test_hanasu_verb_form_still_hiragana(self):
         """話す(動詞)などの活用形はひらがなに変換される（surface が 話 単独ではないため）。"""
         # MeCabは「話す」を1トークンで返すため、_KEEP_AS_KANJI(話)には合致せず
@@ -231,6 +237,33 @@ class TestMecabToHiragana:
         result = _mecab_to_hiragana("4０代位の女の人")
         assert "くらい" in result
         assert "だいい" not in result
+
+    def test_furigana_annotation(self):
+        """原文の「漢字（ふりがな）」注記でふりがなが採用される。"""
+        # 優曇華（うどんげ）: MeCab は ウドンカ と誤解析するが、ふりがな優先
+        result = _mecab_to_hiragana("優曇華（うどんげ）の花")
+        assert "うどんげ" in result
+        assert "うどんか" not in result
+
+    def test_furigana_okurigana_dedup(self):
+        """ふりがな末尾の文字が続きの送り仮名と重複する場合は除去。
+        例: 掴（つかみ）み取って → つかみ取って (not つかみみ取って)"""
+        result = _mecab_to_hiragana("花を掴（つかみ）み取って")
+        assert "つかみみ" not in result
+        assert "つかみ" in result
+
+    def test_furigana_standalone_kanji(self):
+        """ふりがなが複合語内の複数漢字に対応するケース。"""
+        assert "いんごう" in _mecab_to_hiragana("因業（いんごう）なヤツ")
+        assert "てんまつ" in _mecab_to_hiragana("顛末（てんまつ）を話す")
+
+    def test_furigana_propagates_to_later_occurrences(self):
+        """1回目にふりがなが付いた漢字は、同一テキスト内の後続の漢字にも同じ読みが適用される。"""
+        text = "優曇華（うどんげ）の花というものがある。優曇華の花は伝説上の植物だ。"
+        result = _mecab_to_hiragana(text)
+        # 両方の 優曇華 がふりがな読みに揃う
+        assert result.count("うどんげ") >= 2
+        assert "うどんか" not in result
 
     def test_counter_kurai_various(self):
         """代/年/時/分 等、各種カウンター+位 すべて処理される。"""
