@@ -4,7 +4,7 @@ Pillow>=10.2
 google-genai>=1.0
 openai>=1.14
 python-dotenv>=1.0
-numpy>=1.26
+numpy>=1.26,<2  # marine (Issue #31) still uses numpy 1.x uint8 semantics
 lxml
 nicegui>=2.0
 google-api-python-client>=2.0
@@ -12,3 +12,7 @@ google-auth-oauthlib>=1.0
 google-auth-httplib2>=0.2
 mecab-python3>=1.0
 unidic-lite>=1.0
+# Accent/intonation correction (Issue #31)
+pyopenjtalk>=0.4
+unidic>=1.1
+marine>=0.0.5,<0.0.6  # 0.0.6 has uint8 overflow with current vocab

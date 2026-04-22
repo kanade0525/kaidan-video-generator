@@ -52,6 +52,12 @@ _DEFAULTS = {
     "ed_path": "",
     "text_model": "gemini-2.5-flash",
     "gemini_model": "gemini-2.5-flash-lite",
+    # LLM主導モード: True (default) → LLM優先(文脈依存読みに対応)、品質チェック
+    # 不合格/失敗時に MeCab フォールバック。False → 従来通り MeCab 優先。
+    "text_llm_primary": True,
+    # アクセント補正: pyopenjtalk + marine (ML) を使って VOICEVOX 内蔵の
+    # OpenJTalk 規則ベースアクセントを上書き。marine が利用不可なら自動でスキップ。
+    "accent_correction_enabled": True,
     "max_chunk": 200,
     "text_prompt": (
         "以下の日本語テキストをVOICEVOX朗読用にひらがな化してください。\n\n"

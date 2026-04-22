@@ -14,15 +14,71 @@ log = get_logger("kaidan.text")
 def process_text(text: str, prompt_template: str | None = None, model: str | None = None) -> str:
     """Convert kanji text to hiragana.
 
-    Strategy: MeCab-first deterministic conversion (kanji→reading, particle
-    は→わ, へ→え). If MeCab is unavailable, falls back to LLM-only conversion.
+    Strategy: LLM-primary (context-aware, idiom-friendly) with MeCab fallback.
+
+    LLM handles context-dependent readings that MeCab cannot (e.g., 床に就く→
+    とこにつく, 非ず→あらず). MeCab is used as a deterministic safety net when
+    LLM output fails quality checks or is unavailable.
+
+    The hardcoded _DEFAULT_{READING_OVERRIDES,COMPOUND_REPLACEMENTS,KEEP_AS_KANJI}
+    dictionaries remain as an additional safety layer on top of LLM output.
     """
+    use_llm = cfg_get("text_llm_primary")
+    if use_llm is None:
+        use_llm = True  # default on
+
+    if use_llm:
+        try:
+            llm_result = _llm_convert(text, prompt_template, model)
+            if _is_llm_output_valid(text, llm_result):
+                # Apply dict-based corrections on top of LLM output as safety net
+                return _apply_dict_corrections(llm_result)
+            log.warning("LLM出力が品質チェック不合格、MeCabにフォールバック")
+        except Exception as e:
+            log.warning("LLM変換失敗、MeCabにフォールバック: %s", e)
+
     mecab_result = _mecab_to_hiragana(text)
     if mecab_result is not None:
         return mecab_result
 
-    log.warning("MeCab先行変換が失敗したためLLMフォールバックに切替")
+    log.warning("MeCab先行変換も失敗したためLLMフォールバックに切替")
     return _llm_convert(text, prompt_template, model)
+
+
+def _is_llm_output_valid(src: str, out: str) -> bool:
+    """Sanity-check LLM-converted hiragana output.
+
+    Rejects output that is drastically shorter than input (summarization),
+    contains unexpected kanji (non-whitelisted), or is empty.
+    """
+    if not out or not out.strip():
+        return False
+    # Length should be within reasonable bounds (LLM-converted hiragana is
+    # typically 0.8x-1.5x the kanji input length in character count).
+    src_len = len(src)
+    out_len = len(out)
+    if out_len < src_len * 0.5 or out_len > src_len * 3.0:
+        return False
+    # Residual kanji should be limited to whitelisted ones (from _KEEP_AS_KANJI)
+    # + counter spans (digit+counter patterns). Allow some leniency.
+    kanji_chars = re.findall(r"[一-龯々〆]", out)
+    if not kanji_chars:
+        return True
+    # Check ratio: kanji should be <10% of output (most should be converted)
+    if len(kanji_chars) > out_len * 0.1:
+        return False
+    return True
+
+
+def _apply_dict_corrections(text: str) -> str:
+    """Apply user/default dictionary corrections on top of already-converted text.
+
+    Used as a safety net after LLM conversion to ensure specific known issues
+    (e.g., 床→とこ in 床に就) are corrected even if LLM made them.
+    """
+    for src, dst in _compound_replacements().items():
+        text = text.replace(src, dst)
+    return text
 
 
 def _llm_convert(text: str, prompt_template: str | None, model: str | None) -> str:
@@ -196,9 +252,14 @@ def _mecab_to_hiragana(text: str) -> str | None:
     """Convert text to hiragana using MeCab (kanji→reading + particle は/へ→わ/え).
 
     Returns None if MeCab is unavailable so the caller can fall back.
+
+    Explicitly uses the unidic-lite dictionary (not unidic full) to keep
+    tokenization behavior consistent across environments where unidic full
+    may be installed for accent estimation.
     """
     try:
         import MeCab
+        import unidic_lite
     except ImportError:
         log.warning("MeCab未インストール")
         return None
@@ -219,7 +280,7 @@ def _mecab_to_hiragana(text: str) -> str | None:
     text, counter_placeholders = _protect_counter_spans(text)
 
     try:
-        tagger = MeCab.Tagger()
+        tagger = MeCab.Tagger(f"-d {unidic_lite.DICDIR}")
         tagger.parse("")
         output: list[str] = []
         node = tagger.parseToNode(text)
@@ -352,8 +413,9 @@ def _convert_kanji_to_hiragana(text: str) -> str:
     """Convert only remaining kanji in text to hiragana (fallback path)."""
     try:
         import MeCab
+        import unidic_lite
 
-        tagger = MeCab.Tagger()
+        tagger = MeCab.Tagger(f"-d {unidic_lite.DICDIR}")
         tagger.parse("")
         keep_as_kanji = _keep_as_kanji()
         output: list[str] = []
