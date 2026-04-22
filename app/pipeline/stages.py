@@ -348,13 +348,32 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
     title_template = cfg_get("youtube_title_template")
     category = story.categories[0] if story.categories else "怪談"
     yt_title = title_template.format(title=story.title, category=category)
-    description_template = cfg_get("youtube_description_template")
     speaker_name = get_speaker_name()
     playlist_url = cfg_get("youtube_playlist_url") or ""
-    description = description_template.format(
-        title=story.title, url=story.url, speaker=speaker_name,
-        playlist_url=playlist_url,
-    )
+    # Source-aware description template. kikikaikai-sourced stories migrated
+    # to long (Short→Long) must credit 奇々怪々, not HHS図書館.
+    if story.source == "kikikaikai":
+        description_template = cfg_get("long_kikikaikai_youtube_description_template")
+        # Load author from meta.json if available (kikikaikai scraper writes it)
+        from app.utils.paths import meta_path
+        meta_file = meta_path(story.title, ct)
+        author = story.author
+        if meta_file.exists():
+            try:
+                meta_data = json.loads(meta_file.read_text(encoding="utf-8"))
+                author = meta_data.get("author", author)
+            except Exception:
+                pass
+        description = description_template.format(
+            title=story.title, url=story.url, speaker=speaker_name,
+            playlist_url=playlist_url, author=author,
+        )
+    else:
+        description_template = cfg_get("youtube_description_template")
+        description = description_template.format(
+            title=story.title, url=story.url, speaker=speaker_name,
+            playlist_url=playlist_url,
+        )
 
     # Insert timestamps if available
     ts_file = timestamps_path(story.title, ct)
@@ -723,27 +742,49 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
         except Exception as e:
             log.warning("[youtube:short] LLM metadata生成失敗: %s", e)
 
-    # Fallback to template
+    # Fallback to template. HHS-sourced Shorts (migrated from long) use the
+    # HHS-specific template so the 引用元 line is correct per ホラホリ規約.
     if not yt_title:
         title_template = cfg_get("shorts_youtube_title_template")
         yt_title = title_template.format(title=story.title)
+    is_hhs = (story.source == "hhs")
     if not description:
-        description_template = cfg_get("shorts_youtube_description_template")
-        description = description_template.format(
-            title=story.title, url=story.url, author=author, speaker=speaker_name,
-        )
+        if is_hhs:
+            description_template = cfg_get("shorts_hhs_youtube_description_template")
+            description = description_template.format(
+                title=story.title, url=story.url, speaker=speaker_name,
+            )
+        else:
+            description_template = cfg_get("shorts_youtube_description_template")
+            description = description_template.format(
+                title=story.title, url=story.url, author=author, speaker=speaker_name,
+            )
 
-    # Always append source credit to description
-    credit = (
-        f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"引用元: 奇々怪々\n"
-        f"「{story.title}」{story.url}\n"
-        f"作者: {author}\n"
-        f"音声: VOICEVOX:{speaker_name}"
-    )
+    # Always append source credit to description (source-specific).
+    if is_hhs:
+        credit = (
+            f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"引用元: HHS図書館\n"
+            f"「{story.title}」{story.url}\n"
+            f"音声: VOICEVOX:{speaker_name}"
+        )
+    else:
+        credit = (
+            f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"引用元: 奇々怪々\n"
+            f"「{story.title}」{story.url}\n"
+            f"作者: {author}\n"
+            f"音声: VOICEVOX:{speaker_name}"
+        )
     description += credit
 
     tags = cfg_get("shorts_youtube_tags")
+    # HHS由来 Short のみ #ホラホリ タグを付与（規約上の出典タグ慣習）
+    if is_hhs:
+        tag_list = [t.strip() for t in tags.split(",")] if isinstance(tags, str) else list(tags)
+        if "ホラホリ" not in tag_list:
+            tag_list.append("ホラホリ")
+        tags = tag_list
     category_id = cfg_get("youtube_category_id")
     privacy = cfg_get("youtube_privacy_status")
 

@@ -14,11 +14,12 @@ class TestStagesShort:
     def test_stages_short_starts_with_pending(self):
         assert STAGES_SHORT[0] == "pending"
 
-    def test_stages_short_ends_with_youtube_uploaded(self):
-        assert STAGES_SHORT[-1] == "youtube_uploaded"
+    def test_stages_short_ends_with_report_submitted(self):
+        # report_submitted is now required for HHS-sourced shorts (migrated from long)
+        assert STAGES_SHORT[-1] == "report_submitted"
 
-    def test_stages_short_excludes_report_submitted(self):
-        assert "report_submitted" not in STAGES_SHORT
+    def test_stages_short_includes_report_submitted(self):
+        assert "report_submitted" in STAGES_SHORT
 
     def test_stages_short_is_subset_of_stages(self):
         for stage in STAGES_SHORT:
@@ -27,8 +28,8 @@ class TestStagesShort:
     def test_stages_short_has_no_duplicates(self):
         assert len(STAGES_SHORT) == len(set(STAGES_SHORT))
 
-    def test_stages_short_one_less_than_long(self):
-        assert len(STAGES_SHORT) == len(STAGES) - 1
+    def test_stages_short_same_length_as_long(self):
+        assert len(STAGES_SHORT) == len(STAGES)
 
 
 class TestStagesFor:
@@ -52,8 +53,9 @@ class TestPrevStageContentType:
     def test_short_youtube_uploaded_to_video_complete(self):
         assert prev_stage("youtube_uploaded", "short") == "video_complete"
 
-    def test_short_report_submitted_returns_none(self):
-        assert prev_stage("report_submitted", "short") is None
+    def test_short_report_submitted_to_youtube_uploaded(self):
+        # short now has report_submitted as last stage (for HHS-sourced shorts)
+        assert prev_stage("report_submitted", "short") == "youtube_uploaded"
 
     def test_long_report_submitted_to_youtube_uploaded(self):
         assert prev_stage("report_submitted", "long") == "youtube_uploaded"
@@ -67,8 +69,12 @@ class TestNextStageContentType:
     def test_short_video_complete_to_youtube_uploaded(self):
         assert next_stage("video_complete", "short") == "youtube_uploaded"
 
-    def test_short_youtube_uploaded_is_last(self):
-        assert next_stage("youtube_uploaded", "short") is None
+    def test_short_youtube_uploaded_to_report_submitted(self):
+        # short now ends with report_submitted (same as long)
+        assert next_stage("youtube_uploaded", "short") == "report_submitted"
+
+    def test_short_report_submitted_is_last(self):
+        assert next_stage("report_submitted", "short") is None
 
     def test_long_youtube_uploaded_to_report_submitted(self):
         assert next_stage("youtube_uploaded", "long") == "report_submitted"

@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.models import STAGES, Story, stages_for
+from app.models import STAGES, Story, infer_source_from_url, stages_for
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "kaidan.db"
 
@@ -74,6 +74,7 @@ def init_db() -> None:
         ("author", "TEXT DEFAULT ''"),
         ("char_count", "INTEGER"),
         ("title_furigana", "TEXT DEFAULT ''"),
+        ("source", "TEXT DEFAULT 'hhs'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE stories ADD COLUMN {col} {definition}")
@@ -81,6 +82,12 @@ def init_db() -> None:
             pass  # Column already exists
     conn.execute("CREATE INDEX IF NOT EXISTS idx_content_type ON stories(content_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_content_type_stage ON stories(content_type, stage)")
+    # Backfill source for rows where it was defaulted but should differ based on URL/content_type.
+    # Existing shorts are all from kikikaikai; existing longs are all from hhs.
+    conn.execute(
+        "UPDATE stories SET source = 'kikikaikai' "
+        "WHERE content_type = 'short' AND (source IS NULL OR source = '' OR source = 'hhs')"
+    )
     conn.commit()
 
 
@@ -127,6 +134,7 @@ def _row_to_story(
         content_type=row["content_type"] if "content_type" in keys else "long",
         author=row["author"] if "author" in keys else "",
         char_count=row["char_count"] if "char_count" in keys else None,
+        source=(row["source"] if "source" in keys and row["source"] else "hhs"),
     )
 
 
@@ -176,16 +184,18 @@ def add_story(
     content_type: str = "long",
     author: str = "",
     char_count: int | None = None,
+    source: str | None = None,
 ) -> Story | None:
     """Add a new story. Returns None if URL already exists."""
     conn = _get_conn()
     now = _now()
+    src = source or infer_source_from_url(url)
     try:
         cur = conn.execute(
             "INSERT INTO stories (url, title, title_furigana, pub_date, stage, added_at, updated_at,"
-            " content_type, author, char_count) "
-            "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
-            (url, title, title_furigana, pub_date, now, now, content_type, author, char_count),
+            " content_type, author, char_count, source) "
+            "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
+            (url, title, title_furigana, pub_date, now, now, content_type, author, char_count, src),
         )
         story_id = cur.lastrowid
         for cat in categories or []:
@@ -253,14 +263,20 @@ def get_stories(
     limit: int = 50,
     offset: int = 0,
     content_type: str | None = None,
+    order_by: str = "updated_at",
 ) -> list[Story]:
-    """Query stories with optional filters."""
+    """Query stories with optional filters.
+
+    order_by: "updated_at" (default, most recently processed first) or "id"
+    (insertion order). Both DESC.
+    """
     conn = _get_conn()
     query, params = _build_story_filter(
         "SELECT DISTINCT s.*", stage=stage, category=category, keyword=keyword,
         content_type=content_type,
     )
-    query += " ORDER BY s.id DESC LIMIT ? OFFSET ?"
+    order_col = "s.updated_at" if order_by == "updated_at" else "s.id"
+    query += f" ORDER BY {order_col} DESC, s.id DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     rows = conn.execute(query, params).fetchall()
     return _rows_to_stories(rows)
@@ -374,6 +390,136 @@ def delete_story(story_id: int) -> None:
     conn = _get_conn()
     conn.execute("DELETE FROM stories WHERE id = ?", (story_id,))
     conn.commit()
+
+
+def convert_to_short(story_id: int) -> None:
+    """Migrate a long-form story to the Shorts pipeline.
+
+    Rewinds stage to 'text_processed' so the Shorts pipeline re-runs the
+    voice stage. Long speed (0.9) and Shorts speed (1.15) differ, so the
+    long narration cannot be reused — only the scraped/processed text is
+    reusable. The `source` field is preserved.
+
+    Deletes stage_completions beyond text_processed so the Shorts pipeline
+    re-runs voice/image/video/upload/(report) stages on the new content_type.
+
+    Copies reusable artifacts (raw_content/processed_text/chunks/original_chunks)
+    from the long output dir to the short output dir, so the Shorts pipeline
+    workers find them at the expected short paths without re-scraping /
+    re-processing text. The long-side files are preserved intact for rollback.
+    """
+    conn = _get_conn()
+    now = _now()
+    target_stage = "text_processed"
+    # STAGES_SHORT is now used for clearing completions
+    from app.models import STAGES_SHORT
+    idx = STAGES_SHORT.index(target_stage)
+    later_stages = STAGES_SHORT[idx + 1:]
+
+    # Fetch title before updating so we can copy files using the correct title
+    story = get_story_by_id(story_id)
+    if story is None:
+        raise ValueError(f"Story {story_id} not found")
+
+    conn.execute(
+        "UPDATE stories SET content_type = 'short', stage = ?, error = NULL, "
+        "youtube_video_id = NULL, updated_at = ? WHERE id = ?",
+        (target_stage, now, story_id),
+    )
+    if later_stages:
+        placeholders = ",".join("?" * len(later_stages))
+        conn.execute(
+            f"DELETE FROM stage_completions WHERE story_id = ? AND stage IN ({placeholders})",
+            [story_id, *later_stages],
+        )
+    conn.commit()
+
+    # Copy reusable artifacts to the short directory so the Shorts pipeline
+    # can reuse them without re-running scraping/text-processing/voice stages.
+    _copy_long_artifacts_to_short(story.title)
+
+
+def _copy_long_artifacts_to_short(title: str) -> None:
+    """Copy scraped text + processed hiragana artifacts from long dir to short dir.
+
+    Narration and per-chunk audio are intentionally NOT copied — long uses
+    speed=0.9 but Shorts uses speed=1.15, so voice must be regenerated.
+
+    Missing files are silently skipped (e.g. stories that haven't reached
+    text_processed won't have processed_text.txt / chunks.json).
+    """
+    _copy_text_artifacts(title, src_ct="long", dst_ct="short")
+
+
+def _copy_text_artifacts(title: str, src_ct: str, dst_ct: str) -> None:
+    """Copy scraped/processed text artifacts between content_type directories.
+
+    Copies: raw_content, processed_text, chunks, original_chunks.
+    Does NOT copy narration/audio (voice speeds differ between long and short).
+    Missing files are silently skipped.
+    """
+    import shutil
+
+    from app.utils.paths import (
+        chunks_path,
+        original_chunks_path,
+        processed_text_path,
+        raw_content_path,
+        story_dir,
+    )
+
+    story_dir(title, dst_ct)  # ensures dst dir exists
+
+    for path_fn in (
+        raw_content_path,
+        processed_text_path,
+        chunks_path,
+        original_chunks_path,
+    ):
+        src = path_fn(title, src_ct)
+        if src.exists():
+            dst = path_fn(title, dst_ct)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+
+def convert_to_long(story_id: int) -> None:
+    """Migrate a Shorts story to the long-form pipeline.
+
+    Rewinds stage to 'text_processed' so the long pipeline regenerates voice
+    (short speed=1.15 ≠ long speed=0.9 — audio must be re-synthesized).
+
+    The `source` field is preserved so kikikaikai-sourced shorts keep their
+    kikikaikai attribution in the long pipeline (upload stage branches on
+    source for the correct 引用元 template).
+
+    Copies reusable text artifacts from short dir → long dir. Short-side
+    files are preserved for rollback.
+    """
+    conn = _get_conn()
+    now = _now()
+    target_stage = "text_processed"
+    idx = STAGES.index(target_stage)
+    later_stages = STAGES[idx + 1:]
+
+    story = get_story_by_id(story_id)
+    if story is None:
+        raise ValueError(f"Story {story_id} not found")
+
+    conn.execute(
+        "UPDATE stories SET content_type = 'long', stage = ?, error = NULL, "
+        "youtube_video_id = NULL, updated_at = ? WHERE id = ?",
+        (target_stage, now, story_id),
+    )
+    if later_stages:
+        placeholders = ",".join("?" * len(later_stages))
+        conn.execute(
+            f"DELETE FROM stage_completions WHERE story_id = ? AND stage IN ({placeholders})",
+            [story_id, *later_stages],
+        )
+    conn.commit()
+
+    _copy_text_artifacts(story.title, src_ct="short", dst_ct="long")
 
 
 def recover_running() -> int:

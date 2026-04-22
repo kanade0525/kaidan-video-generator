@@ -25,10 +25,20 @@ from app.utils.paths import (
 
 def results_page(
     keyword: str = "", story_id: int = 0, content_type: str | None = None,
-    base_path: str = "/results",
+    base_path: str = "/results", category: str = "",
 ):
     """Results viewer page."""
     ui.label("生成結果").classes("text-2xl font-bold mb-4")
+
+    # Long 側のみカテゴリフィルタ（Short は kikikaikai 由来でカテゴリ未使用）
+    show_category_filter = content_type != "short"
+    category_options: dict[str, str] = {}
+    if show_category_filter:
+        try:
+            cats = db.get_categories()
+            category_options = {"": "全て", **{c: c for c in cats}}
+        except Exception:
+            category_options = {"": "全て"}
 
     # Filters (stage resets on reload so updated stories always appear)
     with ui.row().classes("gap-2 mb-4 items-end"):
@@ -37,6 +47,14 @@ def results_page(
             value="",
             label="ステージ",
         ).classes("w-48")
+
+        category_filter = None
+        if show_category_filter:
+            category_filter = ui.select(
+                category_options,
+                value=category if category in category_options else "",
+                label="カテゴリ",
+            ).classes("w-48")
 
         search_input = ui.input("タイトル検索", value=keyword).classes("w-64")
         ui.button("検索", on_click=lambda: update_story_list()).props("size=sm")
@@ -50,10 +68,12 @@ def results_page(
     def _update_url(selected_id=None):
         """Update URL query params to preserve search state."""
         from app.ui.url_state import build_results_url
+        cat = category_filter.value if category_filter else ""
         url = build_results_url(
             keyword=search_input.value or "",
             story_id=selected_id,
             base_path=base_path,
+            category=cat or "",
         )
         ui.run_javascript(f'window.history.replaceState(null, "", "{url}")')
 
@@ -80,6 +100,8 @@ def results_page(
 
             if story.content_type == "short":
                 _render_shorts_duration_badge(story)
+            else:
+                _render_shorts_duration_badge(story, label_prefix="Shorts移送判定: ")
 
             with ui.row().classes("gap-1 mb-4"):
                 story_stages = stages_for(story.content_type)
@@ -94,6 +116,11 @@ def results_page(
                     label = STAGE_LABELS.get(s, s)
                     ui.badge(label, color=color).classes("text-xs")
 
+            if story.content_type == "long":
+                _render_convert_to_short_button(story, on_done=lambda: show_detail(sid))
+            else:
+                _render_convert_to_long_button(story, on_done=lambda: show_detail(sid))
+
             if story.error:
                 ui.label(f"エラー: {story.error}").classes("text-red-500 mb-2")
 
@@ -105,9 +132,9 @@ def results_page(
                 images_tab = ui.tab("画像")
                 video_tab = ui.tab("動画")
                 youtube_tab = ui.tab("YouTube")
-                report_tab = None
-                if story.content_type != "short":
-                    report_tab = ui.tab("HHS使用報告")
+                # HHS使用報告 is required whenever story is HHS-sourced
+                # (includes long-form and migrated shorts)
+                report_tab = ui.tab("HHS使用報告") if story.source == "hhs" else None
 
             with ui.tab_panels(tabs, value=scrape_tab).classes("w-full"):
                 with ui.tab_panel(scrape_tab):
@@ -135,7 +162,11 @@ def results_page(
     def update_story_list():
         s = stage_filter.value or None
         kw = search_input.value.strip() if search_input.value else None
-        stories = db.get_stories(stage=s, keyword=kw, limit=200, content_type=content_type)
+        cat = (category_filter.value if category_filter else None) or None
+        # Default order: most recently processed first (updated_at DESC)
+        stories = db.get_stories(
+            stage=s, keyword=kw, category=cat, limit=200, content_type=content_type,
+        )
 
         select_container.clear()
         detail_container.clear()
@@ -157,6 +188,8 @@ def results_page(
                 _update_url()
 
     stage_filter.on_value_change(lambda _: update_story_list())
+    if category_filter:
+        category_filter.on_value_change(lambda _: update_story_list())
     search_input.on("keydown.enter", lambda _: update_story_list())
 
     update_story_list()
@@ -236,7 +269,7 @@ _DURATION_BADGE_LABELS = {
 }
 
 
-def _render_shorts_duration_badge(story):
+def _render_shorts_duration_badge(story, label_prefix: str = "尺: "):
     """Show Shorts duration badge (180s limit) in the story detail header."""
     est = estimate_shorts_total_duration(story)
     if est.seconds is None:
@@ -247,10 +280,127 @@ def _render_shorts_duration_badge(story):
     base = _DURATION_BADGE_LABELS.get(cls, "")
     color = _DURATION_BADGE_COLORS.get(cls, "grey")
     with ui.row().classes("gap-1 mb-3 items-center"):
-        ui.label("尺:").classes("text-sm text-gray-500")
+        ui.label(label_prefix).classes("text-sm text-gray-500")
         ui.badge(f"{base} ({est.seconds:.0f}s)", color=color).classes("text-xs")
         if not est.actual:
             ui.label("（音声からの予測）").classes("text-xs text-gray-400")
+
+
+def _render_convert_to_short_button(story, on_done):
+    """Button to migrate a long-form story to the Shorts pipeline.
+
+    Enabled only when audio duration estimate is ≤180s (ok/warning).
+    HHS-sourced stories carry the `source="hhs"` field into the Shorts
+    pipeline so the correct 引用元 template is used and HHS使用報告 is
+    still required after the Shorts upload.
+    """
+    est = estimate_shorts_total_duration(story)
+    cls = est.classification
+    disabled = cls in ("over", "unknown")
+    tooltip = None
+    if cls == "over":
+        tooltip = f"180秒超過のため Shorts 化不可 ({est.seconds:.0f}s)"
+    elif cls == "unknown":
+        tooltip = "ナレーション未生成のため判定不可"
+    elif cls == "warning":
+        tooltip = f"尺が180秒ギリギリ ({est.seconds:.0f}s). 移送後に再確認推奨"
+
+    def do_migrate():
+        def confirm():
+            dlg.close()
+            try:
+                db.convert_to_short(story.id)
+                msg = "Shortsパイプラインに移送しました"
+                if story.source == "hhs":
+                    msg += "（HHS使用報告が別途必要です）"
+                ui.notify(msg, color="positive")
+                on_done()
+            except Exception as e:
+                log.exception("convert_to_short failed")
+                ui.notify(f"移送失敗: {e}", color="negative")
+
+        with ui.dialog() as dlg, ui.card():
+            ui.label(f"「{story.title}」をShortsに移送しますか？").classes("text-lg font-bold")
+            ui.label(
+                "・content_type を short に切替、stage を テキスト処理済み に巻き戻し\n"
+                "・スクレイピング/処理済テキストは流用（再処理なし）\n"
+                "・音声/画像/動画/YouTube を Shorts 設定で再生成\n"
+                "  （Shorts は speed=1.15 で long の 0.9 と異なるため音声は作り直し必須）\n"
+                "・long 側の成果物は残置（手動削除可）"
+            ).classes("text-sm whitespace-pre-line")
+            if story.source == "hhs":
+                ui.label(
+                    "※ HHS由来: 移送後の Shorts に対しても別途「HHS使用報告」が必要です "
+                    "(規約準拠)。"
+                ).classes("text-sm text-orange-600")
+            with ui.row().classes("gap-2 mt-3 justify-end"):
+                ui.button("キャンセル", on_click=dlg.close).props("flat")
+                ui.button("移送実行", on_click=confirm, color="primary")
+        dlg.open()
+
+    with ui.row().classes("gap-2 mb-3 items-center"):
+        btn = ui.button(
+            "Shortsへ移送",
+            on_click=do_migrate,
+            color="orange" if cls == "warning" else "primary",
+        ).props("size=sm icon=content_copy")
+        if disabled:
+            btn.disable()
+        if tooltip:
+            btn.tooltip(tooltip)
+
+
+def _render_convert_to_long_button(story, on_done):
+    """Button to migrate a Shorts story to the long-form pipeline.
+
+    No duration constraint (long has no upper limit). Audio must be
+    regenerated because long speed (0.9) differs from shorts speed (1.15).
+    HHS-sourced shorts (migrated long→short previously) require HHS使用報告
+    again after the new long upload.
+    """
+    def do_migrate():
+        def confirm():
+            dlg.close()
+            try:
+                db.convert_to_long(story.id)
+                msg = "長尺パイプラインに移送しました"
+                if story.source == "hhs":
+                    msg += "（HHS使用報告が別途必要です）"
+                ui.notify(msg, color="positive")
+                on_done()
+            except Exception as e:
+                log.exception("convert_to_long failed")
+                ui.notify(f"移送失敗: {e}", color="negative")
+
+        with ui.dialog() as dlg, ui.card():
+            ui.label(f"「{story.title}」を長尺に移送しますか？").classes("text-lg font-bold")
+            ui.label(
+                "・content_type を long に切替、stage を テキスト処理済み に巻き戻し\n"
+                "・スクレイピング/処理済テキストは流用（再処理なし）\n"
+                "・音声/画像/動画/YouTube を 長尺設定で再生成\n"
+                "  （long は speed=0.9 で Shorts の 1.15 と異なるため音声は作り直し必須）\n"
+                "・short 側の成果物は残置（手動削除可）"
+            ).classes("text-sm whitespace-pre-line")
+            if story.source == "hhs":
+                ui.label(
+                    "※ HHS由来: 移送後の long 動画に対しても別途「HHS使用報告」が必要です "
+                    "(規約準拠)。"
+                ).classes("text-sm text-orange-600")
+            elif story.source == "kikikaikai":
+                ui.label(
+                    "※ 奇々怪々由来: 長尺 description テンプレは source=kikikaikai 用に自動切替。"
+                ).classes("text-sm text-blue-600")
+            with ui.row().classes("gap-2 mt-3 justify-end"):
+                ui.button("キャンセル", on_click=dlg.close).props("flat")
+                ui.button("移送実行", on_click=confirm, color="primary")
+        dlg.open()
+
+    with ui.row().classes("gap-2 mb-3 items-center"):
+        ui.button(
+            "長尺へ移送",
+            on_click=do_migrate,
+            color="primary",
+        ).props("size=sm icon=content_copy")
 
 
 def _show_scrape_result(story):

@@ -94,6 +94,26 @@ _DEFAULTS = {
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "#怪談 #ホラー #朗読 #怖い話 #ホラホリ #百鬼朗読"
     ),
+    # 奇々怪々由来のストーリーが長尺に移送された場合のテンプレート。
+    # HHS規約の「ホラホリ」タグは付与しない。
+    "long_kikikaikai_youtube_description_template": (
+        "【怪談朗読】{title}\n\n"
+        "百鬼朗読へようこそ。\n"
+        "日本各地に伝わる怪談・不思議な話・人怖を朗読でお届けします。\n"
+        "チャンネル登録・高評価よろしくお願いします。\n\n"
+        "▶ 怪談再生リスト: {playlist_url}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "引用元: 怖い話投稿サイト 奇々怪々\n"
+        "「{title}」{url}\n"
+        "作者: {author}\n\n"
+        "音声: VOICEVOX:{speaker}\n"
+        "BGM: 「Where the Light Never Speaks」松浦洋介\n"
+        "(DOVA-SYNDROME: https://dova-s.jp/bgm/play22758.html)\n"
+        "SE: 「オカルト系タイトルコール」Causality Sound\n"
+        "(DOVA-SYNDROME: https://dova-s.jp/se/detail/1489)\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "#怪談 #ホラー #朗読 #怖い話 #百鬼朗読"
+    ),
     "youtube_tags": "怪談,ホラー,朗読,怖い話,心霊,恐怖",
     "youtube_pinned_comment_template": (
         "ご視聴ありがとうございます！\n"
@@ -135,7 +155,26 @@ _DEFAULTS = {
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "#怪談 #ホラー #朗読 #怖い話 #Shorts #百鬼朗読"
     ),
-    "shorts_youtube_tags": "怪談,ホラー,朗読,怖い話,Shorts,音読さん,都市伝説",
+    # HHS-sourced stories migrated to Shorts pipeline use this template instead
+    # (HHS 規約で正しい引用元表記が必要なため)。`#ホラホリ` タグも付与。
+    "shorts_hhs_youtube_description_template": (
+        "【怪談朗読】{title} #Shorts\n\n"
+        "百鬼朗読へようこそ。\n"
+        "日本各地に伝わる怪談・不思議な話・人怖を朗読でお届けします。\n"
+        "チャンネル登録・高評価よろしくお願いします。\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "引用元:HHS図書館より\n"
+        "「{title}」{url}\n\n"
+        "音声: VOICEVOX:{speaker}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "#怪談 #ホラー #朗読 #怖い話 #Shorts #ホラホリ #百鬼朗読"
+    ),
+    # Shorts 特化タグ: 睡眠用/作業用BGM 等の長尺向けは除外。
+    # ホラホリは HHS由来 Short のみ upload 時に追加（source依存）。
+    "shorts_youtube_tags": (
+        "怪談,ホラー,朗読,怖い話,心霊,恐怖,怪談朗読,実話怪談,都市伝説,"
+        "百鬼朗読,VOICEVOX,怖い話朗読,人怖,不思議な話,Shorts"
+    ),
     # Narration dictionary customization (user additions on top of hardcoded defaults)
     "reading_overrides": {},      # surface(漢字等) → ひらがな読み
     "compound_replacements": {},  # 置換元 → 置換後（MeCab前に適用）

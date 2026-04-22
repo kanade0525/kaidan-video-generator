@@ -19,6 +19,7 @@ def build_query_string(params: dict[str, str | int | None]) -> str:
 
 def build_results_url(
     keyword: str = "", story_id: int | None = None, base_path: str = "/results",
+    category: str = "",
 ) -> str:
     """Build results URL with current filter state (stage excluded intentionally)."""
     params: dict[str, str | int | None] = {}
@@ -26,6 +27,8 @@ def build_results_url(
         params["keyword"] = keyword.strip()
     if story_id:
         params["id"] = story_id
+    if category and category.strip():
+        params["category"] = category.strip()
     qs = build_query_string(params)
     return f"{base_path}?{qs}" if qs else base_path
 

@@ -37,9 +37,9 @@ def stories(category: str = "", page: int = 0):
 
 
 @ui.page("/results")
-def results(keyword: str = "", id: int = 0):
+def results(keyword: str = "", id: int = 0, category: str = ""):
     create_layout()
-    results_page(keyword=keyword, story_id=id, content_type="long")
+    results_page(keyword=keyword, story_id=id, content_type="long", category=category)
 
 
 @ui.page("/settings")
