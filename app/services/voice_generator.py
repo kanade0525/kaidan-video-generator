@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import wave
 from pathlib import Path
 
@@ -89,6 +90,12 @@ def text_to_speech(
     elif cfg_get("volume"):
         query["volumeScale"] = cfg_get("volume")
 
+    # Pause length: VOICEVOX native scaling of all `、` / `。` pauses.
+    # Longer pauses make kaidan narration more dramatic.
+    pause_scale = cfg_get("pause_length_scale")
+    if pause_scale is not None:
+        query["pauseLengthScale"] = pause_scale
+
     # Synthesis
     r = requests.post(
         f"{host}/synthesis",
@@ -133,17 +140,19 @@ def generate_narration(
         audio_files.append(audio_path)
         log.info("保存: %s", audio_path.name)
 
-    # Concatenate
+    # Concatenate with inter-chunk silence based on chunk ending punctuation.
+    # Chunks ending with 。/！/？ get a longer dramatic pause; others get a
+    # moderate pause. This adds "breathing room" between kaidan segments.
     if progress_callback:
         progress_callback(len(chunks), len(chunks))
     output_path = output_dir.parent / "narration_complete.wav"
-    concatenate_wav(audio_files, output_path)
+    concatenate_wav_with_gaps(audio_files, chunks, output_path)
     log.info("結合完了: %s", output_path)
     return output_path
 
 
 def concatenate_wav(files: list[Path], output: Path) -> None:
-    """Concatenate WAV files into a single file."""
+    """Concatenate WAV files into a single file (no inter-chunk silence)."""
     if not files:
         return
 
@@ -155,3 +164,47 @@ def concatenate_wav(files: list[Path], output: Path) -> None:
         for f in files:
             with wave.open(str(f), "rb") as inp:
                 out.writeframes(inp.readframes(inp.getnframes()))
+
+
+def concatenate_wav_with_gaps(
+    files: list[Path], chunks: list[str], output: Path,
+) -> None:
+    """Concatenate WAV files with silence between chunks based on the last
+    punctuation of the preceding chunk.
+
+    Silence durations (configurable):
+      - After 。/！/？ (sentence end): cfg `inter_chunk_gap_sentence` (default 0.6s)
+      - After other endings: cfg `inter_chunk_gap_default` (default 0.25s)
+      - Final chunk: no trailing silence
+    """
+    if not files:
+        return
+
+    gap_sentence = cfg_get("inter_chunk_gap_sentence")
+    gap_default = cfg_get("inter_chunk_gap_default")
+    if gap_sentence is None:
+        gap_sentence = 0.6
+    if gap_default is None:
+        gap_default = 0.25
+
+    with wave.open(str(files[0]), "rb") as first:
+        params = first.getparams()
+    framerate = params.framerate
+    sampwidth = params.sampwidth
+    nchannels = params.nchannels
+
+    sentence_end_re = re.compile(r"[。！？!?]$")
+
+    with wave.open(str(output), "wb") as out:
+        out.setparams(params)
+        for i, f in enumerate(files):
+            with wave.open(str(f), "rb") as inp:
+                out.writeframes(inp.readframes(inp.getnframes()))
+            # Inter-chunk silence (not after last chunk)
+            if i < len(files) - 1:
+                chunk = chunks[i].rstrip() if i < len(chunks) else ""
+                gap = gap_sentence if sentence_end_re.search(chunk) else gap_default
+                if gap > 0:
+                    n_frames = int(framerate * gap)
+                    silence = b"\x00" * (n_frames * sampwidth * nchannels)
+                    out.writeframes(silence)

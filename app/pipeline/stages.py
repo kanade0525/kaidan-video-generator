@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -72,7 +73,13 @@ def do_text(story: Story, progress_callback: ProgressCallback = None) -> None:
 
 
 def do_voice(story: Story, progress_callback: ProgressCallback = None) -> None:
-    """Stage: Generate voice narration via VOICEVOX."""
+    """Stage: Generate voice narration via VOICEVOX.
+
+    Also generates opening hook audio (if enabled) so do_video can prepend
+    a dramatic intro clip.
+    """
+    from app.config import get as cfg_get
+
     log.info("[voice] %s", story.title)
     ct = story.content_type
     chunks = json.loads(chunks_path(story.title, ct).read_text(encoding="utf-8"))
@@ -80,6 +87,17 @@ def do_voice(story: Story, progress_callback: ProgressCallback = None) -> None:
         chunks, audio_dir(story.title, ct),
         progress_callback=progress_callback,
     )
+
+    # Opening hook audio (optional, uses the FULL raw text, not chunks)
+    if cfg_get("hook_auto_enabled"):
+        from app.services import hook_generator
+        raw_text = raw_content_path(story.title, ct).read_text(encoding="utf-8")
+        hook_wav = story_dir(story.title, ct) / "hook.wav"
+        result = hook_generator.generate_hook_audio(story.title, raw_text, hook_wav)
+        if result:
+            log.info("[voice] フック音声生成完了: %s", hook_wav.name)
+        else:
+            log.warning("[voice] フック音声生成失敗、動画は通常のOP/Titleから開始")
 
 
 def do_images(story: Story, progress_callback: ProgressCallback = None) -> None:
@@ -164,16 +182,59 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
     )
 
     # Burn scrolling subtitle (original text) onto the ED-less video
-    output = video_path(story.title, ct)
     subtitled = sdir / "subtitled_long.mp4"
     _burn_long_scroll_subtitles(story, raw_output, subtitled, title_card, title_audio)
     raw_output.unlink(missing_ok=True)
 
+    # Prepend opening hook clip if hook.wav exists (generated in voice stage)
+    hook_wav = sdir / "hook.wav"
+    if hook_wav.exists():
+        hook_clip = sdir / "hook_clip.mp4"
+        _create_hook_clip(hook_wav, images[0], hook_clip)
+        from app.utils.ffmpeg import concat_videos
+        hook_prefixed = sdir / "hook_prefixed.mp4"
+        concat_videos([hook_clip, subtitled], hook_prefixed, width=1920, height=1080)
+        subtitled.unlink(missing_ok=True)
+        hook_clip.unlink(missing_ok=True)
+        subtitled = hook_prefixed
+
     # Append ED after subtitles are burned
+    output = video_path(story.title, ct)
     _append_ed(subtitled, output)
 
     # Generate timestamps for YouTube description
     _save_timestamps(story, title_card, title_audio)
+
+
+def _create_hook_clip(
+    hook_audio: Path, bg_image: Path, output: Path,
+    width: int = 1920, height: int = 1080, fps: int = 30,
+) -> Path:
+    """Create a video clip for the opening hook: still image + hook audio.
+
+    Used as a retention-friendly prefix before OP/title.
+    """
+    from app.utils.ffmpeg import get_audio_duration, run_ffmpeg
+
+    duration = get_audio_duration(hook_audio)
+    # Add 0.5s buffer for post-hook silence transition into OP
+    total_dur = duration + 0.5
+
+    run_ffmpeg([
+        "-loop", "1", "-i", str(bg_image),
+        "-i", str(hook_audio),
+        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+               f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,"
+               f"fade=in:st=0:d=0.3,fade=out:st={total_dur - 0.3:.2f}:d=0.3",
+        "-af", f"apad=pad_dur=0.5",
+        "-r", str(fps),
+        "-t", f"{total_dur:.2f}",
+        "-shortest",
+        str(output),
+    ])
+    return output
 
 
 def _append_ed(src: Path, dst: Path) -> None:
@@ -282,9 +343,15 @@ def _save_timestamps(
     title_card: Path | None,
     title_audio: Path | None,
 ) -> None:
-    """Calculate and save video part timestamps for YouTube description."""
+    """Calculate and save video part timestamps for YouTube description.
+
+    If the chapter_auto_enabled config flag is on and per-chunk audio/text is
+    available, uses LLM to subdivide 本編 into multiple chapters with
+    section-specific labels.
+    """
     from app.config import get as cfg_get
     from app.utils.ffmpeg import get_audio_duration
+    from app.utils.paths import audio_dir, chunks_path
 
     ct = story.content_type
     cursor = 0.0
@@ -303,14 +370,29 @@ def _save_timestamps(
         title_dur = 1.0 + get_audio_duration(title_audio) + 1.0
         cursor += title_dur
 
-    # Main content
-    parts.append({"label": "本編", "start": cursor})
+    # Main content (auto-chapter subdivision if enabled)
     narration = narration_path(story.title, ct)
+    lead = cfg_get("leading_silence") if cfg_get("leading_silence") else 2.0
+    trail = cfg_get("trailing_silence") if cfg_get("trailing_silence") else 2.0
+    main_start = cursor
+    narration_offset = cursor + lead  # where chunk 0 begins
+
+    chapters_added = False
+    if cfg_get("chapter_auto_enabled"):
+        chapters = _try_generate_chapters(story, narration_offset)
+        if chapters:
+            parts.extend(chapters)
+            chapters_added = True
+            log.info("[video] LLMチャプター %d 件を timestamps に追加", len(chapters))
+
+    if not chapters_added:
+        parts.append({"label": "本編", "start": main_start})
+
     if narration.exists():
-        lead = cfg_get("leading_silence") if cfg_get("leading_silence") else 2.0
         narr_dur = get_audio_duration(narration)
-        trail = cfg_get("trailing_silence") if cfg_get("trailing_silence") else 2.0
         cursor += lead + narr_dur + trail
+    else:
+        cursor = main_start
 
     # ED
     ed_path = cfg_get("ed_path")
@@ -322,6 +404,63 @@ def _save_timestamps(
         json.dumps(parts, ensure_ascii=False, indent=2), encoding="utf-8",
     )
     log.info("[video] タイムスタンプ保存: %s", ts_file)
+
+
+def _try_generate_chapters(story: Story, narration_offset: float) -> list[dict]:
+    """Try to generate LLM-based chapters for the main narration body.
+
+    Returns [] if chunks/audio unavailable or LLM fails.
+    """
+    from app.services.chapter_generator import (
+        generate_chapter_labels,
+        group_labels_to_chapters,
+    )
+    from app.utils.ffmpeg import get_audio_duration
+    from app.utils.paths import audio_dir, chunks_path
+
+    ct = story.content_type
+    chunks_file = chunks_path(story.title, ct)
+    adir = audio_dir(story.title, ct)
+    if not chunks_file.exists() or not adir.exists():
+        return []
+
+    try:
+        chunks = json.loads(chunks_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning("chunks.json 読み込み失敗: %s", e)
+        return []
+
+    chunk_wavs = sorted(adir.glob("narration_*.wav"))
+    if len(chunk_wavs) != len(chunks):
+        log.warning(
+            "chunk/audio count mismatch: %d vs %d — chapter生成スキップ",
+            len(chunk_wavs), len(chunks),
+        )
+        return []
+
+    from app.services.voice_generator import concatenate_wav_with_gaps  # noqa: F401
+
+    # Compute per-chunk durations (including inter-chunk gaps, to match the
+    # actual concatenated narration_complete.wav timeline).
+    from app.config import get as cfg_get
+    gap_s = cfg_get("inter_chunk_gap_sentence") or 0.6
+    gap_d = cfg_get("inter_chunk_gap_default") or 0.25
+    sentence_end_re = re.compile(r"[。！？!?]$")
+
+    durations: list[float] = []
+    for i, (wav, chunk) in enumerate(zip(chunk_wavs, chunks)):
+        d = get_audio_duration(wav)
+        # Add gap except after last chunk
+        if i < len(chunks) - 1:
+            chunk_text = str(chunk).rstrip()
+            gap = gap_s if sentence_end_re.search(chunk_text) else gap_d
+            d += gap
+        durations.append(d)
+
+    labels = generate_chapter_labels(chunks, story.title)
+    if not labels:
+        return []
+    return group_labels_to_chapters(labels, durations, narration_offset)
 
 
 def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) -> None:
@@ -395,6 +534,20 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
             minute=cfg_get("youtube_schedule_minute") or 0,
         )
 
+    # Generate custom thumbnail if enabled (LLM-generated clickbait phrase
+    # overlaid on the most dramatic scene image)
+    thumbnail_path = None
+    if cfg_get("thumbnail_auto_enabled"):
+        from app.services import thumbnail_generator
+        thumb_out = story_dir(story.title, ct) / "thumbnail.png"
+        raw = raw_content_path(story.title, ct).read_text(encoding="utf-8")
+        result_path = thumbnail_generator.generate_story_thumbnail(
+            story.title, raw, images_dir(story.title, ct), thumb_out,
+        )
+        if result_path and result_path.exists():
+            thumbnail_path = result_path
+            log.info("[youtube] カスタムサムネイル生成: %s", thumb_out.name)
+
     result = youtube_uploader.upload_video(
         video_path=vid,
         title=yt_title,
@@ -403,6 +556,7 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
         category_id=category_id,
         privacy_status=privacy,
         publish_at=publish_at,
+        thumbnail_path=thumbnail_path,
         progress_callback=progress_callback,
     )
 
@@ -796,8 +950,33 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
             minute=cfg_get("youtube_schedule_minute") or 0,
         )
 
-    # Use title card as thumbnail
-    thumbnail = images_dir(story.title, ct) / TITLE_CARD_FILENAME
+    # Custom thumbnail: LLM phrase on dramatic scene image (9:16 for Shorts)
+    thumbnail: Path | None = None
+    if cfg_get("thumbnail_auto_enabled") and raw_text:
+        from app.services import thumbnail_generator
+        thumb_out = story_dir(story.title, ct) / "thumbnail.png"
+        # Shorts uses vertical 720x1280 thumbnail
+        candidates = [
+            images_dir(story.title, ct) / "scene_001.png",
+            images_dir(story.title, ct) / "scene_000.png",
+            images_dir(story.title, ct) / TITLE_CARD_FILENAME,
+        ]
+        bg = next((p for p in candidates if p.exists()), None)
+        if bg:
+            try:
+                phrase = thumbnail_generator.generate_thumbnail_phrase(story.title, raw_text)
+                thumbnail_generator.create_thumbnail(
+                    story.title, bg, thumb_out, phrase=phrase,
+                    width=720, height=1280,
+                )
+                thumbnail = thumb_out
+                log.info("[youtube:short] カスタムサムネイル生成: %s", thumb_out.name)
+            except Exception as e:
+                log.warning("[youtube:short] サムネイル生成失敗、タイトルカードにfallback: %s", e)
+    if thumbnail is None:
+        default = images_dir(story.title, ct) / TITLE_CARD_FILENAME
+        if default.exists():
+            thumbnail = default
 
     result = youtube_uploader.upload_video(
         video_path=vid,
@@ -807,7 +986,7 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
         category_id=category_id,
         privacy_status=privacy,
         publish_at=publish_at,
-        thumbnail_path=thumbnail if thumbnail.exists() else None,
+        thumbnail_path=thumbnail,
         progress_callback=progress_callback,
     )
 

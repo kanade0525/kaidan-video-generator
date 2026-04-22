@@ -58,6 +58,22 @@ _DEFAULTS = {
     # アクセント補正: pyopenjtalk + marine (ML) を使って VOICEVOX 内蔵の
     # OpenJTalk 規則ベースアクセントを上書き。marine が利用不可なら自動でスキップ。
     "accent_correction_enabled": True,
+    # 間（ま）制御 — 朗読の呼吸を調整
+    # VOICEVOX の全 pause (。/、) をスケール (1.0=標準, 1.3=怪談向け)
+    "pause_length_scale": 1.3,
+    # チャンク結合時の無音 (文末 vs 文中で切替)
+    "inter_chunk_gap_sentence": 0.6,  # 「。」「！」「？」で終わるチャンク後
+    "inter_chunk_gap_default": 0.25,  # それ以外
+    # YouTubeチャプター自動生成: LLMでチャンクにセクション名を振り、
+    # description にチャプター (例: 「1:23 事件の発覚」) として挿入
+    "chapter_auto_enabled": True,
+    # 冒頭フック自動生成: LLM がストーリーから 30-60字 の煽り文を作り、
+    # VOICEVOX で合成→ scene_001 の画像 + フック音声の短いクリップを
+    # OP の前に挿入。視聴者の最初 5-8秒のフック強化。
+    "hook_auto_enabled": True,
+    # サムネイル自動生成: LLMが短い煽り文を作り、最もドラマティックなシーン画像に
+    # タイトル + 煽り文をオーバーレイしてYouTubeサムネイルとして使用。
+    "thumbnail_auto_enabled": True,
     "max_chunk": 200,
     "text_prompt": (
         "以下の日本語テキストをVOICEVOX朗読用にひらがな化してください。\n\n"
