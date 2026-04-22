@@ -448,6 +448,16 @@ def _copy_long_artifacts_to_short(title: str) -> None:
     Missing files are silently skipped (e.g. stories that haven't reached
     text_processed won't have processed_text.txt / chunks.json).
     """
+    _copy_text_artifacts(title, src_ct="long", dst_ct="short")
+
+
+def _copy_text_artifacts(title: str, src_ct: str, dst_ct: str) -> None:
+    """Copy scraped/processed text artifacts between content_type directories.
+
+    Copies: raw_content, processed_text, chunks, original_chunks.
+    Does NOT copy narration/audio (voice speeds differ between long and short).
+    Missing files are silently skipped.
+    """
     import shutil
 
     from app.utils.paths import (
@@ -458,7 +468,7 @@ def _copy_long_artifacts_to_short(title: str) -> None:
         story_dir,
     )
 
-    story_dir(title, "short")  # ensures short dir exists
+    story_dir(title, dst_ct)  # ensures dst dir exists
 
     for path_fn in (
         raw_content_path,
@@ -466,11 +476,50 @@ def _copy_long_artifacts_to_short(title: str) -> None:
         chunks_path,
         original_chunks_path,
     ):
-        src = path_fn(title, "long")
+        src = path_fn(title, src_ct)
         if src.exists():
-            dst = path_fn(title, "short")
+            dst = path_fn(title, dst_ct)
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
+
+
+def convert_to_long(story_id: int) -> None:
+    """Migrate a Shorts story to the long-form pipeline.
+
+    Rewinds stage to 'text_processed' so the long pipeline regenerates voice
+    (short speed=1.15 ≠ long speed=0.9 — audio must be re-synthesized).
+
+    The `source` field is preserved so kikikaikai-sourced shorts keep their
+    kikikaikai attribution in the long pipeline (upload stage branches on
+    source for the correct 引用元 template).
+
+    Copies reusable text artifacts from short dir → long dir. Short-side
+    files are preserved for rollback.
+    """
+    conn = _get_conn()
+    now = _now()
+    target_stage = "text_processed"
+    idx = STAGES.index(target_stage)
+    later_stages = STAGES[idx + 1:]
+
+    story = get_story_by_id(story_id)
+    if story is None:
+        raise ValueError(f"Story {story_id} not found")
+
+    conn.execute(
+        "UPDATE stories SET content_type = 'long', stage = ?, error = NULL, "
+        "youtube_video_id = NULL, updated_at = ? WHERE id = ?",
+        (target_stage, now, story_id),
+    )
+    if later_stages:
+        placeholders = ",".join("?" * len(later_stages))
+        conn.execute(
+            f"DELETE FROM stage_completions WHERE story_id = ? AND stage IN ({placeholders})",
+            [story_id, *later_stages],
+        )
+    conn.commit()
+
+    _copy_text_artifacts(story.title, src_ct="short", dst_ct="long")
 
 
 def recover_running() -> int:

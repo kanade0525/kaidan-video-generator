@@ -72,6 +72,10 @@ _DEFAULT_READING_OVERRIDES: dict[str, str] = {
 _DEFAULT_COMPOUND_REPLACEMENTS: dict[str, str] = {
     "お父さん": "おとうさん",
     "お母さん": "おかあさん",
+    "お姉さん": "おねえさん",
+    "お兄さん": "おにいさん",
+    "お爺さん": "おじいさん",
+    "お婆さん": "おばあさん",
     # "の臭い" は名詞(におい)ほぼ確定だが、後続の と/だ などで MeCab が
     # 形容詞(くさい)に倒れることがある。先に置換して曖昧性を除去する。
     # 形容詞用法(例: 「魚が臭い」「靴が臭くて」)はMeCabが正しく判別するので
@@ -124,6 +128,9 @@ _DEFAULT_COMPOUND_REPLACEMENTS: dict[str, str] = {
     # 「床に就く」(就寝の意) の 床 は とこ、就 は つ。MeCab は 床→ユカ、
     # 就く→ズク と誤解析する。床に就(く/き/いた) すべてに効くよう接頭3文字で置換。
     "床に就": "とこにつ",
+    # 「非ず」(古語「あらず」) は MeCab が ヒ+ズ と誤読する。
+    # 現代日本語で「非ず」と書かれる場合は 99% 古語の「あらず」読み。
+    "非ず": "あらず",
 }
 
 # Kanji to keep as-is (skip hiragana conversion) because VOICEVOX mis-reads

@@ -94,6 +94,26 @@ _DEFAULTS = {
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "#怪談 #ホラー #朗読 #怖い話 #ホラホリ #百鬼朗読"
     ),
+    # 奇々怪々由来のストーリーが長尺に移送された場合のテンプレート。
+    # HHS規約の「ホラホリ」タグは付与しない。
+    "long_kikikaikai_youtube_description_template": (
+        "【怪談朗読】{title}\n\n"
+        "百鬼朗読へようこそ。\n"
+        "日本各地に伝わる怪談・不思議な話・人怖を朗読でお届けします。\n"
+        "チャンネル登録・高評価よろしくお願いします。\n\n"
+        "▶ 怪談再生リスト: {playlist_url}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "引用元: 怖い話投稿サイト 奇々怪々\n"
+        "「{title}」{url}\n"
+        "作者: {author}\n\n"
+        "音声: VOICEVOX:{speaker}\n"
+        "BGM: 「Where the Light Never Speaks」松浦洋介\n"
+        "(DOVA-SYNDROME: https://dova-s.jp/bgm/play22758.html)\n"
+        "SE: 「オカルト系タイトルコール」Causality Sound\n"
+        "(DOVA-SYNDROME: https://dova-s.jp/se/detail/1489)\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "#怪談 #ホラー #朗読 #怖い話 #百鬼朗読"
+    ),
     "youtube_tags": "怪談,ホラー,朗読,怖い話,心霊,恐怖",
     "youtube_pinned_comment_template": (
         "ご視聴ありがとうございます！\n"

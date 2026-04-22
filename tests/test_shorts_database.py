@@ -280,6 +280,78 @@ class TestConvertToShort:
         assert (long_dir / "narration_complete.wav").exists()
 
 
+class TestConvertToLong:
+    def test_basic_reverse_conversion(self):
+        s = db.add_story(
+            url="https://kikikaikai.kusuguru.co.jp/99",
+            title="Short Test", content_type="short", source="kikikaikai",
+        )
+        db.update_stage(s.id, "scraped")
+        db.update_stage(s.id, "text_processed")
+        db.update_stage(s.id, "voice_generated")
+        db.update_stage(s.id, "images_generated")
+        db.update_stage(s.id, "video_complete")
+        db.update_stage(s.id, "youtube_uploaded")
+        db.set_youtube_video_id(s.id, "SHORT_ID")
+
+        db.convert_to_long(s.id)
+
+        fresh = db.get_story_by_id(s.id)
+        assert fresh.content_type == "long"
+        assert fresh.stage == "text_processed"  # audio must regenerate
+        assert fresh.source == "kikikaikai"  # preserved
+        assert fresh.youtube_video_id is None
+
+    def test_later_stage_completions_cleared(self):
+        s = db.add_story(
+            url="https://kikikaikai.kusuguru.co.jp/2", content_type="short",
+            source="kikikaikai",
+        )
+        for stg in ["scraped", "text_processed", "voice_generated",
+                    "images_generated", "video_complete", "youtube_uploaded"]:
+            db.update_stage(s.id, stg)
+
+        db.convert_to_long(s.id)
+
+        conn = db._get_conn()
+        remaining = conn.execute(
+            "SELECT stage FROM stage_completions WHERE story_id = ?", (s.id,),
+        ).fetchall()
+        stages = {r["stage"] for r in remaining}
+        assert "text_processed" in stages
+        assert "voice_generated" not in stages
+        assert "youtube_uploaded" not in stages
+
+    def test_text_artifacts_copied_to_long_dir(self, tmp_path, monkeypatch):
+        """Short→Long migration copies text artifacts; voice NOT copied."""
+        import app.utils.paths as paths
+        monkeypatch.setattr(paths, "OUTPUT_BASE", tmp_path / "out")
+
+        title = "テスト短編"
+        short_dir = paths.story_dir(title, "short")
+        (short_dir / "raw_content.txt").write_text("RAW")
+        (short_dir / "processed_text.txt").write_text("PROC")
+        (short_dir / "chunks.json").write_text("[]")
+        (short_dir / "original_chunks.json").write_text("[]")
+        (short_dir / "narration_complete.wav").write_bytes(b"SHORT_WAV")
+
+        s = db.add_story(
+            url="https://kikikaikai.kusuguru.co.jp/3", title=title,
+            content_type="short", source="kikikaikai",
+        )
+        db.update_stage(s.id, "voice_generated")
+        db.convert_to_long(s.id)
+
+        long_dir = paths.story_dir(title, "long")
+        assert (long_dir / "raw_content.txt").read_text() == "RAW"
+        assert (long_dir / "processed_text.txt").read_text() == "PROC"
+        # Voice NOT copied
+        assert not (long_dir / "narration_complete.wav").exists()
+        # Short-side originals preserved
+        assert (short_dir / "raw_content.txt").exists()
+        assert (short_dir / "narration_complete.wav").exists()
+
+
 class TestShortsStagesIncludeReport:
     """STAGES_SHORT must include report_submitted for HHS-sourced shorts."""
 

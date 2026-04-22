@@ -118,6 +118,8 @@ def results_page(
 
             if story.content_type == "long":
                 _render_convert_to_short_button(story, on_done=lambda: show_detail(sid))
+            else:
+                _render_convert_to_long_button(story, on_done=lambda: show_detail(sid))
 
             if story.error:
                 ui.label(f"エラー: {story.error}").classes("text-red-500 mb-2")
@@ -346,6 +348,59 @@ def _render_convert_to_short_button(story, on_done):
             btn.disable()
         if tooltip:
             btn.tooltip(tooltip)
+
+
+def _render_convert_to_long_button(story, on_done):
+    """Button to migrate a Shorts story to the long-form pipeline.
+
+    No duration constraint (long has no upper limit). Audio must be
+    regenerated because long speed (0.9) differs from shorts speed (1.15).
+    HHS-sourced shorts (migrated long→short previously) require HHS使用報告
+    again after the new long upload.
+    """
+    def do_migrate():
+        def confirm():
+            dlg.close()
+            try:
+                db.convert_to_long(story.id)
+                msg = "長尺パイプラインに移送しました"
+                if story.source == "hhs":
+                    msg += "（HHS使用報告が別途必要です）"
+                ui.notify(msg, color="positive")
+                on_done()
+            except Exception as e:
+                log.exception("convert_to_long failed")
+                ui.notify(f"移送失敗: {e}", color="negative")
+
+        with ui.dialog() as dlg, ui.card():
+            ui.label(f"「{story.title}」を長尺に移送しますか？").classes("text-lg font-bold")
+            ui.label(
+                "・content_type を long に切替、stage を テキスト処理済み に巻き戻し\n"
+                "・スクレイピング/処理済テキストは流用（再処理なし）\n"
+                "・音声/画像/動画/YouTube を 長尺設定で再生成\n"
+                "  （long は speed=0.9 で Shorts の 1.15 と異なるため音声は作り直し必須）\n"
+                "・short 側の成果物は残置（手動削除可）"
+            ).classes("text-sm whitespace-pre-line")
+            if story.source == "hhs":
+                ui.label(
+                    "※ HHS由来: 移送後の long 動画に対しても別途「HHS使用報告」が必要です "
+                    "(規約準拠)。"
+                ).classes("text-sm text-orange-600")
+            elif story.source == "kikikaikai":
+                ui.label(
+                    "※ 奇々怪々由来: 長尺 description テンプレは source=kikikaikai 用に自動切替。"
+                ).classes("text-sm text-blue-600")
+            with ui.row().classes("gap-2 mt-3 justify-end"):
+                ui.button("キャンセル", on_click=dlg.close).props("flat")
+                ui.button("移送実行", on_click=confirm, color="primary")
+        dlg.open()
+
+    with ui.row().classes("gap-2 mb-3 items-center"):
+        ui.button(
+            "長尺へ移送",
+            on_click=do_migrate,
+            color="primary",
+        ).props("size=sm icon=content_copy")
 
 
 def _show_scrape_result(story):

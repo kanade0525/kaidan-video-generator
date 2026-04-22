@@ -348,13 +348,32 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
     title_template = cfg_get("youtube_title_template")
     category = story.categories[0] if story.categories else "怪談"
     yt_title = title_template.format(title=story.title, category=category)
-    description_template = cfg_get("youtube_description_template")
     speaker_name = get_speaker_name()
     playlist_url = cfg_get("youtube_playlist_url") or ""
-    description = description_template.format(
-        title=story.title, url=story.url, speaker=speaker_name,
-        playlist_url=playlist_url,
-    )
+    # Source-aware description template. kikikaikai-sourced stories migrated
+    # to long (Short→Long) must credit 奇々怪々, not HHS図書館.
+    if story.source == "kikikaikai":
+        description_template = cfg_get("long_kikikaikai_youtube_description_template")
+        # Load author from meta.json if available (kikikaikai scraper writes it)
+        from app.utils.paths import meta_path
+        meta_file = meta_path(story.title, ct)
+        author = story.author
+        if meta_file.exists():
+            try:
+                meta_data = json.loads(meta_file.read_text(encoding="utf-8"))
+                author = meta_data.get("author", author)
+            except Exception:
+                pass
+        description = description_template.format(
+            title=story.title, url=story.url, speaker=speaker_name,
+            playlist_url=playlist_url, author=author,
+        )
+    else:
+        description_template = cfg_get("youtube_description_template")
+        description = description_template.format(
+            title=story.title, url=story.url, speaker=speaker_name,
+            playlist_url=playlist_url,
+        )
 
     # Insert timestamps if available
     ts_file = timestamps_path(story.title, ct)
