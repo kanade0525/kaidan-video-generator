@@ -63,6 +63,11 @@ def text_to_speech(
     r.raise_for_status()
     query = r.json()
 
+    # Accent correction via pyopenjtalk + marine (Issue #31)
+    if cfg_get("accent_correction_enabled"):
+        from app.services import accent_estimator
+        query = accent_estimator.apply_accent_override(query, clean_text)
+
     # Apply parameters
     if speed is not None:
         query["speedScale"] = speed
