@@ -196,9 +196,15 @@ def _mecab_to_hiragana(text: str) -> str | None:
     """Convert text to hiragana using MeCab (kanji→reading + particle は/へ→わ/え).
 
     Returns None if MeCab is unavailable so the caller can fall back.
+
+    Uses unidic-lite explicitly to keep tokenization stable across environments
+    where unidic full may be installed (e.g., for accent estimation). Without
+    this, verb 連用形 (踊って) get re-tokenized as 基本形 + て (踊る + て)
+    causing output like 「おどるて」 instead of 「おどって」.
     """
     try:
         import MeCab
+        import unidic_lite
     except ImportError:
         log.warning("MeCab未インストール")
         return None
@@ -219,7 +225,7 @@ def _mecab_to_hiragana(text: str) -> str | None:
     text, counter_placeholders = _protect_counter_spans(text)
 
     try:
-        tagger = MeCab.Tagger()
+        tagger = MeCab.Tagger(f"-d {unidic_lite.DICDIR}")
         tagger.parse("")
         output: list[str] = []
         node = tagger.parseToNode(text)
@@ -352,8 +358,9 @@ def _convert_kanji_to_hiragana(text: str) -> str:
     """Convert only remaining kanji in text to hiragana (fallback path)."""
     try:
         import MeCab
+        import unidic_lite
 
-        tagger = MeCab.Tagger()
+        tagger = MeCab.Tagger(f"-d {unidic_lite.DICDIR}")
         tagger.parse("")
         keep_as_kanji = _keep_as_kanji()
         output: list[str] = []
