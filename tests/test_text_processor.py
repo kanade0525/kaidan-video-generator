@@ -133,12 +133,13 @@ class TestMecabToHiragana:
         assert "墓" in result
         assert "はか" not in result
 
-    def test_hanasu_verb_form_still_hiragana(self):
-        """話す(動詞)などの活用形はひらがなに変換される（surface が 話 単独ではないため）。"""
-        # MeCabは「話す」を1トークンで返すため、_KEEP_AS_KANJI(話)には合致せず
-        # 通常の漢字→ひらがな変換が適用される
-        assert "はなす" in _mecab_to_hiragana("彼は話す")
-        assert "はなした" in _mecab_to_hiragana("彼が話した")
+    def test_hanasu_verb_form_kept_kanji(self):
+        """話す/話し (動詞活用形) も漢字保持 (particle+話し で ワナシ 誤読対策)。"""
+        assert "話す" in _mecab_to_hiragana("彼は話す")
+        assert "話し" in _mecab_to_hiragana("彼が話した")
+        assert "話し" in _mecab_to_hiragana("小声で話し始めた")
+        # 複合語名詞も保持
+        assert "話し声" in _mecab_to_hiragana("話し声が聞こえる")
 
     def test_compound_kanji_still_converted(self):
         """会話/昔話/花火 などの複合語も1トークンで処理されひらがな変換される。"""
