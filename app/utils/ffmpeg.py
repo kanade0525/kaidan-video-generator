@@ -204,12 +204,19 @@ def create_title_clip(
     total_dur = silence_before + audio_dur + silence_after
     fade_out_start = max(0, total_dur - fade_out)
 
+    v_parts = []
+    if fade_in > 0:
+        v_parts.append(f"fade=in:st=0:d={fade_in}")
+    if fade_out > 0:
+        v_parts.append(f"fade=out:st={fade_out_start:.2f}:d={fade_out}")
+    v_filter = ",".join(v_parts) if v_parts else "null"
+
     run_ffmpeg([
         "-loop", "1",
         "-i", str(image),
         "-i", str(audio),
         "-filter_complex",
-        f"[0:v]fade=in:st=0:d={fade_in},fade=out:st={fade_out_start:.2f}:d={fade_out}[v];"
+        f"[0:v]{v_filter}[v];"
         f"[1:a]adelay={int(silence_before * 1000)}|{int(silence_before * 1000)},"
         f"apad=pad_dur={silence_after}[a]",
         "-map", "[v]",
