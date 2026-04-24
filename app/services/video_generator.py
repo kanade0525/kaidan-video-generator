@@ -40,6 +40,8 @@ def create_video(
     fade_in: float | None = None,
     title_fade_in: float = 0.5,
     title_fade_out: float = 0.5,
+    title_silence_before: float = 1.0,
+    title_silence_after: float = 1.0,
 ) -> Path:
     """Create the final video from images, narration, and optional BGM."""
     fps = cfg_get("fps")
@@ -140,7 +142,9 @@ def create_video(
     if include_title_card and title_card and title_card.exists() and title_audio and title_audio.exists():
         log.info("タイトルクリップ作成中...")
         create_title_clip(title_card, title_audio, title_clip_path, fps=fps,
-                          fade_in=title_fade_in, fade_out=title_fade_out)
+                          fade_in=title_fade_in, fade_out=title_fade_out,
+                          silence_before=title_silence_before,
+                          silence_after=title_silence_after)
         parts.append(title_clip_path)
 
     parts.append(bgm_mixed_path)
