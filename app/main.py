@@ -11,6 +11,7 @@ from nicegui import ui
 
 from app.database import init_db
 from app.ui.layout import create_layout
+from app.ui.pages.audit_review import audit_review_page
 from app.ui.pages.pipeline import pipeline_page
 from app.ui.pages.results import results_page
 from app.ui.pages.settings import settings_page
@@ -46,6 +47,12 @@ def results(keyword: str = "", id: int = 0, category: str = ""):
 def settings():
     create_layout()
     settings_page()
+
+
+@ui.page("/audit_review")
+def audit_review():
+    create_layout()
+    audit_review_page()
 
 
 @ui.page("/shorts")
