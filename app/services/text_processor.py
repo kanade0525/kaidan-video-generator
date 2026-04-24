@@ -202,14 +202,20 @@ def _keep_as_kanji() -> set[str]:
 
 
 def _mecab_to_hiragana(text: str) -> str | None:
-    """Convert text to hiragana using MeCab (kanji→reading + particle は/へ→わ/え).
+    """Prepare narration text: keep kanji as-is, convert only particles は/へ.
+
+    VOICEVOX reads kanji correctly in most contexts. Blanket kanji→hiragana
+    conversion was causing more harm than good (particle collisions on words
+    like 母/話, mis-readings on counters like 三人). So the default is now
+    to pass surface forms through unchanged. Only these produce hiragana:
+
+    - Furigana annotations 「漢字（ふりがな）」 — author-provided readings win.
+    - `_DEFAULT_COMPOUND_REPLACEMENTS` — pre-tokenize string replacements for
+      idioms and known MeCab misreads (e.g., 「お父さん」→「おとうさん」).
+    - `_DEFAULT_READING_OVERRIDES` — per-token surface → reading overrides.
+    - Particle は → わ / へ → え (detected via MeCab POS tagging).
 
     Returns None if MeCab is unavailable so the caller can fall back.
-
-    Uses unidic-lite explicitly to keep tokenization stable across environments
-    where unidic full may be installed (e.g., for accent estimation). Without
-    this, verb 連用形 (踊って) get re-tokenized as 基本形 + て (踊る + て)
-    causing output like 「おどるて」 instead of 「おどって」.
     """
     try:
         import MeCab
@@ -218,20 +224,12 @@ def _mecab_to_hiragana(text: str) -> str | None:
         log.warning("MeCab未インストール")
         return None
 
-    # Apply furigana annotations 「漢字（ふりがな）」 first: author-provided
-    # readings override everything else (e.g., 優曇華（うどんげ） → うどんげ).
     text = _apply_furigana(text)
 
     for src, dst in _compound_replacements().items():
         text = text.replace(src, dst)
 
     reading_overrides = _reading_overrides()
-    keep_as_kanji = _keep_as_kanji()
-
-    # Protect "数字+カウンター漢字" spans so MeCab does not split them and
-    # emit wrong per-token readings (e.g. 一泊二日 → いち泊ふた日 with bad
-    # 促音/連濁). VOICEVOX reads the original kanji form correctly.
-    text, counter_placeholders = _protect_counter_spans(text)
 
     try:
         tagger = MeCab.Tagger(f"-d {unidic_lite.DICDIR}")
@@ -246,17 +244,10 @@ def _mecab_to_hiragana(text: str) -> str | None:
 
             feature = node.feature.split(",")
             pos = feature[0] if feature else ""
-            pron = _extract_reading(feature)
-
-            has_kanji = bool(re.search(r"[一-龯々〆]", surface))
             is_particle = pos == "助詞"
 
-            if surface in keep_as_kanji:
-                output.append(surface)
-            elif surface in reading_overrides:
+            if surface in reading_overrides:
                 output.append(reading_overrides[surface])
-            elif has_kanji and pron:
-                output.append(_katakana_to_hiragana(pron))
             elif is_particle and surface == "は":
                 output.append("わ")
             elif is_particle and surface == "へ":
@@ -265,10 +256,7 @@ def _mecab_to_hiragana(text: str) -> str | None:
                 output.append(surface)
             node = node.next
 
-        result = "".join(output)
-        for placeholder, original in counter_placeholders.items():
-            result = result.replace(placeholder, original)
-        return result
+        return "".join(output)
     except Exception as e:
         log.warning("MeCab変換エラー: %s", e)
         return None
