@@ -114,9 +114,10 @@ def pipeline_page():
         try:
             refresh()
         except RuntimeError:
-            pass
+            # Parent slot gone (page navigation) — stop the timer
+            refresh_timer.active = False
 
-    ui.timer(3.0, safe_refresh)
+    refresh_timer = ui.timer(3.0, safe_refresh)
     refresh()
 
 

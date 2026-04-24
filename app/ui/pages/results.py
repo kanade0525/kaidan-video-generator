@@ -229,8 +229,13 @@ def _retry_button(story, target_stage: str, label: str = "再処理"):
         threading.Thread(target=run, daemon=True).start()
 
     def poll():
-        """Timer callback to safely update UI from main thread."""
+        """Timer callback to safely update UI from main thread.
+
+        Deactivates itself when the task is no longer running to prevent
+        NiceGUI "parent slot deleted" errors after page navigation.
+        """
         if not state["running"]:
+            timer.active = False
             return
         try:
             progress.value = state["progress"]
@@ -248,12 +253,18 @@ def _retry_button(story, target_stage: str, label: str = "再処理"):
                     status_label.text = "完了! (ページを再読み込みで結果を確認)"
                     status_label.classes(replace="text-sm text-green-500")
                 btn.enable()
+                timer.active = False
         except RuntimeError:
             state["running"] = False
+            timer.active = False
 
-    ui.timer(0.5, poll)
+    timer = ui.timer(0.5, poll, active=False)
 
-    btn = ui.button(label, on_click=do_retry, color="orange").props("size=sm")
+    def do_retry_start():
+        do_retry()
+        timer.active = True
+
+    btn = ui.button(label, on_click=do_retry_start, color="orange").props("size=sm")
 
 
 _DURATION_BADGE_COLORS = {
@@ -854,6 +865,7 @@ def _show_youtube_upload(story):
 
         def poll_upload():
             if not upload_state["running"]:
+                upload_timer.active = False
                 return
             try:
                 progress.value = upload_state["progress"]
@@ -867,13 +879,19 @@ def _show_youtube_upload(story):
                         status_label.classes(replace="text-sm text-green-500")
                         progress.value = 1.0
                     btn.enable()
+                    upload_timer.active = False
             except RuntimeError:
                 upload_state["running"] = False
+                upload_timer.active = False
 
-        ui.timer(0.5, poll_upload)
+        upload_timer = ui.timer(0.5, poll_upload, active=False)
+
+        def do_upload_start():
+            do_upload()
+            upload_timer.active = True
 
         btn = ui.button(
-            "承認してYouTubeにアップロード", on_click=do_upload, color="red"
+            "承認してYouTubeにアップロード", on_click=do_upload_start, color="red"
         ).props("size=sm").classes("mt-2")
 
     # Pinned comment section
@@ -980,6 +998,7 @@ def _show_usage_report_tab(story):
 
     def poll_report():
         if not report_state["running"]:
+            report_timer.active = False
             return
         try:
             if report_state["done"]:
@@ -993,10 +1012,16 @@ def _show_usage_report_tab(story):
                     status_label.text = "使用報告送信完了!"
                     status_label.classes(replace="text-sm text-green-500")
                 btn.enable()
+                report_timer.active = False
         except RuntimeError:
             report_state["running"] = False
+            report_timer.active = False
 
-    ui.timer(0.5, poll_report)
+    report_timer = ui.timer(0.5, poll_report, active=False)
+
+    def do_report_start():
+        do_report()
+        report_timer.active = True
 
     label = "再送信" if already_reported else "使用報告を送信"
-    btn = ui.button(label, on_click=do_report, color="purple").props("size=sm")
+    btn = ui.button(label, on_click=do_report_start, color="purple").props("size=sm")

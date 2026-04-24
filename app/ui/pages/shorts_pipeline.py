@@ -111,9 +111,9 @@ def shorts_pipeline_page():
         try:
             refresh()
         except RuntimeError:
-            pass
+            refresh_timer.active = False
 
-    ui.timer(3.0, safe_refresh)
+    refresh_timer = ui.timer(3.0, safe_refresh)
     refresh()
 
 
