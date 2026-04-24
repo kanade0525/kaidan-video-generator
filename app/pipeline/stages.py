@@ -573,8 +573,9 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     if title_card.exists():
         title_audio = sdir / "title_narration.wav"
         voice_generator.generate_title_audio(story.title, title_audio, story.title_furigana, speed=shorts_speed)
-        # Title clip duration = silence_before(1.0) + audio + silence_after(1.0)
-        title_clip_duration = 1.0 + get_audio_duration(title_audio) + 1.0
+        # Shorts はタイトルクリップ前後の無音を 0 にして即座にナレーションへ
+        # 入るため、title_clip_duration は純粋な音声長のみ。
+        title_clip_duration = get_audio_duration(title_audio)
 
     # Step 1: Create base video (no OP/ED, vertical 1080x1920)
     if progress_callback:
@@ -596,6 +597,8 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         fade_in=0,
         title_fade_in=0,
         title_fade_out=0,
+        title_silence_before=0,
+        title_silence_after=0,
     )
 
     # Step 2: Generate scroll subtitle image and burn all overlays
