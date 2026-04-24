@@ -28,6 +28,7 @@ def create_layout():
 
             ui.separator().classes("my-2 bg-gray-600")
 
+            ui.link("読み監査レビュー", "/audit_review").classes(link_cls)
             ui.link("設定", "/settings").classes(link_cls)
 
     return drawer
