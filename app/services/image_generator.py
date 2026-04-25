@@ -22,30 +22,169 @@ log = get_logger("kaidan.image")
 AIRFORCE_URL = "https://api.airforce/v1/images/generations"
 
 
+@dataclass
+class VisualStyleProfile:
+    """A coherent visual style for one Short — drives prompt + render + post-fx.
+
+    Each profile pulls the AI image generation toward a distinct aesthetic so
+    consecutive uploads do not look interchangeable. Selected per-story via
+    `pick_shorts_visual_style(title)`.
+    """
+    name: str
+    # Inserted into the Gemini prompt instructions as the aesthetic the
+    # scene/title-bg prompts should target.
+    aesthetic_focus: str
+    # Appended to the final image-API prompt as the rendering style suffix
+    # (replaces the global `image_style` config when this profile is active).
+    style_suffix: str
+    # If False, skip the green/scanline VHS post-process for this profile so
+    # the chosen aesthetic shows through.
+    apply_vhs: bool
+
+
+SHORTS_VISUAL_STYLES: list[VisualStyleProfile] = [
+    VisualStyleProfile(
+        name="vhs_surveillance",
+        aesthetic_focus=(
+            "1990s home-video / surveillance camera footage of an abandoned location, "
+            "VHS distortion expected, scan lines, colour bleed"
+        ),
+        style_suffix=(
+            "found footage style, low quality home video camera capture, "
+            "surveillance camera footage, CCTV recording, VHS tape quality, "
+            "grainy, dark, washed out colors, slight distortion, photorealistic"
+        ),
+        apply_vhs=True,
+    ),
+    VisualStyleProfile(
+        name="traditional_japanese_house",
+        aesthetic_focus=(
+            "interior of an old traditional Japanese house at night — tatami floors, "
+            "shoji sliding doors, fusuma, butsudan altar, oil lamp light"
+        ),
+        style_suffix=(
+            "cinematic horror, photorealistic, dimly lit traditional Japanese interior, "
+            "warm sepia and shadow, oil lamp glow, fine detail, atmospheric, "
+            "shallow depth of field"
+        ),
+        apply_vhs=False,
+    ),
+    VisualStyleProfile(
+        name="rural_shrine_mist",
+        aesthetic_focus=(
+            "rural Shinto shrine in deep forest, weathered stone steps, moss-covered "
+            "torii gate, dense mist, twilight"
+        ),
+        style_suffix=(
+            "cinematic horror, photorealistic, deep volumetric fog, cool blue-green palette, "
+            "soft moonlight, vast empty natural setting, eerie quiet"
+        ),
+        apply_vhs=False,
+    ),
+    VisualStyleProfile(
+        name="moonlit_corridor",
+        aesthetic_focus=(
+            "narrow dark corridor, hallway, or stairwell illuminated by a single dim source — "
+            "could be a Japanese inn, school, hospital, or apartment building"
+        ),
+        style_suffix=(
+            "cinematic horror, photorealistic, deep shadow, single dim light source, "
+            "high contrast lighting, claustrophobic, dread atmosphere"
+        ),
+        apply_vhs=False,
+    ),
+    VisualStyleProfile(
+        name="ukiyo_e_horror",
+        aesthetic_focus=(
+            "Edo-period traditional Japanese woodblock-print rendering of the scene — "
+            "yokai, ghost, or supernatural element styled as ukiyo-e"
+        ),
+        style_suffix=(
+            "ukiyo-e woodblock print style, Edo period, traditional Japanese horror art, "
+            "muted earth tones, fine line work, slight aging texture, paper grain"
+        ),
+        apply_vhs=False,
+    ),
+    VisualStyleProfile(
+        name="urban_night_neon",
+        aesthetic_focus=(
+            "modern Japanese urban night — empty alley, dim apartment hallway, parking lot, "
+            "convenience store at 3am, sodium street lamp"
+        ),
+        style_suffix=(
+            "cinematic horror, photorealistic, urban night, sodium and neon street light, "
+            "wet asphalt reflections, deep shadow, lonely modern atmosphere"
+        ),
+        apply_vhs=False,
+    ),
+    VisualStyleProfile(
+        name="aged_polaroid",
+        aesthetic_focus=(
+            "single old amateur photograph (Polaroid or 90s film camera) of an "
+            "ordinary scene that hides something wrong"
+        ),
+        style_suffix=(
+            "aged polaroid photograph, slight light leaks, faded colours, soft focus, "
+            "white photo border, found old photo aesthetic, unsettling family snapshot vibe"
+        ),
+        apply_vhs=False,
+    ),
+    VisualStyleProfile(
+        name="ink_wash_sumi",
+        aesthetic_focus=(
+            "minimalist sumi-e ink wash composition — a single haunting form on "
+            "negative-space paper"
+        ),
+        style_suffix=(
+            "sumi-e ink wash painting, monochromatic, brush strokes, traditional Japanese "
+            "ink art, rough washi paper texture, dramatic negative space"
+        ),
+        apply_vhs=False,
+    ),
+]
+
+
+def pick_shorts_visual_style(title: str) -> VisualStyleProfile:
+    """Deterministically select a visual style profile for a Short.
+
+    Same `title` → same profile across re-runs. Different titles spread roughly
+    evenly so a channel feed shows visibly different aesthetics day-to-day.
+    """
+    digest = hashlib.md5(title.encode("utf-8")).hexdigest()
+    idx = int(digest[8:16], 16) % len(SHORTS_VISUAL_STYLES)
+    return SHORTS_VISUAL_STYLES[idx]
+
+
 def extract_scene_prompts(
-    text: str, title: str, num_scenes: int = 3, model: str | None = None
+    text: str, title: str, num_scenes: int = 3, model: str | None = None,
+    style: VisualStyleProfile | None = None,
 ) -> list[str]:
-    """Use Gemini to generate image prompts from story text."""
+    """Use Gemini to generate image prompts from story text.
+
+    `style` injects a visual aesthetic the generated prompts should target,
+    so each Short renders in its own style instead of the same VHS look.
+    """
     client = get_gemini_image()
     model_name = model or cfg_get("gemini_model")
+
+    aesthetic_line = (
+        f"・全体の美術スタイル: {style.aesthetic_focus}（このスタイルに沿って描写）\n"
+        if style is not None else ""
+    )
 
     prompt = (
         f"以下の怪談「{title}」の内容を読み、怪談朗読動画の背景画像として使う{num_scenes}枚の画像生成プロンプトを英語で作ってください。\n\n"
         f"重要な要件:\n"
+        f"{aesthetic_line}"
         f"・物語の象徴的な場面を具体的に描写すること。空間・情景・人物・霊的存在のいずれが主題でも可\n"
         f"・各画像は異なるシーン・異なる構図にすること。似た画像は絶対に避ける\n"
         f"  - 1枚目: 物語の舞台となる場所や状況の全景（wide establishing shot）\n"
         f"  - 2枚目: 物語の転換点や恐怖の核心となるモチーフ/存在のクローズアップ\n"
         f"  - 3枚目以降: クライマックスの情景や余韻を残すシーン\n"
-        f"・写実的でダークな描写。ホラー映画のワンシーンのように\n"
         f"・各プロンプトは50〜80語程度で具体的に\n"
         f"・構図（wide shot, close-up, medium shot, overhead, dutch angle等）を必ず含める\n"
         f"・照明（moonlight, flickering light, backlit, single dim lamp等）を必ず含める\n"
         f"・人物・霊的存在を描いて良い。怪談に登場する場合はむしろ中心主題として描写する\n"
-        f"  （例: 白い着物の老婆が砂嵐のテレビ画面の中央に立ちカメラを見つめる、\n"
-        f"   黒髪を垂らした女が襖の隙間からこちらを覗く 等）\n"
-        f"・日本ホラーの視覚伝統を活用: 白装束/着物, 長い黒髪, 蒼白な肌, 瞬きしない直視, \n"
-        f"  古い日本家屋, 畳, 障子, 仏壇, 仏花, 古いブラウン管テレビ等\n"
         f"・テキストや文字は絶対に含めない\n"
         f"・1行に1プロンプト、番号やマーカーは不要\n\n"
         f"物語:\n{text[:2000]}"
@@ -65,21 +204,38 @@ def extract_scene_prompts(
         return [f"dark Japanese horror scene, {title}"] * num_scenes
 
 
-def _generate_title_bg_prompt(text: str, title: str) -> str:
-    """Use Gemini to generate a title card background prompt based on story content."""
-    fallback = (
-        "dark atmospheric background, abandoned place, foggy, ominous sky, "
-        "empty scene with no people, photorealistic, cinematic, extremely dark and moody, "
-        "no text, no letters, no words, no writing, pure scenery only"
-    )
+def _generate_title_bg_prompt(
+    text: str, title: str, style: VisualStyleProfile | None = None,
+) -> str:
+    """Use Gemini to generate a title card background prompt based on story content.
+
+    `style` shifts the requested aesthetic so the title card BG matches the
+    story's chosen visual profile.
+    """
+    if style is not None:
+        fallback = (
+            f"{style.aesthetic_focus}, no people, atmospheric, "
+            "no text, no letters, no words, pure scenery only"
+        )
+        aesthetic_line = (
+            f"・全体の美術スタイル: {style.aesthetic_focus}（このスタイルに沿って描写）\n"
+        )
+    else:
+        fallback = (
+            "dark atmospheric background, abandoned place, foggy, ominous sky, "
+            "empty scene with no people, photorealistic, cinematic, "
+            "extremely dark and moody, no text, no letters, no words, "
+            "no writing, pure scenery only"
+        )
+        aesthetic_line = "・ダークで不気味な雰囲気、ホラー映画のワンシーンのように\n"
     try:
         client = get_gemini_image()
         model_name = cfg_get("gemini_model")
         prompt = (
             f"以下の怪談「{title}」の内容を読み、タイトルカードの背景画像用プロンプトを英語で1つだけ作ってください。\n\n"
             f"要件:\n"
+            f"{aesthetic_line}"
             f"・物語の舞台や象徴的な場所を描写（人物は入れない）\n"
-            f"・ダークで不気味な雰囲気、ホラー映画のワンシーンのように\n"
             f"・50〜80語程度で具体的に\n"
             f"・テキストや文字は絶対に含めない\n"
             f"・プロンプトのみ出力、説明不要\n\n"
@@ -99,11 +255,15 @@ def _generate_title_bg_prompt(text: str, title: str) -> str:
 @with_retry(max_attempts=2, base_delay=30.0)
 def generate_image_ai(
     prompt: str, model: str | None = None, size: str | None = None,
-    aspect_ratio: str | None = None,
+    aspect_ratio: str | None = None, style_override: str | None = None,
 ) -> bytes:
-    """Generate an image using Imagen or AirForce API."""
+    """Generate an image using Imagen or AirForce API.
+
+    `style_override` replaces the global `image_style` config — used by per-Short
+    visual style profiles so the rendering aesthetic varies across uploads.
+    """
     img_model = model or cfg_get("image_model")
-    style = cfg_get("image_style")
+    style = style_override if style_override is not None else cfg_get("image_style")
     full_prompt = f"{prompt}, {style}"
 
     # Use Google API if model starts with "imagen" or "gemini"
@@ -624,21 +784,33 @@ def generate_images_for_story(
     is_short = content_type == "short"
     num_scenes = cfg_get("shorts_num_scenes") if is_short else cfg_get("num_scenes")
     rate_limit = cfg_get("image_rate_limit")
-    use_vhs = cfg_get("shorts_vhs_enabled") if is_short else True
+    use_vhs_default = cfg_get("shorts_vhs_enabled") if is_short else True
+
+    # Pick a coherent visual style profile per Short to break the visual
+    # uniformity that triggers YouTube similarity dampening. Long-form keeps
+    # the global style for now.
+    style_profile = pick_shorts_visual_style(title) if is_short else None
+    if style_profile is not None:
+        log.info("ビジュアルスタイル: %s", style_profile.name)
+    use_vhs = use_vhs_default and (
+        style_profile.apply_vhs if style_profile is not None else True
+    )
 
     image_paths: list[Path] = []
 
-    # Generate title card
     if is_short:
         tc_w, tc_h = 1080, 1920
     else:
         tc_w, tc_h = 1792, 1024
 
-    title_bg_prompt = _generate_title_bg_prompt(text, title)
+    title_bg_prompt = _generate_title_bg_prompt(text, title, style=style_profile)
     title_bg_data = None
     try:
         ar = cfg_get("shorts_image_aspect_ratio") if is_short else None
-        title_bg_data = generate_image_ai(title_bg_prompt, aspect_ratio=ar)
+        title_bg_data = generate_image_ai(
+            title_bg_prompt, aspect_ratio=ar,
+            style_override=style_profile.style_suffix if style_profile else None,
+        )
         log.info("タイトル背景画像生成成功")
     except Exception as e:
         log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
@@ -661,7 +833,7 @@ def generate_images_for_story(
         time.sleep(rate_limit)
 
     # Scene prompts
-    prompts = extract_scene_prompts(text, title, num_scenes)
+    prompts = extract_scene_prompts(text, title, num_scenes, style=style_profile)
 
     fb_w, fb_h = (1080, 1920) if is_short else (1792, 1024)
 
@@ -674,7 +846,10 @@ def generate_images_for_story(
 
         try:
             ar = cfg_get("shorts_image_aspect_ratio") if is_short else None
-            img_data = generate_image_ai(prompt, aspect_ratio=ar)
+            img_data = generate_image_ai(
+                prompt, aspect_ratio=ar,
+                style_override=style_profile.style_suffix if style_profile else None,
+            )
             if use_vhs:
                 img_data = degrade_to_vhs(img_data)
             img_path.write_bytes(img_data)
