@@ -528,7 +528,10 @@ class TitleCardTemplate:
     """Style config for a title card variant.
 
     Vary visuals across Shorts so the YouTube similarity heuristic does not
-    cluster every uploaded video as duplicate content.
+    cluster every uploaded video as duplicate content. Both the AI-generated
+    background's processing and the text overlay are template-driven; the
+    same generated bg can produce visibly different cards under different
+    templates (B&W, sepia, color-tinted, brightened, dim, etc.).
     """
     name: str
     bg_brightness: float = 0.35
@@ -536,6 +539,13 @@ class TitleCardTemplate:
     bg_blur: float = 3.0
     vignette_strength: float = 300 / 255  # 0 = none, larger = stronger edge darkening
     top_gradient_alpha: int = 180          # 0 disables the top-fade overlay
+    # Color-grading layers — combine to break the "everything is dim" feel.
+    bg_grayscale: bool = False
+    bg_sepia: bool = False
+    bg_color_tint: tuple[int, int, int] | None = None  # overlay color
+    bg_color_tint_alpha: int = 0           # 0..255 strength of the overlay
+    bg_contrast: float = 1.0               # 1.0 = unchanged, >1 boosts contrast
+    bg_lift_blacks: int = 0                # 0..40, raises shadows so bg shows
     text_color: tuple[int, int, int] = (230, 20, 20)
     outline_color: tuple[int, int, int] = (0, 0, 0)
     text_position: str = "center"          # "center" | "top" | "bottom"
@@ -550,38 +560,61 @@ class TitleCardTemplate:
 # Distinct enough that side-by-side thumbnails do not look like the same template
 # with different titles. Order is stable — picked deterministically by hash(title).
 SHORTS_TITLE_TEMPLATES: list[TitleCardTemplate] = [
-    TitleCardTemplate(name="classic_red"),  # the current style
+    # Classic dim look — kept for the recognisable horror aesthetic.
+    TitleCardTemplate(name="classic_red"),
+
+    # Bright / minimally-darkened — lets the AI-generated bg actually be visible.
+    TitleCardTemplate(
+        name="bright_punchy",
+        bg_brightness=0.85,
+        bg_saturation=0.95,
+        bg_blur=1.0,
+        vignette_strength=80 / 255,
+        top_gradient_alpha=0,
+        text_color=(245, 30, 30),
+        outline_color=(0, 0, 0),
+        text_position="bottom",
+        text_band=True,
+        text_band_alpha=140,
+        badge_position="top_right",
+    ),
+
     TitleCardTemplate(
         name="top_white",
-        bg_brightness=0.45,
-        bg_saturation=0.55,
-        bg_blur=2.0,
-        vignette_strength=180 / 255,
+        bg_brightness=0.55,
+        bg_saturation=0.65,
+        bg_blur=1.5,
+        vignette_strength=160 / 255,
         text_color=(245, 245, 240),
         outline_color=(0, 0, 0),
         text_position="top",
+        text_band=True,
+        text_band_alpha=130,
         badge_position="bottom_right",
     ),
+
     TitleCardTemplate(
         name="bottom_yellow",
-        bg_brightness=0.55,
-        bg_saturation=0.7,
-        bg_blur=1.5,
-        vignette_strength=140 / 255,
+        bg_brightness=0.7,
+        bg_saturation=0.85,
+        bg_blur=1.0,
+        vignette_strength=110 / 255,
         text_color=(245, 220, 80),
         outline_color=(0, 0, 0),
         text_position="bottom",
         text_band=True,
-        text_band_alpha=170,
+        text_band_alpha=180,
         top_gradient_alpha=0,
         badge_color=None,
     ),
+
+    # Pale blue dim — keeps a cold/eerie one in the rotation.
     TitleCardTemplate(
         name="center_pale_blue",
-        bg_brightness=0.32,
+        bg_brightness=0.4,
         bg_saturation=0.3,
-        bg_blur=4.5,
-        vignette_strength=240 / 255,
+        bg_blur=3.5,
+        vignette_strength=200 / 255,
         text_color=(190, 220, 240),
         outline_color=(20, 30, 50),
         text_position="center",
@@ -589,20 +622,84 @@ SHORTS_TITLE_TEMPLATES: list[TitleCardTemplate] = [
         badge_border_color=(20, 25, 45),
         badge_text_color=(220, 230, 250),
     ),
+
+    # Orange w/ partial brightness — warm tone breaks the "always blue/dark" look.
     TitleCardTemplate(
         name="center_orange",
-        bg_brightness=0.4,
-        bg_saturation=0.45,
-        bg_blur=3.5,
-        vignette_strength=260 / 255,
+        bg_brightness=0.6,
+        bg_saturation=0.7,
+        bg_blur=2.0,
+        vignette_strength=180 / 255,
         text_color=(240, 140, 30),
         outline_color=(0, 0, 0),
         text_position="center",
-        top_gradient_alpha=110,
+        text_band=True,
+        text_band_alpha=130,
+        top_gradient_alpha=80,
         badge_color=(60, 30, 5),
         badge_border_color=(30, 15, 0),
         badge_text_color=(245, 200, 120),
         badge_position="top_left",
+    ),
+
+    # B&W high-contrast — dramatic, distinct from any colored card.
+    TitleCardTemplate(
+        name="bw_dramatic",
+        bg_brightness=0.85,
+        bg_saturation=1.0,  # ignored due to grayscale
+        bg_blur=1.0,
+        vignette_strength=180 / 255,
+        bg_grayscale=True,
+        bg_contrast=1.4,
+        top_gradient_alpha=0,
+        text_color=(255, 255, 255),
+        outline_color=(0, 0, 0),
+        text_position="center",
+        text_band=True,
+        text_band_alpha=120,
+        badge_color=(20, 20, 20),
+        badge_border_color=(245, 245, 245),
+        badge_text_color=(245, 245, 245),
+    ),
+
+    # Sepia — vintage / faded photograph feel.
+    TitleCardTemplate(
+        name="sepia_vintage",
+        bg_brightness=0.95,
+        bg_saturation=1.0,  # ignored due to sepia
+        bg_blur=1.5,
+        vignette_strength=140 / 255,
+        bg_sepia=True,
+        bg_lift_blacks=20,
+        top_gradient_alpha=0,
+        text_color=(80, 30, 20),
+        outline_color=(245, 230, 200),
+        text_position="bottom",
+        text_band=False,
+        badge_color=(180, 130, 70),
+        badge_border_color=(80, 50, 20),
+        badge_text_color=(40, 20, 10),
+        badge_position="top_left",
+    ),
+
+    # Red split-tone — strong color identity, not just "dim".
+    TitleCardTemplate(
+        name="red_split_tone",
+        bg_brightness=0.7,
+        bg_saturation=0.5,
+        bg_blur=2.5,
+        vignette_strength=160 / 255,
+        bg_color_tint=(180, 20, 20),
+        bg_color_tint_alpha=80,
+        bg_contrast=1.15,
+        top_gradient_alpha=120,
+        text_color=(255, 240, 230),
+        outline_color=(60, 0, 0),
+        text_position="center",
+        badge_color=(20, 20, 20),
+        badge_border_color=(255, 230, 220),
+        badge_text_color=(255, 230, 220),
+        badge_position="top_right",
     ),
 ]
 
@@ -646,10 +743,37 @@ def create_title_card(
     else:
         bg = Image.new("RGB", (width, height), (10, 5, 5))
 
+    if template.bg_grayscale:
+        bg = bg.convert("L").convert("RGB")
+    if template.bg_sepia:
+        arr = np.array(bg, dtype=np.float32)
+        r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
+        new_r = 0.393 * r + 0.769 * g + 0.189 * b
+        new_g = 0.349 * r + 0.686 * g + 0.168 * b
+        new_b = 0.272 * r + 0.534 * g + 0.131 * b
+        bg = Image.fromarray(
+            np.clip(np.stack([new_r, new_g, new_b], axis=-1), 0, 255).astype(np.uint8)
+        )
+
     bg = ImageEnhance.Brightness(bg).enhance(template.bg_brightness)
-    bg = ImageEnhance.Color(bg).enhance(template.bg_saturation)
+    if not (template.bg_grayscale or template.bg_sepia):
+        bg = ImageEnhance.Color(bg).enhance(template.bg_saturation)
+    if template.bg_contrast != 1.0:
+        bg = ImageEnhance.Contrast(bg).enhance(template.bg_contrast)
+    if template.bg_lift_blacks > 0:
+        arr = np.array(bg, dtype=np.float32)
+        arr = np.clip(arr + template.bg_lift_blacks, 0, 255)
+        bg = Image.fromarray(arr.astype(np.uint8))
     if template.bg_blur > 0:
         bg = bg.filter(ImageFilter.GaussianBlur(radius=template.bg_blur))
+    if template.bg_color_tint is not None and template.bg_color_tint_alpha > 0:
+        tint = Image.new(
+            "RGBA", bg.size,
+            (*template.bg_color_tint, template.bg_color_tint_alpha),
+        )
+        bg = bg.convert("RGBA")
+        bg.alpha_composite(tint)
+        bg = bg.convert("RGB")
 
     # Vignette
     if template.vignette_strength > 0:
