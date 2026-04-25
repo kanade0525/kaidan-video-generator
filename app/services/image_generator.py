@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import random
 import re
 import time
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
@@ -361,19 +363,121 @@ def _wrap_title(title: str, max_chars_per_line: int = 8) -> list[str]:
     return lines
 
 
+@dataclass
+class TitleCardTemplate:
+    """Style config for a title card variant.
+
+    Vary visuals across Shorts so the YouTube similarity heuristic does not
+    cluster every uploaded video as duplicate content.
+    """
+    name: str
+    bg_brightness: float = 0.35
+    bg_saturation: float = 0.4
+    bg_blur: float = 3.0
+    vignette_strength: float = 300 / 255  # 0 = none, larger = stronger edge darkening
+    top_gradient_alpha: int = 180          # 0 disables the top-fade overlay
+    text_color: tuple[int, int, int] = (230, 20, 20)
+    outline_color: tuple[int, int, int] = (0, 0, 0)
+    text_position: str = "center"          # "center" | "top" | "bottom"
+    text_band: bool = False                # paint a translucent band behind text
+    text_band_alpha: int = 140
+    badge_color: tuple[int, int, int] | None = (160, 15, 15)  # None hides the badge
+    badge_border_color: tuple[int, int, int] = (100, 5, 5)
+    badge_text_color: tuple[int, int, int] = (255, 240, 240)
+    badge_position: str = "top_right"      # "top_right" | "bottom_right" | "top_left"
+
+
+# Distinct enough that side-by-side thumbnails do not look like the same template
+# with different titles. Order is stable — picked deterministically by hash(title).
+SHORTS_TITLE_TEMPLATES: list[TitleCardTemplate] = [
+    TitleCardTemplate(name="classic_red"),  # the current style
+    TitleCardTemplate(
+        name="top_white",
+        bg_brightness=0.45,
+        bg_saturation=0.55,
+        bg_blur=2.0,
+        vignette_strength=180 / 255,
+        text_color=(245, 245, 240),
+        outline_color=(0, 0, 0),
+        text_position="top",
+        badge_position="bottom_right",
+    ),
+    TitleCardTemplate(
+        name="bottom_yellow",
+        bg_brightness=0.55,
+        bg_saturation=0.7,
+        bg_blur=1.5,
+        vignette_strength=140 / 255,
+        text_color=(245, 220, 80),
+        outline_color=(0, 0, 0),
+        text_position="bottom",
+        text_band=True,
+        text_band_alpha=170,
+        top_gradient_alpha=0,
+        badge_color=None,
+    ),
+    TitleCardTemplate(
+        name="center_pale_blue",
+        bg_brightness=0.32,
+        bg_saturation=0.3,
+        bg_blur=4.5,
+        vignette_strength=240 / 255,
+        text_color=(190, 220, 240),
+        outline_color=(20, 30, 50),
+        text_position="center",
+        badge_color=(40, 50, 80),
+        badge_border_color=(20, 25, 45),
+        badge_text_color=(220, 230, 250),
+    ),
+    TitleCardTemplate(
+        name="center_orange",
+        bg_brightness=0.4,
+        bg_saturation=0.45,
+        bg_blur=3.5,
+        vignette_strength=260 / 255,
+        text_color=(240, 140, 30),
+        outline_color=(0, 0, 0),
+        text_position="center",
+        top_gradient_alpha=110,
+        badge_color=(60, 30, 5),
+        badge_border_color=(30, 15, 0),
+        badge_text_color=(245, 200, 120),
+        badge_position="top_left",
+    ),
+]
+
+
+def pick_shorts_title_template(title: str) -> TitleCardTemplate:
+    """Deterministically select a Shorts title-card template from `title`.
+
+    Same title always returns the same template so re-runs produce the same
+    output. Different titles spread across all variants roughly evenly.
+    """
+    digest = hashlib.md5(title.encode("utf-8")).hexdigest()
+    idx = int(digest[:8], 16) % len(SHORTS_TITLE_TEMPLATES)
+    return SHORTS_TITLE_TEMPLATES[idx]
+
+
 def create_title_card(
     title: str,
     width: int = 1792,
     height: int = 1024,
     bg_image_data: bytes | None = None,
     category: str = "怪談",
+    template: TitleCardTemplate | None = None,
 ) -> bytes:
     """Create a cinematic horror-themed title card.
 
     Uses AI-generated background if provided, otherwise generates a dark procedural bg.
     Overlays title text with thick outlines, multiple lines, and dramatic layout.
+
+    `template` selects the visual variant. Defaults to the original "classic_red"
+    style for back-compat with long-form videos.
     """
     from PIL import ImageEnhance, ImageFilter
+
+    if template is None:
+        template = SHORTS_TITLE_TEMPLATES[0]
 
     # --- Background ---
     if bg_image_data:
@@ -382,47 +486,47 @@ def create_title_card(
     else:
         bg = Image.new("RGB", (width, height), (10, 5, 5))
 
-    # Darken and desaturate background so text pops
-    bg = ImageEnhance.Brightness(bg).enhance(0.35)
-    bg = ImageEnhance.Color(bg).enhance(0.4)
-    # Slight blur for depth-of-field feel
-    bg = bg.filter(ImageFilter.GaussianBlur(radius=3))
+    bg = ImageEnhance.Brightness(bg).enhance(template.bg_brightness)
+    bg = ImageEnhance.Color(bg).enhance(template.bg_saturation)
+    if template.bg_blur > 0:
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=template.bg_blur))
+
+    # Vignette
+    if template.vignette_strength > 0:
+        cx, cy = width / 2, height / 2
+        max_dist = np.sqrt(cx ** 2 + cy ** 2)
+        y_coords, x_coords = np.mgrid[0:height, 0:width]
+        dist = np.sqrt((x_coords - cx) ** 2 + (y_coords - cy) ** 2)
+        ratio = dist / max_dist
+        darken = np.clip(
+            1.0 - ratio * ratio * template.vignette_strength, 0, 1
+        ).astype(np.float32)
+        bg_arr = np.array(bg, dtype=np.float32)
+        bg_arr *= darken[:, :, np.newaxis]
+        bg = Image.fromarray(np.clip(bg_arr, 0, 255).astype(np.uint8))
 
     draw = ImageDraw.Draw(bg)
 
-    # Dark vignette overlay (numpy for performance — ~1000x faster than PIL loop)
-    import numpy as np
-    cx, cy = width / 2, height / 2
-    max_dist = np.sqrt(cx ** 2 + cy ** 2)
-    y_coords, x_coords = np.mgrid[0:height, 0:width]
-    dist = np.sqrt((x_coords - cx) ** 2 + (y_coords - cy) ** 2)
-    ratio = dist / max_dist
-    # Vignette strength: darken edges quadratically
-    darken = np.clip(1.0 - ratio * ratio * (300 / 255), 0, 1).astype(np.float32)
-    bg_arr = np.array(bg, dtype=np.float32)
-    bg_arr *= darken[:, :, np.newaxis]
-    bg = Image.fromarray(np.clip(bg_arr, 0, 255).astype(np.uint8))
-
-    # Top gradient overlay (darkens top 30%)
-    for y_pos in range(int(height * 0.3)):
-        alpha = int(180 * (1 - y_pos / (height * 0.3)))
-        draw.line([(0, y_pos), (width, y_pos)], fill=(0, 0, 0))
-
-    draw = ImageDraw.Draw(bg)
+    # Top fade gradient
+    if template.top_gradient_alpha > 0:
+        gradient_h = int(height * 0.3)
+        overlay = Image.new("RGBA", (width, gradient_h), (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        for y_pos in range(gradient_h):
+            alpha = int(template.top_gradient_alpha * (1 - y_pos / gradient_h))
+            overlay_draw.line([(0, y_pos), (width, y_pos)], fill=(0, 0, 0, alpha))
+        bg.paste(overlay, (0, 0), overlay)
+        draw = ImageDraw.Draw(bg)
 
     # --- Title text ---
-    # Vertical video: fewer chars per line for larger text
     is_vertical = height > width
     chars_per_line = 5 if is_vertical else 7
     lines = _wrap_title(title, max_chars_per_line=chars_per_line)
 
-    # Calculate font size: fill most of the image
     padding_x = width // 8 if is_vertical else width // 10
     available_w = width - padding_x * 2
-    # Font size based on widest line
     max_line_len = max(len(line) for line in lines)
     font_size = min(available_w // max(max_line_len, 1), height // (len(lines) + 2))
-    # Short titles (1-3 chars) get larger max for dramatic impact
     if is_vertical:
         max_font = 500 if max_line_len <= 3 else (420 if max_line_len <= 5 else 360)
     else:
@@ -434,11 +538,10 @@ def create_title_card(
     if font is None:
         font = ImageFont.load_default()
 
-    # Measure all lines (accounting for bbox offset)
-    line_heights = []
-    line_widths = []
-    line_offsets_x = []
-    line_offsets_y = []
+    line_heights: list[int] = []
+    line_widths: list[int] = []
+    line_offsets_x: list[int] = []
+    line_offsets_y: list[int] = []
     for line in lines:
         bbox = draw.textbbox((0, 0), line, font=font)
         line_widths.append(bbox[2] - bbox[0])
@@ -449,46 +552,64 @@ def create_title_card(
     line_spacing = int(font_size * 0.25)
     total_text_height = sum(line_heights) + line_spacing * (len(lines) - 1)
 
-    # Start y: center vertically
-    start_y = (height - total_text_height) // 2
+    if template.text_position == "top":
+        start_y = int(height * 0.12)
+    elif template.text_position == "bottom":
+        start_y = height - total_text_height - int(height * 0.12)
+    else:
+        start_y = (height - total_text_height) // 2
 
-    # Draw each line
+    # Translucent band behind text (improves contrast on busy backgrounds)
+    if template.text_band:
+        band_pad = int(font_size * 0.4)
+        band_top = max(0, start_y - band_pad)
+        band_bottom = min(height, start_y + total_text_height + band_pad)
+        band = Image.new("RGBA", (width, band_bottom - band_top),
+                         (0, 0, 0, template.text_band_alpha))
+        bg.paste(band, (0, band_top), band)
+        draw = ImageDraw.Draw(bg)
+
     outline_w = max(4, font_size // 18)
     current_y = start_y
     for i, line in enumerate(lines):
         lw = line_widths[i]
         x = (width - lw) // 2 - line_offsets_x[i]
         y = current_y - line_offsets_y[i]
-
-        # Draw text with thick black outline + red fill
         _draw_text_with_outline(
             draw, (x, y), line, font,
-            fill=(230, 20, 20),
-            outline_fill=(0, 0, 0),
+            fill=template.text_color,
+            outline_fill=template.outline_color,
             outline_width=outline_w,
         )
-
         current_y += line_heights[i] + line_spacing
 
-    # --- Category badge (top-right corner) ---
-    badge_font = _find_cjk_font(112, use_koin=True)
-    if badge_font:
-        badge_text = category
-        badge_bbox = draw.textbbox((0, 0), badge_text, font=badge_font)
-        text_w = badge_bbox[2] - badge_bbox[0]
-        text_h = badge_bbox[3] - badge_bbox[1]
-        pad_x, pad_y = 16, 10
-        bw = text_w + pad_x * 2
-        bh = text_h + pad_y * 2
-        bx = width - bw - 40
-        by = 40
-        # Red badge with border
-        draw.rectangle([bx - 2, by - 2, bx + bw + 2, by + bh + 2], fill=(100, 5, 5))
-        draw.rectangle([bx, by, bx + bw, by + bh], fill=(160, 15, 15))
-        # Center text in badge
-        tx = bx + (bw - text_w) // 2 - badge_bbox[0]
-        ty = by + (bh - text_h) // 2 - badge_bbox[1]
-        draw.text((tx, ty), badge_text, font=badge_font, fill=(255, 240, 240))
+    # --- Category badge ---
+    if template.badge_color is not None:
+        badge_font = _find_cjk_font(112, use_koin=True)
+        if badge_font:
+            badge_text = category
+            badge_bbox = draw.textbbox((0, 0), badge_text, font=badge_font)
+            text_w = badge_bbox[2] - badge_bbox[0]
+            text_h = badge_bbox[3] - badge_bbox[1]
+            pad_x, pad_y = 16, 10
+            bw = text_w + pad_x * 2
+            bh = text_h + pad_y * 2
+            margin = 40
+            if template.badge_position == "top_right":
+                bx, by = width - bw - margin, margin
+            elif template.badge_position == "bottom_right":
+                bx, by = width - bw - margin, height - bh - margin
+            else:  # top_left
+                bx, by = margin, margin
+            draw.rectangle(
+                [bx - 2, by - 2, bx + bw + 2, by + bh + 2],
+                fill=template.badge_border_color,
+            )
+            draw.rectangle([bx, by, bx + bw, by + bh], fill=template.badge_color)
+            tx = bx + (bw - text_w) // 2 - badge_bbox[0]
+            ty = by + (bh - text_h) // 2 - badge_bbox[1]
+            draw.text((tx, ty), badge_text, font=badge_font,
+                      fill=template.badge_text_color)
 
     buf = BytesIO()
     bg.save(buf, format="PNG", quality=95)
@@ -522,9 +643,17 @@ def generate_images_for_story(
     except Exception as e:
         log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
 
+    title_template = pick_shorts_title_template(title) if is_short else None
+    if title_template is not None:
+        log.info("タイトルカードテンプレート: %s", title_template.name)
+
     title_path = output_dir / "000_title_card.png"
     title_path.write_bytes(
-        create_title_card(title, width=tc_w, height=tc_h, bg_image_data=title_bg_data, category=category)
+        create_title_card(
+            title, width=tc_w, height=tc_h,
+            bg_image_data=title_bg_data, category=category,
+            template=title_template,
+        )
     )
     image_paths.append(title_path)
 
