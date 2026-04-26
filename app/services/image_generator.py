@@ -729,33 +729,87 @@ def generate_images_for_story(
     else:
         tc_w, tc_h = 1792, 1024
 
+    fb_w, fb_h = (1080, 1920) if is_short else (1792, 1024)
+
+    # ----- Shorts: 1st scene image doubles as the title card background -----
+    # Saves one AI generation per Short and keeps the title card visually
+    # tied to the story's actual scene content. Total output for Shorts is
+    # 2 PNGs: 000_title_card.png + scene_000.png (1 less than before).
+    if is_short:
+        prompts = extract_scene_prompts(text, title, num_scenes, style=style_profile)
+        if not prompts:
+            prompts = [f"dark Japanese horror scene, {title}"]
+
+        title_template = pick_shorts_title_template(title)
+        log.info("タイトルカードテンプレート: %s", title_template.name)
+
+        # AI gen #1 — used as the title card background.
+        title_bg_data = None
+        try:
+            ar = cfg_get("shorts_image_aspect_ratio")
+            title_bg_data = generate_image_ai(
+                prompts[0], aspect_ratio=ar,
+                style_override=style_profile.style_suffix if style_profile else None,
+            )
+            if title_bg_data and use_vhs:
+                title_bg_data = degrade_to_vhs(title_bg_data)
+            log.info("タイトル背景画像生成成功 (scene 0 兼用)")
+        except Exception as e:
+            log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
+
+        title_path = output_dir / "000_title_card.png"
+        title_path.write_bytes(
+            create_title_card(
+                title, width=tc_w, height=tc_h,
+                bg_image_data=title_bg_data, category=category,
+                template=title_template,
+            )
+        )
+        image_paths.append(title_path)
+        if progress_callback:
+            progress_callback(1, len(prompts))
+        if rate_limit > 0 and len(prompts) > 1:
+            time.sleep(rate_limit)
+
+        # AI gen #2..N — bare scene images. Numbering starts at 0 because the
+        # title card is logically scene 0 (with the overlay) and these
+        # follow it in the slideshow.
+        for i, prompt in enumerate(prompts[1:]):
+            log.info("AI画像生成中 (%d/%d): %s", i + 2, len(prompts), prompt[:60])
+            img_path = output_dir / f"scene_{i:03d}.png"
+            try:
+                ar = cfg_get("shorts_image_aspect_ratio")
+                img_data = generate_image_ai(
+                    prompt, aspect_ratio=ar,
+                    style_override=style_profile.style_suffix if style_profile else None,
+                )
+                if use_vhs:
+                    img_data = degrade_to_vhs(img_data)
+                img_path.write_bytes(img_data)
+            except Exception as e:
+                log.warning("画像生成失敗、フォールバック使用: %s", e)
+                img_path.write_bytes(generate_fallback_image(width=fb_w, height=fb_h))
+            image_paths.append(img_path)
+            if progress_callback:
+                progress_callback(i + 2, len(prompts))
+            if i < len(prompts) - 2 and rate_limit > 0:
+                time.sleep(rate_limit)
+        return image_paths
+
+    # ----- Long-form: separate title BG generation, full scene set -----
     title_bg_prompt = _generate_title_bg_prompt(text, title, style=style_profile)
     title_bg_data = None
     try:
-        ar = cfg_get("shorts_image_aspect_ratio") if is_short else None
-        title_bg_data = generate_image_ai(
-            title_bg_prompt, aspect_ratio=ar,
-            style_override=style_profile.style_suffix if style_profile else None,
-        )
-        if title_bg_data and use_vhs:
-            # Apply the same VHS degradation as scene images so the title card's
-            # background carries the channel's signature look, not a clean
-            # AI-rendered photo.
-            title_bg_data = degrade_to_vhs(title_bg_data)
+        title_bg_data = generate_image_ai(title_bg_prompt)
         log.info("タイトル背景画像生成成功")
     except Exception as e:
         log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
-
-    title_template = pick_shorts_title_template(title) if is_short else None
-    if title_template is not None:
-        log.info("タイトルカードテンプレート: %s", title_template.name)
 
     title_path = output_dir / "000_title_card.png"
     title_path.write_bytes(
         create_title_card(
             title, width=tc_w, height=tc_h,
             bg_image_data=title_bg_data, category=category,
-            template=title_template,
         )
     )
     image_paths.append(title_path)
@@ -763,24 +817,16 @@ def generate_images_for_story(
     if rate_limit > 0:
         time.sleep(rate_limit)
 
-    # Scene prompts
     prompts = extract_scene_prompts(text, title, num_scenes, style=style_profile)
-
-    fb_w, fb_h = (1080, 1920) if is_short else (1792, 1024)
 
     for i, prompt in enumerate(prompts):
         if progress_callback:
-            offset = 0 if is_short else 1  # +1 for title card in long-form
-            progress_callback(i + offset, len(prompts) + offset)
+            progress_callback(i + 1, len(prompts) + 1)
         log.info("AI画像生成中 (%d/%d): %s", i + 1, len(prompts), prompt[:60])
         img_path = output_dir / f"scene_{i:03d}.png"
 
         try:
-            ar = cfg_get("shorts_image_aspect_ratio") if is_short else None
-            img_data = generate_image_ai(
-                prompt, aspect_ratio=ar,
-                style_override=style_profile.style_suffix if style_profile else None,
-            )
+            img_data = generate_image_ai(prompt)
             if use_vhs:
                 img_data = degrade_to_vhs(img_data)
             img_path.write_bytes(img_data)
