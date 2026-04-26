@@ -96,12 +96,25 @@ def do_images(story: Story, progress_callback: ProgressCallback = None) -> None:
 
 
 TITLE_CARD_FILENAME = "000_title_card.png"
+SHORTS_TITLE_CARD_FILENAME = "scene_000.png"
+
+
+def title_card_filename(content_type: str) -> str:
+    """Title-card filename for the given content type.
+
+    Long-form keeps the historical 000_title_card.png. Shorts bake the title
+    overlay directly into scene_000.png so only 2 PNGs are produced
+    (scene_000.png with overlay + scene_001.png bare scene).
+    """
+    return SHORTS_TITLE_CARD_FILENAME if content_type == "short" else TITLE_CARD_FILENAME
 
 
 def load_scene_images(
-    img_dir: Path, slideshow_config_path: Path
+    img_dir: Path, slideshow_config_path: Path, content_type: str = "long",
 ) -> tuple[list[Path], list[float] | None]:
     """Load scene images excluding title card. Returns (images, durations)."""
+    title_name = title_card_filename(content_type)
+
     images: list[Path] = []
     durations: list[float] | None = None
 
@@ -110,7 +123,7 @@ def load_scene_images(
         if slide_config:
             durations = []
             for slide in slide_config:
-                if slide["file"] == TITLE_CARD_FILENAME:
+                if slide["file"] == title_name:
                     continue
                 img_path = img_dir / slide["file"]
                 if img_path.exists():
@@ -119,7 +132,7 @@ def load_scene_images(
 
     if not images:
         images = sorted(
-            p for p in img_dir.glob("*.png") if p.name != TITLE_CARD_FILENAME
+            p for p in img_dir.glob("*.png") if p.name != title_name
         )
         durations = None
 
@@ -135,8 +148,8 @@ def do_video(story: Story, progress_callback: ProgressCallback = None) -> None:
     img_dir = images_dir(story.title, ct)
     sdir = story_dir(story.title, ct)
 
-    title_card = img_dir / TITLE_CARD_FILENAME
-    images, durations = load_scene_images(img_dir, sdir / "slideshow.json")
+    title_card = img_dir / title_card_filename(ct)
+    images, durations = load_scene_images(img_dir, sdir / "slideshow.json", ct)
 
     if not images:
         raise RuntimeError("No images found")
@@ -554,8 +567,8 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     sdir = story_dir(story.title, ct)
     a_dir = audio_dir(story.title, ct)
 
-    title_card = img_dir / TITLE_CARD_FILENAME
-    images, durations = load_scene_images(img_dir, sdir / "slideshow.json")
+    title_card = img_dir / title_card_filename(ct)
+    images, durations = load_scene_images(img_dir, sdir / "slideshow.json", ct)
     if not images:
         raise RuntimeError("No images found")
 
@@ -800,7 +813,7 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
         )
 
     # Use title card as thumbnail
-    thumbnail = images_dir(story.title, ct) / TITLE_CARD_FILENAME
+    thumbnail = images_dir(story.title, ct) / title_card_filename(ct)
 
     result = youtube_uploader.upload_video(
         video_path=vid,

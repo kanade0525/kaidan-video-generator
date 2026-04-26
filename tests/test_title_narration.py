@@ -127,3 +127,46 @@ class TestLoadSceneImages:
 class TestTitleCardFilename:
     def test_constant_value(self):
         assert TITLE_CARD_FILENAME == "000_title_card.png"
+
+
+class TestTitleCardFilenamePerContentType:
+    """Shorts bake the title into scene_000.png; long-form keeps the legacy file."""
+
+    def test_long_form_uses_legacy_name(self):
+        from app.pipeline.stages import title_card_filename
+        assert title_card_filename("long") == "000_title_card.png"
+
+    def test_short_uses_scene_000(self):
+        from app.pipeline.stages import title_card_filename
+        assert title_card_filename("short") == "scene_000.png"
+
+
+class TestLoadSceneImagesShortsLayout:
+    """For Shorts, scene_000.png IS the title card and must be excluded."""
+
+    def test_short_excludes_scene_000_from_slideshow(self, tmp_path):
+        d = tmp_path / "images"
+        d.mkdir()
+        (d / "scene_000.png").write_bytes(b"title-bearing")
+        (d / "scene_001.png").write_bytes(b"bare-scene")
+        config_path = tmp_path / "slideshow.json"
+
+        images, _ = load_scene_images(d, config_path, content_type="short")
+
+        names = [p.name for p in images]
+        assert "scene_000.png" not in names
+        assert names == ["scene_001.png"]
+
+    def test_long_form_still_excludes_legacy_title(self, tmp_path):
+        d = tmp_path / "images"
+        d.mkdir()
+        (d / "000_title_card.png").write_bytes(b"title")
+        (d / "scene_000.png").write_bytes(b"scene-0")
+        (d / "scene_001.png").write_bytes(b"scene-1")
+        config_path = tmp_path / "slideshow.json"
+
+        images, _ = load_scene_images(d, config_path, content_type="long")
+
+        names = [p.name for p in images]
+        assert "000_title_card.png" not in names
+        assert names == ["scene_000.png", "scene_001.png"]

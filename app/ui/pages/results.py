@@ -845,7 +845,11 @@ def _show_youtube_upload(story):
                         upload_state["progress"] = cur / total if total > 0 else 0
 
                     # Use title card as thumbnail
-                    thumb = images_dir(story.title, story.content_type) / "000_title_card.png"
+                    from app.pipeline.stages import title_card_filename
+                    thumb = (
+                        images_dir(story.title, story.content_type)
+                        / title_card_filename(story.content_type)
+                    )
                     result = youtube_uploader.upload_video(
                         video_path=video_path(story.title, story.content_type),
                         title=yt_title.value,

@@ -731,10 +731,12 @@ def generate_images_for_story(
 
     fb_w, fb_h = (1080, 1920) if is_short else (1792, 1024)
 
-    # ----- Shorts: 1st scene image doubles as the title card background -----
-    # Saves one AI generation per Short and keeps the title card visually
-    # tied to the story's actual scene content. Total output for Shorts is
-    # 2 PNGs: 000_title_card.png + scene_000.png (1 less than before).
+    # ----- Shorts: scene_000.png IS the title card -----
+    # The first AI image gets the title text/badge composited directly onto
+    # it and is saved as scene_000.png; no separate 000_title_card.png file
+    # is produced. Subsequent prompts become bare scene_001.png onwards.
+    # Total output for Shorts: 2 PNGs (scene_000.png + scene_001.png) under
+    # the default shorts_num_scenes=2.
     if is_short:
         prompts = extract_scene_prompts(text, title, num_scenes, style=style_profile)
         if not prompts:
@@ -743,7 +745,7 @@ def generate_images_for_story(
         title_template = pick_shorts_title_template(title)
         log.info("タイトルカードテンプレート: %s", title_template.name)
 
-        # AI gen #1 — used as the title card background.
+        # AI gen #1 — used as the title-bearing scene_000.png.
         title_bg_data = None
         try:
             ar = cfg_get("shorts_image_aspect_ratio")
@@ -753,30 +755,30 @@ def generate_images_for_story(
             )
             if title_bg_data and use_vhs:
                 title_bg_data = degrade_to_vhs(title_bg_data)
-            log.info("タイトル背景画像生成成功 (scene 0 兼用)")
+            log.info("scene_000.png 用 AI 画像生成成功 (タイトルカード兼用)")
         except Exception as e:
-            log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
+            log.warning("scene_000.png 用画像生成失敗、プロシージャル背景を使用: %s", e)
 
-        title_path = output_dir / "000_title_card.png"
-        title_path.write_bytes(
+        scene0_path = output_dir / "scene_000.png"
+        scene0_path.write_bytes(
             create_title_card(
                 title, width=tc_w, height=tc_h,
                 bg_image_data=title_bg_data, category=category,
                 template=title_template,
             )
         )
-        image_paths.append(title_path)
+        image_paths.append(scene0_path)
         if progress_callback:
             progress_callback(1, len(prompts))
         if rate_limit > 0 and len(prompts) > 1:
             time.sleep(rate_limit)
 
-        # AI gen #2..N — bare scene images. Numbering starts at 0 because the
-        # title card is logically scene 0 (with the overlay) and these
-        # follow it in the slideshow.
+        # AI gen #2..N — bare scene images, numbered scene_001 onwards because
+        # scene_000 already exists as the title-bearing slot.
         for i, prompt in enumerate(prompts[1:]):
-            log.info("AI画像生成中 (%d/%d): %s", i + 2, len(prompts), prompt[:60])
-            img_path = output_dir / f"scene_{i:03d}.png"
+            scene_idx = i + 1
+            log.info("AI画像生成中 (%d/%d): %s", scene_idx + 1, len(prompts), prompt[:60])
+            img_path = output_dir / f"scene_{scene_idx:03d}.png"
             try:
                 ar = cfg_get("shorts_image_aspect_ratio")
                 img_data = generate_image_ai(
@@ -791,7 +793,7 @@ def generate_images_for_story(
                 img_path.write_bytes(generate_fallback_image(width=fb_w, height=fb_h))
             image_paths.append(img_path)
             if progress_callback:
-                progress_callback(i + 2, len(prompts))
+                progress_callback(scene_idx + 1, len(prompts))
             if i < len(prompts) - 2 and rate_limit > 0:
                 time.sleep(rate_limit)
         return image_paths

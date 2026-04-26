@@ -1,14 +1,15 @@
-"""Tests for the Shorts image layout (post-merge of title BG + scene 0).
+"""Tests for the Shorts image layout.
 
 Brand rule: a Short produces exactly 2 PNGs:
-- 000_title_card.png (composited from the first AI image + title overlay)
-- scene_000.png (a second AI image, used during the narration slideshow)
+- scene_000.png  — first AI image with title/badge composited directly onto it.
+                   This file IS the title card (no separate 000_title_card.png).
+- scene_001.png  — bare second AI image used during the narration slideshow.
 
 This test locks in:
-1. Shorts produce exactly those two filenames (not 3+ as before).
-2. The first AI generation is reused for the title card BG (no separate
+1. Shorts produce exactly those two filenames (not 3+, no 000_title_card.png).
+2. The first AI generation is reused for the title slot (no separate
    `_generate_title_bg_prompt` call on the Shorts path).
-3. Long-form is unaffected (still 1 title + 3 scenes by default).
+3. Long-form is unaffected (still 000_title_card.png + 3 scenes by default).
 """
 
 from __future__ import annotations
@@ -78,7 +79,13 @@ def _generate(content_type: str, calls: dict) -> list[str]:
 
 def test_short_produces_exactly_two_pngs():
     files = _generate("short", calls={})
-    assert files == ["000_title_card.png", "scene_000.png"], files
+    assert files == ["scene_000.png", "scene_001.png"], files
+
+
+def test_short_does_not_create_legacy_title_card_filename():
+    """000_title_card.png must NOT exist for Shorts under the new layout."""
+    files = _generate("short", calls={})
+    assert "000_title_card.png" not in files
 
 
 def test_short_skips_separate_title_bg_prompt():
@@ -86,7 +93,7 @@ def test_short_skips_separate_title_bg_prompt():
     calls: dict = {}
     _generate("short", calls)
     assert calls.get("title_bg_prompt_calls", 0) == 0
-    # Two AI image calls: scene 0 (title bg) + scene 1 (bare scene_000.png).
+    # Two AI image calls: scene 0 (title-bearing) + scene 1 (bare scene_001.png).
     assert len(calls["image_ai_prompts"]) == 2
 
 
