@@ -529,6 +529,13 @@ def _show_images_result(story):
         ui.label("表示時間0 = 自動（均等分割）。ドラッグで並び替えはできないため、順番は番号で指定してください。").classes("text-xs text-gray-500 mb-2")
 
         slides_container = ui.column().classes("w-full")
+        # Shorts are 9:16 portrait; long videos are 16:9 landscape. Match the
+        # thumb aspect ratio so the preview reflects what the video looks like.
+        is_short = story.content_type == "short"
+        thumb_classes = (
+            "w-20 h-36 rounded object-cover" if is_short
+            else "w-32 h-20 rounded object-cover"
+        )
 
         def render_slides():
             nonlocal slide_config
@@ -544,7 +551,7 @@ def _show_images_result(story):
 
                     with ui.row().classes("items-center gap-2 mb-2 w-full"):
                         ui.label(f"{i + 1}.").classes("text-sm w-6")
-                        ui.image(f"{static_path}/{img_file}?t={ts}").classes("w-32 h-20 rounded object-cover")
+                        ui.image(f"{static_path}/{img_file}?t={ts}").classes(thumb_classes)
                         ui.label(img_file).classes("text-xs text-gray-500 w-32")
                         dur_input = ui.number(
                             "秒", value=slide.get("duration", 0),

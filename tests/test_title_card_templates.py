@@ -1,13 +1,9 @@
-"""Tests for Shorts title-card template diversification.
+"""Tests for the (single) Shorts title-card template.
 
-Background: YouTube Shorts feed dampens reach when a channel uploads visually
-similar content day after day. Pre-fix, every title card used the same
-"red text centered, top-right red badge" layout. This test locks in:
-
-1. Multiple distinct templates exist.
-2. The same title always picks the same template (deterministic).
-3. Different titles spread across templates.
-4. Each template renders to a valid PNG of the requested size.
+Brand rule: every Short uses the same classic-red title card so the channel
+keeps a recognisable identity (red 古印体 text + 怪談 badge top-right + dim
+VHS-flavoured background). Visual variety lives in the AI background, not the
+overlay.
 """
 
 from __future__ import annotations
@@ -23,41 +19,28 @@ from app.services.image_generator import (
 )
 
 
-def test_template_pool_has_multiple_distinct_styles():
-    assert len(SHORTS_TITLE_TEMPLATES) >= 4
-    names = [t.name for t in SHORTS_TITLE_TEMPLATES]
-    assert len(set(names)) == len(names), "duplicate template names"
+def test_only_one_template_for_brand_consistency():
+    """Multiple templates would break the channel's brand identity."""
+    assert len(SHORTS_TITLE_TEMPLATES) == 1
+    assert SHORTS_TITLE_TEMPLATES[0].name == "classic_red"
 
 
-def test_pick_is_deterministic_per_title():
-    a = pick_shorts_title_template("村の歓迎")
-    b = pick_shorts_title_template("村の歓迎")
-    assert a.name == b.name
+def test_pick_always_returns_the_brand_template():
+    for title in ("村の歓迎", "首吊り双六", "深夜の電話"):
+        assert pick_shorts_title_template(title).name == "classic_red"
 
 
-def test_pick_spreads_across_templates():
-    """A small set of varied titles should hit at least 3 templates."""
-    titles = [
-        "村の歓迎", "首吊り双六", "異質なリズム", "捏造された呪いの神社",
-        "廃屋にあった日記帳", "〇体探し", "本当の守護霊", "ルカくん",
-        "炙り出す", "爺ちゃんが呪われたのは",
-    ]
-    picked = {pick_shorts_title_template(t).name for t in titles}
-    assert len(picked) >= 3, f"templates clustered: {picked}"
-
-
-def test_each_template_renders_valid_png_at_shorts_size():
-    for tpl in SHORTS_TITLE_TEMPLATES:
-        png = create_title_card(
-            title="テストタイトル",
-            width=1080, height=1920,
-            bg_image_data=None,
-            category="怪談",
-            template=tpl,
-        )
-        assert png.startswith(b"\x89PNG"), f"{tpl.name}: not PNG"
-        img = Image.open(BytesIO(png))
-        assert img.size == (1080, 1920), f"{tpl.name}: wrong size {img.size}"
+def test_template_renders_valid_png_at_shorts_size():
+    png = create_title_card(
+        title="テストタイトル",
+        width=1080, height=1920,
+        bg_image_data=None,
+        category="怪談",
+        template=SHORTS_TITLE_TEMPLATES[0],
+    )
+    assert png.startswith(b"\x89PNG"), "not PNG"
+    img = Image.open(BytesIO(png))
+    assert img.size == (1080, 1920)
 
 
 def test_default_template_back_compat():
@@ -69,8 +52,7 @@ def test_default_template_back_compat():
         title="テスト", width=1792, height=1024, category="怪談",
         template=SHORTS_TITLE_TEMPLATES[0],
     )
-    # Both should render successfully; bytes are not strictly equal due to
-    # PNG metadata, but both must be valid PNG of the same dimensions.
+    # Both must render successfully at the requested dimensions.
     assert png_default.startswith(b"\x89PNG")
     assert png_classic.startswith(b"\x89PNG")
     assert Image.open(BytesIO(png_default)).size == Image.open(BytesIO(png_classic)).size

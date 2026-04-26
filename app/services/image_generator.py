@@ -42,104 +42,78 @@ class VisualStyleProfile:
     apply_vhs: bool
 
 
+# Brand identity = VHS aesthetic + degraded camcorder / surveillance footage,
+# applied uniformly to every Short. Diversification across uploads happens in
+# WHAT the camera is recording (corridor / outdoor / indoor / object / figure)
+# rather than HOW it is rendered. Like Ghibli: many stories, one look.
+_VHS_STYLE_SUFFIX = (
+    "found footage style, low quality home video camera capture, "
+    "VHS tape quality, scan lines, colour bleed, grainy, washed out colors, "
+    "slight tape distortion, low resolution, photorealistic"
+)
+
+
 SHORTS_VISUAL_STYLES: list[VisualStyleProfile] = [
     VisualStyleProfile(
-        name="vhs_surveillance",
+        name="vhs_corridor_security",
         aesthetic_focus=(
-            "1990s home-video / surveillance camera footage of an abandoned location, "
-            "VHS distortion expected, scan lines, colour bleed"
+            "narrow dark Japanese corridor, hallway, or stairwell viewed through "
+            "an old fixed CCTV camera — could be a school, office, hospital, "
+            "or apartment building"
         ),
-        style_suffix=(
-            "found footage style, low quality home video camera capture, "
-            "surveillance camera footage, CCTV recording, VHS tape quality, "
-            "grainy, dark, washed out colors, slight distortion, photorealistic"
-        ),
+        style_suffix=_VHS_STYLE_SUFFIX,
         apply_vhs=True,
     ),
     VisualStyleProfile(
-        name="traditional_japanese_house",
+        name="vhs_outdoor_rural_night",
         aesthetic_focus=(
-            "interior of an old traditional Japanese house at night — tatami floors, "
-            "shoji sliding doors, fusuma, butsudan altar, oil lamp light"
+            "rural Japanese outdoor night scene captured on a 1990s handheld "
+            "camcorder — torii gate, mountain path, abandoned shrine, deserted "
+            "country road, moonlit forest"
         ),
-        style_suffix=(
-            "cinematic horror, photorealistic, dimly lit traditional Japanese interior, "
-            "warm sepia and shadow, oil lamp glow, fine detail, atmospheric, "
-            "shallow depth of field"
-        ),
-        apply_vhs=False,
+        style_suffix=_VHS_STYLE_SUFFIX,
+        apply_vhs=True,
     ),
     VisualStyleProfile(
-        name="rural_shrine_mist",
+        name="vhs_traditional_indoor",
         aesthetic_focus=(
-            "rural Shinto shrine in deep forest, weathered stone steps, moss-covered "
-            "torii gate, dense mist, twilight"
+            "interior of an old traditional Japanese house captured on a 1990s "
+            "home camcorder at night — tatami floor, shoji and fusuma, butsudan "
+            "altar, dim oil lamp or single bare bulb"
         ),
-        style_suffix=(
-            "cinematic horror, photorealistic, deep volumetric fog, cool blue-green palette, "
-            "soft moonlight, vast empty natural setting, eerie quiet"
-        ),
-        apply_vhs=False,
+        style_suffix=_VHS_STYLE_SUFFIX,
+        apply_vhs=True,
     ),
     VisualStyleProfile(
-        name="moonlit_corridor",
+        name="vhs_urban_mundane_night",
         aesthetic_focus=(
-            "narrow dark corridor, hallway, or stairwell illuminated by a single dim source — "
-            "could be a Japanese inn, school, hospital, or apartment building"
+            "modern Japanese urban location at 3am captured on a 90s camcorder — "
+            "convenience store, narrow alley, parking lot, station platform, "
+            "empty apartment hallway under fluorescent light"
         ),
-        style_suffix=(
-            "cinematic horror, photorealistic, deep shadow, single dim light source, "
-            "high contrast lighting, claustrophobic, dread atmosphere"
-        ),
-        apply_vhs=False,
+        style_suffix=_VHS_STYLE_SUFFIX,
+        apply_vhs=True,
     ),
     VisualStyleProfile(
-        name="ukiyo_e_horror",
+        name="vhs_object_closeup",
         aesthetic_focus=(
-            "Edo-period traditional Japanese woodblock-print rendering of the scene — "
-            "yokai, ghost, or supernatural element styled as ukiyo-e"
+            "close-up of a single object on a fixed-position camcorder — old "
+            "rotary phone, ningyo doll, broken mirror, family photo, religious "
+            "talisman, cassette tape, broken brown TV — something ordinary that "
+            "feels wrong"
         ),
-        style_suffix=(
-            "ukiyo-e woodblock print style, Edo period, traditional Japanese horror art, "
-            "muted earth tones, fine line work, slight aging texture, paper grain"
-        ),
-        apply_vhs=False,
+        style_suffix=_VHS_STYLE_SUFFIX,
+        apply_vhs=True,
     ),
     VisualStyleProfile(
-        name="urban_night_neon",
+        name="vhs_figure_distant",
         aesthetic_focus=(
-            "modern Japanese urban night — empty alley, dim apartment hallway, parking lot, "
-            "convenience store at 3am, sodium street lamp"
+            "grainy VHS recording showing a single distant unmoving figure at the "
+            "edge of frame — silhouette in white kimono, child standing alone, "
+            "elderly figure facing away, salaryman in deep shadow"
         ),
-        style_suffix=(
-            "cinematic horror, photorealistic, urban night, sodium and neon street light, "
-            "wet asphalt reflections, deep shadow, lonely modern atmosphere"
-        ),
-        apply_vhs=False,
-    ),
-    VisualStyleProfile(
-        name="aged_polaroid",
-        aesthetic_focus=(
-            "single old amateur photograph (Polaroid or 90s film camera) of an "
-            "ordinary scene that hides something wrong"
-        ),
-        style_suffix=(
-            "aged polaroid photograph, slight light leaks, faded colours, soft focus, "
-            "white photo border, found old photo aesthetic, unsettling family snapshot vibe"
-        ),
-        apply_vhs=False,
-    ),
-    VisualStyleProfile(
-        name="ink_wash_sumi",
-        aesthetic_focus=(
-            "minimalist sumi-e ink wash composition — a single haunting form on "
-            "negative-space paper"
-        ),
-        style_suffix=(
-            "sumi-e ink wash painting, monochromatic, brush strokes, traditional Japanese "
-            "ink art, rough washi paper texture, dramatic negative space"
-        ),
-        apply_vhs=False,
+        style_suffix=_VHS_STYLE_SUFFIX,
+        apply_vhs=True,
     ),
 ]
 
@@ -525,13 +499,12 @@ def _wrap_title(title: str, max_chars_per_line: int = 8) -> list[str]:
 
 @dataclass
 class TitleCardTemplate:
-    """Style config for a title card variant.
+    """Style config for the title card.
 
-    Vary visuals across Shorts so the YouTube similarity heuristic does not
-    cluster every uploaded video as duplicate content. Both the AI-generated
-    background's processing and the text overlay are template-driven; the
-    same generated bg can produce visibly different cards under different
-    templates (B&W, sepia, color-tinted, brightened, dim, etc.).
+    Brand identity (red text + 怪談 badge + VHS aesthetic) is held constant
+    across every Short — diversification happens in the AI-generated background
+    content, not the text overlay. This dataclass is kept for back-compat but
+    every Short now uses the single `classic_red` profile below.
     """
     name: str
     bg_brightness: float = 0.35
@@ -539,13 +512,6 @@ class TitleCardTemplate:
     bg_blur: float = 3.0
     vignette_strength: float = 300 / 255  # 0 = none, larger = stronger edge darkening
     top_gradient_alpha: int = 180          # 0 disables the top-fade overlay
-    # Color-grading layers — combine to break the "everything is dim" feel.
-    bg_grayscale: bool = False
-    bg_sepia: bool = False
-    bg_color_tint: tuple[int, int, int] | None = None  # overlay color
-    bg_color_tint_alpha: int = 0           # 0..255 strength of the overlay
-    bg_contrast: float = 1.0               # 1.0 = unchanged, >1 boosts contrast
-    bg_lift_blacks: int = 0                # 0..40, raises shadows so bg shows
     text_color: tuple[int, int, int] = (230, 20, 20)
     outline_color: tuple[int, int, int] = (0, 0, 0)
     text_position: str = "center"          # "center" | "top" | "bottom"
@@ -559,148 +525,11 @@ class TitleCardTemplate:
 
 # Distinct enough that side-by-side thumbnails do not look like the same template
 # with different titles. Order is stable — picked deterministically by hash(title).
+# Single, brand-locked template. Every Short uses this so the channel keeps
+# the recognisable red-text + 怪談-badge identity. Background diversity comes
+# from the AI image generation, never from the overlay.
 SHORTS_TITLE_TEMPLATES: list[TitleCardTemplate] = [
-    # Classic dim look — kept for the recognisable horror aesthetic.
     TitleCardTemplate(name="classic_red"),
-
-    # Bright / minimally-darkened — lets the AI-generated bg actually be visible.
-    TitleCardTemplate(
-        name="bright_punchy",
-        bg_brightness=0.85,
-        bg_saturation=0.95,
-        bg_blur=1.0,
-        vignette_strength=80 / 255,
-        top_gradient_alpha=0,
-        text_color=(245, 30, 30),
-        outline_color=(0, 0, 0),
-        text_position="bottom",
-        text_band=True,
-        text_band_alpha=140,
-        badge_position="top_right",
-    ),
-
-    TitleCardTemplate(
-        name="top_white",
-        bg_brightness=0.55,
-        bg_saturation=0.65,
-        bg_blur=1.5,
-        vignette_strength=160 / 255,
-        text_color=(245, 245, 240),
-        outline_color=(0, 0, 0),
-        text_position="top",
-        text_band=True,
-        text_band_alpha=130,
-        badge_position="bottom_right",
-    ),
-
-    TitleCardTemplate(
-        name="bottom_yellow",
-        bg_brightness=0.7,
-        bg_saturation=0.85,
-        bg_blur=1.0,
-        vignette_strength=110 / 255,
-        text_color=(245, 220, 80),
-        outline_color=(0, 0, 0),
-        text_position="bottom",
-        text_band=True,
-        text_band_alpha=180,
-        top_gradient_alpha=0,
-        badge_color=None,
-    ),
-
-    # Pale blue dim — keeps a cold/eerie one in the rotation.
-    TitleCardTemplate(
-        name="center_pale_blue",
-        bg_brightness=0.4,
-        bg_saturation=0.3,
-        bg_blur=3.5,
-        vignette_strength=200 / 255,
-        text_color=(190, 220, 240),
-        outline_color=(20, 30, 50),
-        text_position="center",
-        badge_color=(40, 50, 80),
-        badge_border_color=(20, 25, 45),
-        badge_text_color=(220, 230, 250),
-    ),
-
-    # Orange w/ partial brightness — warm tone breaks the "always blue/dark" look.
-    TitleCardTemplate(
-        name="center_orange",
-        bg_brightness=0.6,
-        bg_saturation=0.7,
-        bg_blur=2.0,
-        vignette_strength=180 / 255,
-        text_color=(240, 140, 30),
-        outline_color=(0, 0, 0),
-        text_position="center",
-        text_band=True,
-        text_band_alpha=130,
-        top_gradient_alpha=80,
-        badge_color=(60, 30, 5),
-        badge_border_color=(30, 15, 0),
-        badge_text_color=(245, 200, 120),
-        badge_position="top_left",
-    ),
-
-    # B&W high-contrast — dramatic, distinct from any colored card.
-    TitleCardTemplate(
-        name="bw_dramatic",
-        bg_brightness=0.85,
-        bg_saturation=1.0,  # ignored due to grayscale
-        bg_blur=1.0,
-        vignette_strength=180 / 255,
-        bg_grayscale=True,
-        bg_contrast=1.4,
-        top_gradient_alpha=0,
-        text_color=(255, 255, 255),
-        outline_color=(0, 0, 0),
-        text_position="center",
-        text_band=True,
-        text_band_alpha=120,
-        badge_color=(20, 20, 20),
-        badge_border_color=(245, 245, 245),
-        badge_text_color=(245, 245, 245),
-    ),
-
-    # Sepia — vintage / faded photograph feel.
-    TitleCardTemplate(
-        name="sepia_vintage",
-        bg_brightness=0.95,
-        bg_saturation=1.0,  # ignored due to sepia
-        bg_blur=1.5,
-        vignette_strength=140 / 255,
-        bg_sepia=True,
-        bg_lift_blacks=20,
-        top_gradient_alpha=0,
-        text_color=(80, 30, 20),
-        outline_color=(245, 230, 200),
-        text_position="bottom",
-        text_band=False,
-        badge_color=(180, 130, 70),
-        badge_border_color=(80, 50, 20),
-        badge_text_color=(40, 20, 10),
-        badge_position="top_left",
-    ),
-
-    # Red split-tone — strong color identity, not just "dim".
-    TitleCardTemplate(
-        name="red_split_tone",
-        bg_brightness=0.7,
-        bg_saturation=0.5,
-        bg_blur=2.5,
-        vignette_strength=160 / 255,
-        bg_color_tint=(180, 20, 20),
-        bg_color_tint_alpha=80,
-        bg_contrast=1.15,
-        top_gradient_alpha=120,
-        text_color=(255, 240, 230),
-        outline_color=(60, 0, 0),
-        text_position="center",
-        badge_color=(20, 20, 20),
-        badge_border_color=(255, 230, 220),
-        badge_text_color=(255, 230, 220),
-        badge_position="top_right",
-    ),
 ]
 
 
@@ -743,37 +572,10 @@ def create_title_card(
     else:
         bg = Image.new("RGB", (width, height), (10, 5, 5))
 
-    if template.bg_grayscale:
-        bg = bg.convert("L").convert("RGB")
-    if template.bg_sepia:
-        arr = np.array(bg, dtype=np.float32)
-        r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
-        new_r = 0.393 * r + 0.769 * g + 0.189 * b
-        new_g = 0.349 * r + 0.686 * g + 0.168 * b
-        new_b = 0.272 * r + 0.534 * g + 0.131 * b
-        bg = Image.fromarray(
-            np.clip(np.stack([new_r, new_g, new_b], axis=-1), 0, 255).astype(np.uint8)
-        )
-
     bg = ImageEnhance.Brightness(bg).enhance(template.bg_brightness)
-    if not (template.bg_grayscale or template.bg_sepia):
-        bg = ImageEnhance.Color(bg).enhance(template.bg_saturation)
-    if template.bg_contrast != 1.0:
-        bg = ImageEnhance.Contrast(bg).enhance(template.bg_contrast)
-    if template.bg_lift_blacks > 0:
-        arr = np.array(bg, dtype=np.float32)
-        arr = np.clip(arr + template.bg_lift_blacks, 0, 255)
-        bg = Image.fromarray(arr.astype(np.uint8))
+    bg = ImageEnhance.Color(bg).enhance(template.bg_saturation)
     if template.bg_blur > 0:
         bg = bg.filter(ImageFilter.GaussianBlur(radius=template.bg_blur))
-    if template.bg_color_tint is not None and template.bg_color_tint_alpha > 0:
-        tint = Image.new(
-            "RGBA", bg.size,
-            (*template.bg_color_tint, template.bg_color_tint_alpha),
-        )
-        bg = bg.convert("RGBA")
-        bg.alpha_composite(tint)
-        bg = bg.convert("RGB")
 
     # Vignette
     if template.vignette_strength > 0:
@@ -935,6 +737,11 @@ def generate_images_for_story(
             title_bg_prompt, aspect_ratio=ar,
             style_override=style_profile.style_suffix if style_profile else None,
         )
+        if title_bg_data and use_vhs:
+            # Apply the same VHS degradation as scene images so the title card's
+            # background carries the channel's signature look, not a clean
+            # AI-rendered photo.
+            title_bg_data = degrade_to_vhs(title_bg_data)
         log.info("タイトル背景画像生成成功")
     except Exception as e:
         log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
