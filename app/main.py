@@ -120,6 +120,128 @@ async def oauth2callback(
     )
 
 
+def _tiktok_redirect_uri(request: Request) -> str:
+    """Build the TikTok redirect_uri.
+
+    ngrok terminates HTTPS externally and forwards as plain HTTP to the
+    container, so ``request.url.scheme`` would be ``http`` even when the
+    public URL is ``https``. Prefer the explicit ``TIKTOK_REDIRECT_URI`` env
+    var so Sandbox-registered URIs match exactly. Fall back to building
+    from the request URL when the env var is not set (local-only dev).
+    """
+    import os
+
+    explicit = os.environ.get("TIKTOK_REDIRECT_URI", "").strip()
+    if explicit:
+        return explicit
+    base = f"{request.url.scheme}://{request.url.netloc}"
+    return f"{base}/tiktok/callback"
+
+
+@fastapi_app.get("/tiktok/auth")
+async def tiktok_auth(request: Request):
+    """Start TikTok OAuth flow by redirecting to TikTok consent page."""
+    from app.services import tiktok_uploader
+
+    redirect_uri = _tiktok_redirect_uri(request)
+    try:
+        auth_url = tiktok_uploader.get_auth_url(redirect_uri)
+    except Exception as e:
+        return HTMLResponse(
+            f"<h1>TikTok認証開始に失敗</h1><pre>{e}</pre>", status_code=500,
+        )
+    return RedirectResponse(auth_url)
+
+
+@fastapi_app.get("/tiktok/callback")
+async def tiktok_callback(
+    request: Request, code: str = "", state: str = "", error: str = "",
+    error_description: str = "",
+):
+    """Handle TikTok OAuth redirect and save the token."""
+    from app.services import tiktok_uploader
+
+    if error:
+        return HTMLResponse(
+            f"<h1>TikTok認証エラー</h1><p>{error}: {error_description}</p>"
+            f'<p><a href="/settings">設定ページに戻る</a></p>',
+            status_code=400,
+        )
+    if not code:
+        return HTMLResponse(
+            "<h1>認可コードがありません</h1>"
+            '<p><a href="/settings">設定ページに戻る</a></p>',
+            status_code=400,
+        )
+
+    redirect_uri = _tiktok_redirect_uri(request)
+    try:
+        tiktok_uploader.exchange_code(code, redirect_uri, state=state)
+    except Exception as e:
+        return HTMLResponse(
+            f"<h1>TikTok認証失敗</h1><pre>{e}</pre>"
+            f'<p><a href="/settings">設定ページに戻る</a></p>',
+            status_code=500,
+        )
+
+    return HTMLResponse(
+        "<h1>TikTok認証成功 🎉</h1>"
+        "<p>このタブを閉じて、アプリの設定ページまたはストーリー詳細に戻ってください。</p>"
+        '<p><a href="/settings">設定ページに戻る</a></p>',
+    )
+
+
+@fastapi_app.get("/terms", include_in_schema=False)
+@fastapi_app.get("/terms.html", include_in_schema=False)
+async def serve_terms():
+    """Serve Terms of Service page (linked from TikTok app review form).
+
+    Hosting on the same verified ngrok URL prefix as the OAuth callback so a
+    single TikTok URL Property covers all required URLs.
+    """
+    from pathlib import Path
+
+    p = Path("docs/terms.html")
+    if not p.exists():
+        return HTMLResponse("Terms file missing", status_code=404)
+    return HTMLResponse(p.read_text(encoding="utf-8"))
+
+
+@fastapi_app.get("/privacy", include_in_schema=False)
+@fastapi_app.get("/privacy.html", include_in_schema=False)
+async def serve_privacy():
+    """Serve Privacy Policy page (linked from TikTok app review form)."""
+    from pathlib import Path
+
+    p = Path("docs/privacy.html")
+    if not p.exists():
+        return HTMLResponse("Privacy file missing", status_code=404)
+    return HTMLResponse(p.read_text(encoding="utf-8"))
+
+
+@fastapi_app.get("/{filename:str}", include_in_schema=False)
+async def tiktok_verify_file(filename: str):
+    """Serve TikTok URL property verification signature files.
+
+    TikTok issues a unique file name like ``tiktok123abc.txt`` to prove
+    domain ownership. Drop the downloaded file into ``data/tiktok_verify/``
+    and this route serves it at the URL root. Only matches files starting
+    with ``tiktok`` and ending with ``.txt`` to avoid shadowing other paths.
+    Uses ``:str`` (not ``:path``) so slashes are not matched, keeping
+    multi-segment routes like ``/tiktok/auth`` reachable by the more
+    specific handlers registered above.
+    """
+    if not filename.startswith("tiktok") or not filename.endswith(".txt"):
+        return HTMLResponse("Not Found", status_code=404)
+
+    from pathlib import Path
+
+    p = Path("data/tiktok_verify") / filename
+    if not p.exists() or not p.is_file():
+        return HTMLResponse("Verification file not found", status_code=404)
+    return HTMLResponse(p.read_text(encoding="utf-8"), media_type="text/plain")
+
+
 def main():
     ui.run(
         title="怪談動画ジェネレータ",
