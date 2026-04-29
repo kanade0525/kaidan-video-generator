@@ -152,6 +152,8 @@ _DEFAULTS = {
         "「{title}」{url}\n"
         "作者: {author}\n\n"
         "音声: VOICEVOX:{speaker}\n"
+        "BGM: 「Where the Light Never Speaks」松浦洋介\n"
+        "(DOVA-SYNDROME: https://dova-s.jp/bgm/play22758.html)\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "#怪談 #ホラー #朗読 #怖い話 #Shorts #百鬼朗読"
     ),
@@ -166,6 +168,8 @@ _DEFAULTS = {
         "引用元:HHS図書館より\n"
         "「{title}」{url}\n\n"
         "音声: VOICEVOX:{speaker}\n"
+        "BGM: 「Where the Light Never Speaks」松浦洋介\n"
+        "(DOVA-SYNDROME: https://dova-s.jp/bgm/play22758.html)\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "#怪談 #ホラー #朗読 #怖い話 #Shorts #ホラホリ #百鬼朗読"
     ),
@@ -175,10 +179,61 @@ _DEFAULTS = {
         "怪談,ホラー,朗読,怖い話,心霊,恐怖,怪談朗読,実話怪談,都市伝説,"
         "百鬼朗読,VOICEVOX,怖い話朗読,人怖,不思議な話,Shorts"
     ),
+    # TikTok Inbox/Draft アップロード後にユーザーがコピペする用のキャプション。
+    # TikTok仕様上 Inbox は動画ファイル本体のみ送信。説明文/ハッシュタグは
+    # ユーザーがTikTokアプリ内で貼り付けるためのテキスト。
+    "tiktok_caption_template": (
+        "【怪談朗読】{title}\n\n"
+        "引用元: 怖い話投稿サイト 奇々怪々\n"
+        "「{title}」 by {author}\n\n"
+        "音声: VOICEVOX:{speaker}\n"
+        "BGM: 「Where the Light Never Speaks」松浦洋介 (DOVA-SYNDROME)\n\n"
+        "#怪談 #ホラー #朗読 #怖い話 #ショート怪談 #百鬼朗読 #実話怪談 #都市伝説"
+    ),
+    # HHS由来の Shorts は引用元表記が異なる + ホラホリタグ必須。
+    "tiktok_hhs_caption_template": (
+        "【怪談朗読】{title}\n\n"
+        "引用元: HHS図書館より\n"
+        "「{title}」\n\n"
+        "音声: VOICEVOX:{speaker}\n"
+        "BGM: 「Where the Light Never Speaks」松浦洋介 (DOVA-SYNDROME)\n\n"
+        "#怪談 #ホラー #朗読 #怖い話 #ショート怪談 #ホラホリ #百鬼朗読"
+    ),
     # Narration dictionary customization (user additions on top of hardcoded defaults)
     "reading_overrides": {},      # surface(漢字等) → ひらがな読み
     "compound_replacements": {},  # 置換元 → 置換後（MeCab前に適用）
     "keep_as_kanji": [],          # 漢字のまま残す語のリスト
+    # AI proofread prompt (Gemini で MeCab 後段の読み修正に使用)。{raw} と {processed}
+    # はそれぞれ原文(漢字混じり)と機械変換結果に置換される。
+    "ai_proofread_prompt": (
+        "以下は怪談の本文をひらがな化したものです。VOICEVOX(音声合成)で読み上げる目的で、"
+        "MeCab形態素解析を使って機械的に変換しました。機械変換で読み間違いがある箇所のみ、"
+        "自然な日本語の読みに修正してください。\n\n"
+        "【厳守ルール】\n"
+        "1. 漢字が一部残っているのは意図的(VOICEVOXが漢字なら正しく読むため)。漢字は変更せず保持。\n"
+        "2. 助詞「は」→「わ」、「へ」→「え」 の変換は維持(逆変換しない)。\n"
+        "3. 改行構造は完全に保持(行数・行内容を変えない)。\n"
+        "4. 修正対象例: 慣用読み、連濁、四字熟語の促音化、固有名詞、複合語の音便。\n"
+        "5. 文脈に依存する同音異義語(例: 死体/四体)は文脈に合った読みを選ぶ。\n"
+        "6. 説明・前置き・コードブロック等は含めず、修正後のテキスト本文のみ返す。\n"
+        "7. 修正不要なら入力をそのまま返す。\n\n"
+        "【絶対にしてはいけないこと】\n"
+        "・結合用濁点 (U+3099) や結合用半濁点 (U+309A) を出力に含めない。\n"
+        "  例: ば→わ + ゙ にしない。ば は ば のまま、または「わ」とせず「ば」を維持。\n"
+        "・既存の濁音・半濁音 (が/ぎ/ぐ/ば/ぴ等) を清音化しない。\n"
+        "・文字を重複させない。例: 「のもあった」を「のももあった」にしない。\n"
+        "・異体字・互換漢字 (U+2E80〜U+2EFF, U+F900〜U+FAFF 等) を導入しない。\n"
+        "・元テキストにない単語・句・記号を勝手に追加しない。\n"
+        "・原文と入力(機械変換結果)で意味が一致するように、文意を変える修正は禁止。\n\n"
+        "参照用の原文(漢字混じり):\n"
+        "---\n"
+        "{raw}\n"
+        "---\n\n"
+        "機械変換結果(これを修正対象):\n"
+        "---\n"
+        "{processed}\n"
+        "---"
+    ),
 }
 
 

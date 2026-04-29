@@ -42,15 +42,19 @@ def do_scrape(story: Story, progress_callback: ProgressCallback = None) -> None:
     log.info("[scrape] 保存: %s (%d chars)", out.name, len(content))
 
 
-def do_text(story: Story, progress_callback: ProgressCallback = None) -> None:
-    """Stage: Process text with LLM API."""
-    log.info("[text] %s", story.title)
+def do_text(
+    story: Story,
+    progress_callback: ProgressCallback = None,
+    use_ai_proofread: bool = False,
+) -> None:
+    """Stage: Process text with MeCab (optional Gemini AI proofread)."""
+    log.info("[text] %s (ai_proofread=%s)", story.title, use_ai_proofread)
     ct = story.content_type
     if progress_callback:
         progress_callback(0, 2)
     raw = raw_content_path(story.title, ct).read_text(encoding="utf-8")
 
-    processed = text_processor.process_text(raw)
+    processed = text_processor.process_text(raw, use_ai_proofread=use_ai_proofread)
     processed_text_path(story.title, ct).write_text(processed, encoding="utf-8")
     if progress_callback:
         progress_callback(1, 2)

@@ -132,6 +132,8 @@ def results_page(
                 images_tab = ui.tab("画像")
                 video_tab = ui.tab("動画")
                 youtube_tab = ui.tab("YouTube")
+                # TikTokタブ: Shortsのみ表示。Inbox(下書き)アップロード手動ボタン。
+                tiktok_tab = ui.tab("TikTok") if story.content_type == "short" else None
                 # HHS使用報告 is required whenever story is HHS-sourced
                 # (includes long-form and migrated shorts)
                 report_tab = ui.tab("HHS使用報告") if story.source == "hhs" else None
@@ -154,6 +156,10 @@ def results_page(
 
                 with ui.tab_panel(youtube_tab):
                     _show_youtube_upload_tab(story)
+
+                if tiktok_tab:
+                    with ui.tab_panel(tiktok_tab):
+                        _show_tiktok_upload_tab(story)
 
                 if report_tab:
                     with ui.tab_panel(report_tab):
@@ -195,8 +201,13 @@ def results_page(
     update_story_list()
 
 
-def _retry_button(story, target_stage: str, label: str = "再処理"):
-    """Add a retry button with progress bar that runs in a background thread."""
+def _retry_button(story, target_stage: str, label: str = "再処理", get_stage_kwargs=None):
+    """Add a retry button with progress bar that runs in a background thread.
+
+    `get_stage_kwargs` is an optional callable (returning a dict) that gets
+    invoked at click time. The dict is forwarded to the stage function — used
+    e.g. for the text stage's AI-proofread toggle.
+    """
     import threading
 
     progress = ui.linear_progress(value=0, show_value=False).classes("w-full").props("rounded")
@@ -218,10 +229,15 @@ def _retry_button(story, target_stage: str, label: str = "再処理"):
             state["progress"] = current / total if total > 0 else 0
             state["progress_text"] = f"処理中... ({current}/{total})"
 
+        stage_kwargs = get_stage_kwargs() if get_stage_kwargs else {}
+
         def run():
             try:
                 p = shorts_pipeline if story.content_type == "short" else pipeline
-                p.run_single(story.id, target_stage, progress_callback=progress_callback)
+                p.run_single(
+                    story.id, target_stage,
+                    progress_callback=progress_callback, **stage_kwargs,
+                )
             except Exception as e:
                 state["error"] = str(e)
             state["done"] = True
@@ -481,7 +497,19 @@ def _show_text_result(story):
     else:
         ui.label("未処理").classes("text-gray-500")
 
-    _retry_button(story, "text_processed", "テキスト再処理")
+    ai_proofread_checkbox = ui.checkbox(
+        "AI校正(Gemini)で機械変換の読み間違いを後段補正",
+        value=False,
+    ).classes("mt-2")
+    ai_proofread_checkbox.tooltip(
+        "MeCabが見落とした慣用読み・連濁・四字熟語の促音化等を Gemini で再修正。"
+        "1回の再処理ごとに API 課金あり。"
+    )
+
+    _retry_button(
+        story, "text_processed", "テキスト再処理",
+        get_stage_kwargs=lambda: {"use_ai_proofread": ai_proofread_checkbox.value},
+    )
 
 
 def _show_voice_result(story):
@@ -687,6 +715,158 @@ def _show_youtube_upload_tab(story):
         _show_youtube_upload(story)
     else:
         ui.label("動画が未生成のため、アップロードできません。").classes("text-gray-500")
+
+
+def _show_tiktok_upload_tab(story):
+    """TikTok Inbox (Draft) upload tab — Shorts only.
+
+    Uploads to the user's TikTok inbox; the user must then open the TikTok
+    mobile app to review and publish the draft. No auto-publish.
+    """
+    import threading
+    from app.services import tiktok_uploader
+
+    vid_path = video_path(story.title, story.content_type)
+
+    ui.label("TikTok Inbox (下書き) アップロード").classes("text-lg font-bold mt-2")
+    ui.label(
+        "Shorts動画をTikTokの「下書き」(Inbox)に送信します。送信後、TikTokアプリで"
+        "内容を確認・編集してから手動で公開してください。自動公開はしません。",
+    ).classes("text-xs text-gray-500 mb-2")
+
+    if not vid_path.exists():
+        ui.label("動画が未生成のため、アップロードできません。").classes("text-gray-500")
+        return
+
+    if not tiktok_uploader.is_configured():
+        ui.label(
+            "TikTok 認証情報が未設定です。`.env` に TIKTOK_CLIENT_KEY と "
+            "TIKTOK_CLIENT_SECRET を設定してください。",
+        ).classes("text-red-500")
+        return
+
+    # Auth state
+    if not tiktok_uploader.is_authenticated():
+        ui.label("未認証").classes("text-orange-500 font-bold")
+        ui.button(
+            "TikTokで認証する",
+            on_click=lambda: ui.navigate.to("/tiktok/auth", new_tab=True),
+            color="primary",
+        )
+        ui.label(
+            "別タブで TikTok の認可画面が開きます。承認後、本ページに戻ってリロードしてください。",
+        ).classes("text-xs text-gray-500")
+        return
+
+    # Authenticated — show username for confirmation
+    try:
+        user = tiktok_uploader.get_user_info()
+        if user.get("display_name"):
+            ui.label(
+                f"認証済み: {user.get('display_name', '')} (open_id={user.get('open_id', '')[:8]}...)",
+            ).classes("text-green-500 text-sm")
+    except Exception as e:
+        ui.label(f"認証情報の確認に失敗: {e}").classes("text-orange-500 text-sm")
+        ui.button(
+            "再認証する",
+            on_click=lambda: ui.navigate.to("/tiktok/auth", new_tab=True),
+        ).props("size=sm")
+        return
+
+    # Caption preview & copy. TikTok Inbox API does not accept caption/hashtags
+    # (that requires Direct Post + video.publish scope), so we surface a
+    # ready-made caption here for the user to paste into the TikTok app
+    # after the video appears in their drafts.
+    from app.config import get as cfg_get
+    tpl_key = "tiktok_hhs_caption_template" if story.source == "hhs" else "tiktok_caption_template"
+    caption_default = (cfg_get(tpl_key) or "").format(
+        title=story.title,
+        author=getattr(story, "author", None) or "",
+        speaker=cfg_get("speaker_id") or "",
+    )
+    ui.label("キャプション (コピペ用)").classes("text-md font-semibold mt-4")
+    ui.label(
+        "TikTok Inboxでは説明文を事前送信できないため、TikTokアプリで動画を開いた後にここをコピペしてください。",
+    ).classes("text-xs text-gray-500")
+    caption_area = ui.textarea(value=caption_default).classes("w-full font-mono text-xs").props("rows=10 autogrow")
+
+    def copy_caption():
+        text = caption_area.value or ""
+        # Use ui.run_javascript to copy to browser clipboard
+        escaped = text.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
+        ui.run_javascript(f"navigator.clipboard.writeText(`{escaped}`)")
+        ui.notify("キャプションをコピーしました", color="positive")
+
+    ui.button("クリップボードにコピー", on_click=copy_caption, color="secondary").props("size=sm")
+
+    # Upload UI
+    progress = ui.linear_progress(value=0, show_value=False).classes("w-full").props("rounded")
+    progress.visible = False
+    status_label = ui.label("").classes("text-sm")
+
+    state = {
+        "running": False, "progress": 0.0, "progress_text": "",
+        "done": False, "error": None, "result": None,
+    }
+
+    def progress_cb(current, total):
+        state["progress"] = current / total if total > 0 else 0
+        state["progress_text"] = f"アップロード中... ({current}/{total})"
+
+    def do_upload():
+        state.update(running=True, done=False, error=None, progress=0.0, result=None)
+        progress.visible = True
+        progress.value = 0
+        status_label.text = "アップロード開始..."
+        status_label.classes(replace="text-sm text-blue-500")
+        upload_btn.disable()
+
+        def run():
+            try:
+                state["result"] = tiktok_uploader.upload_video_to_inbox(
+                    vid_path, progress_callback=progress_cb,
+                )
+            except Exception as e:
+                state["error"] = str(e)
+            state["done"] = True
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def poll():
+        if not state["running"]:
+            timer.active = False
+            return
+        try:
+            progress.value = state["progress"]
+            if state["progress_text"]:
+                status_label.text = state["progress_text"]
+            if state["done"]:
+                state["running"] = False
+                err = state["error"]
+                if err:
+                    progress.value = 0
+                    status_label.text = f"エラー: {err[:200]}"
+                    status_label.classes(replace="text-sm text-red-500")
+                else:
+                    progress.value = 1.0
+                    res = state["result"] or {}
+                    status_label.text = (
+                        f"送信完了 (publish_id={res.get('publish_id', '?')}, "
+                        f"status={res.get('status', '?')}). "
+                        "TikTokアプリの「ドラフト」または通知から内容確認してください。"
+                    )
+                    status_label.classes(replace="text-sm text-green-500")
+                upload_btn.enable()
+        except (RuntimeError, AttributeError):
+            timer.active = False
+
+    timer = ui.timer(0.5, poll, active=False)
+
+    upload_btn = ui.button(
+        "TikTok Inbox にアップロード",
+        on_click=lambda: (timer.activate(), do_upload()),
+        color="primary",
+    )
 
 
 def _show_youtube_upload(story):
