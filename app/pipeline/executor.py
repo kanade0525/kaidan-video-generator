@@ -168,8 +168,18 @@ class Pipeline:
     def recover_stale(self) -> int:
         return db.recover_running()
 
-    def run_single(self, story_id: int, target_stage: str, progress_callback=None) -> None:
-        """Run a single story through a stage synchronously (for retry from UI)."""
+    def run_single(
+        self,
+        story_id: int,
+        target_stage: str,
+        progress_callback=None,
+        **stage_kwargs,
+    ) -> None:
+        """Run a single story through a stage synchronously (for retry from UI).
+
+        Extra `stage_kwargs` are forwarded to the stage function (e.g.
+        `use_ai_proofread=True` for the text stage).
+        """
         story = db.get_story_by_id(story_id)
         if not story:
             return
@@ -180,7 +190,7 @@ class Pipeline:
 
         db.mark_running(story.id, target_stage)
         try:
-            func(story, progress_callback=progress_callback)
+            func(story, progress_callback=progress_callback, **stage_kwargs)
             db.update_stage(story.id, target_stage)
             db.add_log("INFO", f"Manual run completed: {story.title}", target_stage, story.id)
         except Exception as e:

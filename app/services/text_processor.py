@@ -11,18 +11,132 @@ log = get_logger("kaidan.text")
 
 
 @with_retry(max_attempts=3, base_delay=5.0)
-def process_text(text: str, prompt_template: str | None = None, model: str | None = None) -> str:
+def process_text(
+    text: str,
+    prompt_template: str | None = None,
+    model: str | None = None,
+    use_ai_proofread: bool = False,
+) -> str:
     """Convert kanji text to hiragana.
 
     Strategy: MeCab-first deterministic conversion (kanji→reading, particle
     は→わ, へ→え). If MeCab is unavailable, falls back to LLM-only conversion.
+
+    When `use_ai_proofread=True`, the MeCab output is post-processed by
+    Gemini to fix idiomatic readings, 連濁, and other patterns the
+    dictionary missed. The AI sees the raw kanji text as reference but is
+    instructed to preserve kept-as-kanji surfaces and structural newlines.
     """
     mecab_result = _mecab_to_hiragana(text)
     if mecab_result is not None:
+        if use_ai_proofread:
+            try:
+                return _ai_proofread(mecab_result, text)
+            except Exception as e:
+                log.warning("AI校正に失敗、MeCab結果をそのまま返す: %s", e)
+                return mecab_result
         return mecab_result
 
     log.warning("MeCab先行変換が失敗したためLLMフォールバックに切替")
     return _llm_convert(text, prompt_template, model)
+
+
+_GEMINI_TRANSIENT_PATTERNS = ("500", "INTERNAL", "503", "UNAVAILABLE", "504", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED")
+
+
+def _gemini_generate_with_retry(client, model_name: str, prompt: str, max_attempts: int = 4):
+    """Call Gemini generate_content with retry on transient server errors.
+
+    Gemini の SDK は 500 INTERNAL / 503 UNAVAILABLE / DEADLINE_EXCEEDED 等を
+    一過性として返すことがある(Google 自身が retry を推奨)。指数バックオフで
+    最大 max_attempts 回まで再試行。永続的な失敗はそのまま再送出して
+    呼び出し元のフォールバックロジックに委ねる。
+    """
+    import time
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return client.models.generate_content(model=model_name, contents=prompt)
+        except Exception as e:
+            msg = str(e)
+            transient = any(p in msg for p in _GEMINI_TRANSIENT_PATTERNS)
+            if not transient or attempt == max_attempts:
+                raise
+            last_exc = e
+            delay = min(2.0 * (2 ** (attempt - 1)), 30.0)
+            log.warning(
+                "Gemini generate_content 一過性エラー (試行 %d/%d): %s — %.1fs後再試行",
+                attempt, max_attempts, msg[:120], delay,
+            )
+            time.sleep(delay)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("unreachable")
+
+
+def _ai_proofread(processed_text: str, raw_text: str) -> str:
+    """Send MeCab-processed hiragana text + raw kanji to Gemini for proofreading.
+
+    Returns the corrected text. On failure, the caller falls back to the
+    uncorrected MeCab output. The prompt is taken from `cfg_get("ai_proofread_prompt")`
+    so it can be tuned from the settings UI.
+    """
+    model_name = cfg_get("text_model") or "gemini-2.5-flash"
+    if model_name.startswith("gpt"):
+        # 使われる場面が限定的なので OpenAI 経路はサポート外
+        log.warning("AI校正はGeminiのみ対応 (現在: %s)、スキップ", model_name)
+        return processed_text
+
+    prompt_template = cfg_get("ai_proofread_prompt") or ""
+    if "{raw}" not in prompt_template or "{processed}" not in prompt_template:
+        log.warning("ai_proofread_prompt に {raw} / {processed} がない、MeCab結果を返す")
+        return processed_text
+
+    client = get_gemini_text()
+    prompt = prompt_template.format(raw=raw_text, processed=processed_text)
+    response = _gemini_generate_with_retry(client, model_name, prompt)
+    result = (response.text or "").strip()
+    # コードブロック等の冗長要素を除去
+    result = re.sub(r"```[\s\S]*?```", "", result).strip()
+    if not result:
+        log.warning("AI校正の応答が空、MeCab結果を返す")
+        return processed_text
+
+    # Gemini が NFD (分解形: は+゛) で出力するケースがあり、後段の規則適用で
+    # ば→わ+゛ の破損が発生する。NFC で再合成しておく(わ゙→ば等に戻る)。
+    import unicodedata
+    result = unicodedata.normalize("NFC", result)
+
+    # ガード1: NFC化後も結合用濁点/半濁点が孤立して残る場合は破損とみなす
+    # (前文字が結合不能な場合)
+    if "゙" in result or "゚" in result:
+        log.warning("AI校正出力に孤立した結合用濁点が残存、MeCab結果を返す")
+        return processed_text
+
+    # ガード2: CJK互換・部首補助等の異体字ブロックを含む場合は破損とみなす
+    if re.search(r"[⺀-⻿⼀-⿟豈-﫿]", result):
+        log.warning("AI校正出力に異体字が混入、MeCab結果を返す")
+        return processed_text
+
+    # ガード3: 行数が大きく変わっている場合は信用しない (構造破壊の保険)
+    raw_lines = processed_text.count("\n")
+    new_lines = result.count("\n")
+    if abs(raw_lines - new_lines) > max(2, raw_lines // 5):
+        log.warning(
+            "AI校正で改行数が大きく変動 (%d → %d)、MeCab結果を採用", raw_lines, new_lines
+        )
+        return processed_text
+
+    # ガード4: 文字数が大幅に変動した場合(±30%超)も破損とみなす
+    if len(result) < len(processed_text) * 0.7 or len(result) > len(processed_text) * 1.3:
+        log.warning(
+            "AI校正で文字数が大幅変動 (%d → %d)、MeCab結果を採用",
+            len(processed_text), len(result),
+        )
+        return processed_text
+
+    log.info("AI校正完了 (%d文字 → %d文字)", len(processed_text), len(result))
+    return result
 
 
 def _llm_convert(text: str, prompt_template: str | None, model: str | None) -> str:
@@ -64,6 +178,15 @@ def _llm_convert(text: str, prompt_template: str | None, model: str | None) -> s
 # Surface → hiragana overrides for readings MeCab gets stylistically wrong.
 _DEFAULT_READING_OVERRIDES: dict[str, str] = {
     "私": "わたし",  # MeCab default: わたくし
+    # 「表」は単独だと「ひょう」と誤読される。物体の「表面/おもて側」の意味が
+    # 物語文脈ではほぼ全てなので おもて 固定。代表/表彰/表面/表現 等の複合語は
+    # MeCabが1トークンとして扱うため、surface単位の override は影響しない。
+    "表": "おもて",
+    # 「日本」は MeCab 既定で ニッポン だが、現代日本語の口語では にほん が標準。
+    # 日本酒/日本海/日本国/日本一/日本人形 等の複合では 日本 が独立トークン化される
+    # ので surface 一致でひらがな置換される。日本人/日本中/日本語 は 人/中/語 側の
+    # 読みが文脈依存なので個別に compound_replacements で対応。
+    "日本": "にほん",
 }
 
 # Compound words that MeCab splits into multiple tokens, producing wrong
@@ -128,9 +251,70 @@ _DEFAULT_COMPOUND_REPLACEMENTS: dict[str, str] = {
     # 「床に就く」(就寝の意) の 床 は とこ、就 は つ。MeCab は 床→ユカ、
     # 就く→ズク と誤解析する。床に就(く/き/いた) すべてに効くよう接頭3文字で置換。
     "床に就": "とこにつ",
+    # ひらがな「床につ(く/き/いて/いた)」も同じ就寝慣用句。MeCab は 床→ユカ と
+    # 誤読するので とこ に置換。「床につく」は現代日本語ではほぼ就寝の意。
+    "床につ": "とこにつ",
     # 「非ず」(古語「あらず」) は MeCab が ヒ+ズ と誤読する。
     # 現代日本語で「非ず」と書かれる場合は 99% 古語の「あらず」読み。
     "非ず": "あらず",
+    # 四字熟語「二束三文」(にそくさんもん)。MeCab は 二/束/三/文 と4分割して
+    # ニ・タバ・サン・ブン と誤読する。
+    "二束三文": "にそくさんもん",
+    # 「見様見真似」(みようみまね)。MeCab は 見/様/見真似 と分割して
+    # ミ・サマ・ミマネ と誤読する。
+    "見様見真似": "みようみまね",
+    # 「心做し(か)」(こころなし(か))。做 は 作 の異体字で MeCab に読みがなく、
+    # 漢字のまま残ってしまう。
+    "心做し": "こころなし",
+    # 「何でも」(なんでも)。VOICEVOX は漢字「何」を 何か/何が/何と では正しく
+    # ナニ と読むが、「何でも」だけは ナニデモ と誤読する(本来 ナンデモ)。
+    # ひらがな「なんでも」に展開して回避。
+    "何でも": "なんでも",
+    # 「日本語」(にほんご)。MeCab は 日本 を国名としてニッポンで返すため、
+    # 日本+語 → にっぽんご になる。日常用法は にほんご が標準。
+    "日本語": "にほんご",
+    # 「ぎゅうぎゅう詰め」は連濁で づめ（ぎゅうぎゅうづめ）。MeCab は 詰め 単独の
+    # 読み ツメ を返すので連濁が起きない。
+    "ぎゅうぎゅう詰め": "ぎゅうぎゅうづめ",
+    # 四字熟語「二人三脚」は ににんさんきゃく が定着した読み。MeCab は 二人(フタリ)
+    # + 三脚(サンキャク) と分割し、フタリ サンキャク になる。
+    "二人三脚": "ににんさんきゃく",
+    # 「二人組」は ふたりぐみ。VOICEVOX は漢字を渡すと ニニングミ と硬く読むが、
+    # 物語文脈では ふたりぐみ が自然。MeCab は フタリグミ を1トークンで返すが
+    # counter span 保護で漢字保持されてしまうため、先に ふたりぐみ に置換する。
+    "二人組": "ふたりぐみ",
+    # 「日本人形」は「日本+人形」(にんぎょう)で 1単語。「日本人」置換が先に
+    # マッチして「にほんじん形」になるのを防ぐため、「日本人」より長い「日本人形」
+    # をdict順で前に置く（Python3.7+ は挿入順保持）。
+    "日本人形": "にほんにんぎょう",
+    # 国名+人 は MeCab が 国名+「人(ニン)」と分割して にん 読みになるが、
+    # 自然な現代日本語では じん が正しい (日本人=にほんじん, 外国人=がいこくじん 等)。
+    "日本人": "にほんじん",
+    "外国人": "がいこくじん",
+    "アメリカ人": "アメリカじん",
+    "中国人": "ちゅうごくじん",
+    "韓国人": "かんこくじん",
+    # 「日本中」は にほんじゅう (国全体の意)。MeCab は 日本(ニッポン)+中(チュウ)
+    # と分解する。
+    "日本中": "にほんじゅう",
+    # 「一点張り」は いってんばり (促音化)。MeCab は 一(イチ)+点(テン)+張り(バリ)
+    # と分解して いちてんばり にしてしまう。
+    "一点張り": "いってんばり",
+    # 「仏間」は ぶつま。単独/「に」前置時は MeCab が 仏間(ブツマ) と1トークン化
+    # するが、「で」前置時など特定文脈で 仏(フツ)+間(カン) に分解されて ふつかん
+    # と誤読する。常時 ぶつま に固定。
+    "仏間": "ぶつま",
+    # 「話大〜」(話大好き/話大事 等) は VOICEVOX が 話(漢字)+だい(ひらがな) を
+    # 「話題(ワダイ)」と誤合成する。読点を挿入して境界を明示する。
+    "話大": "話、大",
+    # 「四十九日」(仏教の四十九日忌) は しじゅうくにち と読むのが慣用。
+    # VOICEVOX は漢字「四十九日」を ヨンジュウクニチ と読んでしまう
+    # (一般数詞読み)。ひらがなに展開して矯正。
+    "四十九日": "しじゅうくにち",
+    # 「部屋中」(部屋全体) の 中 は じゅう (中=throughout)。MeCab は チュウ を返す
+    # ので「へやちゅう」になり、加えて VOICEVOX が「へ」を助詞え誤解析して
+    # 「ながらへやちゅう」を「ナガラエ・ヤチュウ」(=夜中) と読んで意味が壊れる。
+    "部屋中": "部屋じゅう",
 }
 
 # Kanji to keep as-is (skip hiragana conversion) because VOICEVOX mis-reads
@@ -171,6 +355,32 @@ _DEFAULT_KEEP_AS_KANJI: set[str] = {
     # ことがある。VOICEVOX は漢字なら全文脈で正読 (後ろ→ウシロ, 後から→
     # アトカラ, 最後→サイゴ, 午後→ゴゴ, 後半→コオハン)。
     "後",
+    # 離れ: ひらがな「はなれ」が助詞「に/で」の直後にあると VOICEVOX が
+    # 「は」を助詞「ワ」と誤解析し「ニワ・ナレテ」(ハ音欠落)になる。surface
+    # 「離れ」(連用形: 離れて/離れた/離れない) と「離れる」(終止形/連体形) を
+    # 漢字保持して回避。
+    "離れ",
+    "離れる",
+    # 吐き気: ひらがな「はきけ」が助詞「と/に」の直後にあると VOICEVOX が
+    # 「は」を助詞「ワ」と誤解析し「ト・ワキケ」(ハ音欠落)になる。
+    "吐き気",
+    # 入る: ひらがな「はいる」が「て+はいる」(...あけてはいる) の文末文脈で
+    # VOICEVOX が「は」を助詞「ワ」と誤解析し「アケテ・ワ・イル」(意味壊れ)になる。
+    # 連用形 入っ は既に保持済み。終止形 入る も追加。
+    "入る",
+    # 神奈川: ひらがな「かながわけん」が VOICEVOX で カナガ+ワケン に分割され
+    # 「がわ」を が(particle)+わ(particle) と誤解析する。固有名詞は漢字保持。
+    "神奈川",
+    # 試験: 動物試験場 のような複合語で「しけんじょう」になると VOICEVOX が
+    # ドオブツ+シ+ケンジョオ と妙に分解する。試験 を漢字保持して
+    # ドオブツシケン+ジョオ に矯正。
+    "試験",
+    # 髪: ひらがな「かみ」が「と+かみ」(見ると髪) で VOICEVOX が と+か(particle)+み
+    # に分割される(「とか」=列挙助詞と誤認)。漢字保持で境界明示。
+    "髪",
+    # 保管: ひらがな「ほかんこ」が VOICEVOX で ホ+カンコ と妙に分割される
+    # (おそらく内部辞書の干渉)。保管 を漢字保持して境界明示。
+    "保管",
 }
 
 # Counter kanji whose correct reading depends on 促音/連濁/lexicalized rules
@@ -183,6 +393,10 @@ _COUNTER_KANJI: set[str] = {
     "分", "週", "階", "度", "枚", "台", "冊", "歳", "才", "歩",
     "杯", "軒", "着", "組", "口", "戸", "袋", "缶", "つ", "番",
     "秒", "円", "通",
+    # 体: 霊体/人形/仏像/遺体 等の助数詞。MeCab は 「四体」を 四(シ)+体(タイ)
+    # に分解して「したい」を出力するが、それが「死体」と同音になり怪談文脈で
+    # 致命的に紛らわしい。漢字保持で VOICEVOX に「ヨンタイ」と読ませる。
+    "体",
 }
 
 
@@ -208,14 +422,35 @@ def _mecab_to_hiragana(text: str) -> str | None:
 
     Uses unidic-lite explicitly to keep tokenization stable across environments
     where unidic full may be installed (e.g., for accent estimation). Without
-    this, verb 連用形 (踊って) get re-tokenized as 基本形 + て (踊る + て)
+    this, verb 連用形 (踊って) get re-tokenized as 基本形 + te (踊る + て)
     causing output like 「おどるて」 instead of 「おどって」.
+
+    Newlines in the input are preserved by processing each line separately —
+    MeCab silently drops \n during tokenization, so single-pass conversion
+    would collapse multi-paragraph stories into one line.
     """
+    try:
+        import MeCab  # noqa: F401
+        import unidic_lite  # noqa: F401
+    except ImportError:
+        log.warning("MeCab未インストール")
+        return None
+
+    if "\n" in text:
+        parts = text.split("\n")
+        converted = [_mecab_to_hiragana_segment(p) for p in parts]
+        if any(c is None for c in converted):
+            return None
+        return "\n".join(converted)  # type: ignore[arg-type]
+    return _mecab_to_hiragana_segment(text)
+
+
+def _mecab_to_hiragana_segment(text: str) -> str | None:
+    """Convert a single line (no newline) to hiragana via MeCab."""
     try:
         import MeCab
         import unidic_lite
     except ImportError:
-        log.warning("MeCab未インストール")
         return None
 
     # Apply furigana annotations 「漢字（ふりがな）」 first: author-provided

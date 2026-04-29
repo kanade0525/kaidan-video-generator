@@ -159,6 +159,16 @@ def settings_page():
             "テキスト処理プロンプト", value=config.get("text_prompt", "")
         ).classes("w-full")
 
+        ai_proofread_prompt = ui.textarea(
+            "AI校正プロンプト (Gemini, MeCab後段)",
+            value=config.get("ai_proofread_prompt", ""),
+        ).classes("w-full").props("autogrow")
+        ui.label(
+            "テキスト再処理時にチェックボックスをONにした場合、MeCab結果と原文が "
+            "{processed} と {raw} に展開されて Gemini に渡されます。"
+            "プレースホルダーが欠けるとAI校正は無効化されます。"
+        ).classes("text-xs text-gray-500")
+
     # Narration dictionary settings
     with ui.card().classes("w-full mb-4 p-4"):
         ui.label("朗読辞書").classes("text-lg font-bold mb-2")
@@ -428,6 +438,7 @@ def settings_page():
             "gemini_model": gemini_model.value,
             "max_chunk": int(max_chunk.value),
             "text_prompt": text_prompt.value,
+            "ai_proofread_prompt": ai_proofread_prompt.value,
             "youtube_title_template": yt_title_tmpl.value,
             "youtube_category_id": yt_category.value,
             "youtube_privacy_status": yt_privacy.value,
