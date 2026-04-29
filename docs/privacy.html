@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>プライバシーポリシー | hyakkirodoku</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic", sans-serif; max-width: 720px; margin: 2em auto; padding: 0 1em; line-height: 1.7; color: #333; }
+h1 { border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+h2 { margin-top: 2em; }
+.lang { text-align: right; color: #888; font-size: 0.9em; }
+hr { margin: 3em 0; }
+</style>
+</head>
+<body>
+
+<h1>プライバシーポリシー / Privacy Policy</h1>
+<p class="lang">最終更新: 2026年4月29日 / Last updated: April 29, 2026</p>
+
+<h2>1. 取り扱う情報</h2>
+<p>
+hyakkirodoku (以下「本アプリ」) は、開発者個人のローカル環境で動作するツールです。
+本アプリは TikTok ログイン Kit および Content Posting API を利用するため、以下の情報を扱います。
+</p>
+<ul>
+  <li>TikTok アクセストークン (OAuth 認証で取得、ローカルファイル <code>data/tiktok_token.json</code> に保存)</li>
+  <li>認証済み TikTok アカウントの公開ユーザー名 (UI 表示用に <code>user.info.basic</code> スコープで取得)</li>
+</ul>
+
+<h2>2. 情報の利用目的</h2>
+<p>
+取得した情報は、開発者本人のアカウントへ生成済み動画を Inbox (ドラフト) としてアップロードする目的にのみ使用されます。
+第三者への提供・販売・分析等の目的では一切利用しません。
+</p>
+
+<h2>3. 情報の保管</h2>
+<p>
+すべての情報は本アプリの動作する開発者のローカルマシン内にのみ保存されます。
+外部サーバーへの送信・収集は行いません (TikTok API への通信を除く)。
+</p>
+
+<h2>4. 第三者提供</h2>
+<p>本アプリは取得した情報を第三者に提供することはありません。</p>
+
+<h2>5. 情報の削除</h2>
+<p>
+ユーザー (開発者本人) は、ローカルの <code>data/tiktok_token.json</code> を削除することで、保存されているアクセストークンを完全に削除できます。
+TikTok アカウント側からの認可取り消しは TikTok のアプリ管理画面から行えます。
+</p>
+
+<h2>6. 改定</h2>
+<p>本ポリシーは予告なく改定される場合があります。改定後は本ページに掲載された時点で効力を生じます。</p>
+
+<h2>7. お問い合わせ</h2>
+<p>本ポリシーに関するお問い合わせは、本アプリの GitHub リポジトリの Issue 機能をご利用ください。</p>
+
+<hr>
+
+<h1>Privacy Policy (English)</h1>
+
+<h2>1. Information We Handle</h2>
+<p>
+hyakkirodoku (the "App") runs locally in the developer's personal environment.
+Because the App uses the TikTok Login Kit and Content Posting API, it handles the following information:
+</p>
+<ul>
+  <li>TikTok access token (obtained via OAuth, stored locally in <code>data/tiktok_token.json</code>)</li>
+  <li>Public TikTok username (obtained via <code>user.info.basic</code> scope, used only for in-app display)</li>
+</ul>
+
+<h2>2. Purpose of Use</h2>
+<p>
+The information is used solely to upload generated videos as Inbox (draft) to the developer's own TikTok account.
+We do not share, sell, or analyze information for any third-party purpose.
+</p>
+
+<h2>3. Data Storage</h2>
+<p>
+All information is stored only on the developer's local machine where the App runs.
+We do not transmit or collect data to any external server (other than communications with the TikTok API).
+</p>
+
+<h2>4. Third-Party Disclosure</h2>
+<p>The App does not disclose obtained information to any third party.</p>
+
+<h2>5. Deletion</h2>
+<p>
+The user (the developer) can fully delete the stored access token by removing the local file <code>data/tiktok_token.json</code>.
+Authorization can also be revoked from the user's TikTok account management screen.
+</p>
+
+<h2>6. Updates</h2>
+<p>This policy may be updated without prior notice. Updates take effect when posted on this page.</p>
+
+<h2>7. Contact</h2>
+<p>For inquiries regarding this policy, please use the Issue tracker of the App's GitHub repository.</p>
+
+</body>
+</html>
