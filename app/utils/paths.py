@@ -65,3 +65,29 @@ def video_path(title: str, content_type: str = "long") -> Path:
 
 def timestamps_path(title: str, content_type: str = "long") -> Path:
     return story_dir(title, content_type) / "timestamps.json"
+
+
+def bundle_dir(name: str) -> Path:
+    """Get (and create) the output directory for a bundle (詰め合わせ動画).
+
+    Bundles concatenate multiple long stories with OP/jingles/ED into a
+    1-2 hour compilation video.
+    """
+    d = OUTPUT_BASE / "bundles" / safe_dirname(name)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def bundle_video_path(name: str) -> Path:
+    return bundle_dir(name) / f"{safe_dirname(name)}.mp4"
+
+
+def bundle_segments_dir(name: str) -> Path:
+    """Working directory for per-story intermediate segments."""
+    d = bundle_dir(name) / "segments"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def bundle_manifest_path(name: str) -> Path:
+    return bundle_dir(name) / "manifest.json"

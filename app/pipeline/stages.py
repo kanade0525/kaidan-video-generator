@@ -214,12 +214,16 @@ def _burn_long_scroll_subtitles(
     final_output: Path,
     title_card: Path | None,
     title_audio: Path | None,
+    include_op_offset: bool = True,
 ) -> None:
     """Burn a full-screen scrolling subtitle (original text) onto the long video.
 
     Uses the same `generate_scroll_image` + overlay approach as Shorts, but
     with 1920x1080 coordinates. Timing is length-proportional across the whole
     narration, avoiding chunk-to-chunk drift from hiragana/kanji length mismatch.
+
+    `include_op_offset=False` is used when the segment is built without OP
+    (e.g. bundle segments where OP is added once at the bundle level).
 
     Falls back to copying `raw_video` → `final_output` if the required inputs
     (original chunks, narration audio) are missing.
@@ -251,9 +255,10 @@ def _burn_long_scroll_subtitles(
     # Scroll timing spans the entire narration.
     # Offset = OP + title_clip + leading_silence
     offset = 0.0
-    op_path = cfg_get("op_path")
-    if op_path and Path(op_path).exists():
-        offset += get_audio_duration(Path(op_path))
+    if include_op_offset:
+        op_path = cfg_get("op_path")
+        if op_path and Path(op_path).exists():
+            offset += get_audio_duration(Path(op_path))
     if title_card and title_card.exists() and title_audio and title_audio.exists():
         offset += 1.0 + get_audio_duration(title_audio) + 1.0
     offset += cfg_get("leading_silence") if cfg_get("leading_silence") is not None else 2.0

@@ -1,0 +1,268 @@
+"""Tests for the bundle (詰め合わせ動画) generator orchestration.
+
+The generator stitches multiple long-story segments together with OP/jingles/ED.
+Heavy ffmpeg work is mocked — these tests verify the orchestration logic
+(file resolution, ordering, fallback when assets missing).
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+from app.models import Story
+
+
+@pytest.fixture
+def fake_story_factory(tmp_path):
+    """Create fake long-story output dirs with the required intermediate files."""
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+
+    def make(title: str, story_id: int = 1) -> Story:
+        sdir = output_root / title
+        sdir.mkdir()
+        (sdir / "images").mkdir()
+        # Title card + a couple of scenes
+        (sdir / "images" / "000_title_card.png").write_bytes(b"fake-png")
+        (sdir / "images" / "scene_001.png").write_bytes(b"fake-png")
+        (sdir / "images" / "scene_002.png").write_bytes(b"fake-png")
+        # Narrations
+        (sdir / "narration_complete.wav").write_bytes(b"fake-wav")
+        (sdir / "title_narration.wav").write_bytes(b"fake-wav")
+        # Original chunks (for scroll subtitle)
+        (sdir / "original_chunks.json").write_text(
+            json.dumps(["これは怪談の本文です。"]),
+            encoding="utf-8",
+        )
+        return Story(
+            id=story_id,
+            title=title,
+            url=f"https://example.test/{title}",
+            stage="video_complete",
+            content_type="long",
+        )
+
+    return make, output_root
+
+
+def _patch_paths(monkeypatch, output_root: Path):
+    """Make app.utils.paths point at the test output_root."""
+    import app.utils.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "OUTPUT_BASE", output_root)
+
+
+def test_build_bundle_assembles_op_segments_jingles_ed(monkeypatch, fake_story_factory):
+    """Bundle should assemble [OP, seg1, jingle, seg2, jingle, ..., segN, ED]."""
+    make_story, output_root = fake_story_factory
+    _patch_paths(monkeypatch, output_root)
+
+    s1 = make_story("story_one", story_id=1)
+    s2 = make_story("story_two", story_id=2)
+    s3 = make_story("story_three", story_id=3)
+
+    op = output_root / "op.mp4"
+    op.write_bytes(b"op")
+    ed = output_root / "ed.mp4"
+    ed.write_bytes(b"ed")
+    jingle = output_root / "jingle.mp3"
+    jingle.write_bytes(b"jingle")
+
+    # Capture the inputs given to ffmpeg helpers
+    from app.services import bundle_generator
+
+    create_calls = []
+    burn_calls = []
+    concat_calls: list[tuple[list[Path], Path]] = []
+
+    def fake_create_video(images, narration, output_path, **kwargs):
+        # Verify OP/ED disabled per-segment
+        assert kwargs.get("include_op") is False
+        assert kwargs.get("include_ed") is False
+        assert kwargs.get("include_title_card") is True
+        create_calls.append(output_path)
+        Path(output_path).write_bytes(b"raw-segment")
+        return Path(output_path)
+
+    def fake_burn(story, raw_video, final_output, title_card, title_audio,
+                  include_op_offset=True):
+        # Bundle segments must NOT include OP offset for subtitle timing
+        assert include_op_offset is False
+        burn_calls.append((story.title, final_output))
+        Path(final_output).write_bytes(b"final-segment")
+
+    def fake_make_jingle(path: Path, *, target_width: int, target_height: int) -> Path:
+        # Should not be called when a real jingle file is provided
+        path.write_bytes(b"silent-jingle")
+        return path
+
+    def fake_concat(parts, output, **kwargs):
+        concat_calls.append((list(parts), Path(output)))
+        Path(output).write_bytes(b"final-bundle")
+
+    monkeypatch.setattr(bundle_generator, "create_video", fake_create_video)
+    monkeypatch.setattr(bundle_generator, "_burn_long_scroll_subtitles", fake_burn)
+    monkeypatch.setattr(bundle_generator, "_make_silent_jingle", fake_make_jingle)
+    monkeypatch.setattr(bundle_generator, "concat_videos", fake_concat)
+
+    bundle_path = bundle_generator.build_bundle(
+        stories=[s1, s2, s3],
+        bundle_name="my_bundle",
+        op_path=op,
+        ed_path=ed,
+        jingle_path=jingle,
+    )
+
+    # 3 segments built
+    assert len(create_calls) == 3
+    assert len(burn_calls) == 3
+
+    # concat called once with the right ordering
+    assert len(concat_calls) == 1
+    parts, _output = concat_calls[0]
+    # Expected ordering: OP, seg1, jingle, seg2, jingle, seg3, ED  →  7 items
+    assert len(parts) == 7
+    assert parts[0] == op
+    assert parts[-1] == ed
+    # Jingle appears at index 2 and 4 (between segments)
+    assert parts[2] == jingle
+    assert parts[4] == jingle
+    # Bundle file path returned correctly
+    assert bundle_path.name.endswith(".mp4")
+
+
+def test_build_bundle_single_story_has_no_jingle(monkeypatch, fake_story_factory):
+    """Single-story bundle should produce [OP, seg1, ED] with no jingle."""
+    make_story, output_root = fake_story_factory
+    _patch_paths(monkeypatch, output_root)
+
+    s1 = make_story("only_story")
+    op = output_root / "op.mp4"
+    op.write_bytes(b"op")
+    ed = output_root / "ed.mp4"
+    ed.write_bytes(b"ed")
+    jingle = output_root / "jingle.mp3"
+    jingle.write_bytes(b"jingle")
+
+    from app.services import bundle_generator
+
+    concat_calls: list[tuple[list[Path], Path]] = []
+
+    def noop_create(images, narration, output_path, **kwargs):
+        Path(output_path).write_bytes(b"x")
+        return Path(output_path)
+
+    def noop_burn(*args, **kwargs):
+        # final_output is third positional arg
+        Path(args[2]).write_bytes(b"x")
+
+    def noop_concat(parts, output, **kwargs):
+        concat_calls.append((list(parts), Path(output)))
+        Path(output).write_bytes(b"x")
+
+    monkeypatch.setattr(bundle_generator, "create_video", noop_create)
+    monkeypatch.setattr(bundle_generator, "_burn_long_scroll_subtitles", noop_burn)
+    monkeypatch.setattr(bundle_generator, "concat_videos", noop_concat)
+
+    bundle_generator.build_bundle(
+        stories=[s1],
+        bundle_name="single_bundle",
+        op_path=op, ed_path=ed, jingle_path=jingle,
+    )
+
+    parts, _ = concat_calls[0]
+    assert parts == [op, parts[1], ed]
+
+
+def test_build_bundle_no_jingle_path_uses_silent_fallback(monkeypatch, fake_story_factory):
+    """If jingle_path is None, a silent 0.5s jingle is generated as fallback."""
+    make_story, output_root = fake_story_factory
+    _patch_paths(monkeypatch, output_root)
+
+    s1 = make_story("a")
+    s2 = make_story("b")
+    op = output_root / "op.mp4"
+    op.write_bytes(b"op")
+    ed = output_root / "ed.mp4"
+    ed.write_bytes(b"ed")
+
+    from app.services import bundle_generator
+
+    silent_called = []
+
+    def fake_silent(path, *, target_width, target_height):
+        silent_called.append(path)
+        Path(path).write_bytes(b"silent")
+        return path
+
+    monkeypatch.setattr(bundle_generator, "create_video",
+                        lambda images, narration, output_path, **kw: Path(output_path).write_bytes(b"x") or Path(output_path))
+    monkeypatch.setattr(bundle_generator, "_burn_long_scroll_subtitles",
+                        lambda *a, **k: Path(a[2]).write_bytes(b"x"))
+    monkeypatch.setattr(bundle_generator, "_make_silent_jingle", fake_silent)
+    monkeypatch.setattr(bundle_generator, "concat_videos",
+                        lambda parts, output, **kw: Path(output).write_bytes(b"x"))
+
+    bundle_generator.build_bundle(
+        stories=[s1, s2],
+        bundle_name="silent_bundle",
+        op_path=op, ed_path=ed, jingle_path=None,
+    )
+
+    # Silent jingle generated exactly once
+    assert len(silent_called) == 1
+
+
+def test_build_bundle_writes_manifest(monkeypatch, fake_story_factory):
+    """Manifest JSON records story order and metadata."""
+    make_story, output_root = fake_story_factory
+    _patch_paths(monkeypatch, output_root)
+
+    s1 = make_story("alpha", story_id=10)
+    s2 = make_story("beta", story_id=20)
+
+    from app.services import bundle_generator
+
+    monkeypatch.setattr(bundle_generator, "create_video",
+                        lambda images, narration, output_path, **kw: Path(output_path).write_bytes(b"x") or Path(output_path))
+    monkeypatch.setattr(bundle_generator, "_burn_long_scroll_subtitles",
+                        lambda *a, **k: Path(a[2]).write_bytes(b"x"))
+    monkeypatch.setattr(bundle_generator, "concat_videos",
+                        lambda parts, output, **kw: Path(output).write_bytes(b"x"))
+    monkeypatch.setattr(bundle_generator, "_make_silent_jingle",
+                        lambda p, **kw: Path(p).write_bytes(b"x") or p)
+
+    bundle_generator.build_bundle(
+        stories=[s1, s2],
+        bundle_name="manifest_bundle",
+        op_path=None, ed_path=None, jingle_path=None,
+    )
+
+    from app.utils.paths import bundle_manifest_path
+    manifest = json.loads(bundle_manifest_path("manifest_bundle").read_text())
+    assert manifest["name"] == "manifest_bundle"
+    assert [s["id"] for s in manifest["stories"]] == [10, 20]
+    assert [s["title"] for s in manifest["stories"]] == ["alpha", "beta"]
+
+
+def test_build_bundle_missing_narration_raises(monkeypatch, fake_story_factory):
+    """If a story is missing narration_complete.wav, raise a clear error."""
+    make_story, output_root = fake_story_factory
+    _patch_paths(monkeypatch, output_root)
+
+    s1 = make_story("incomplete")
+    # Remove narration to simulate incomplete story
+    (output_root / "incomplete" / "narration_complete.wav").unlink()
+
+    from app.services import bundle_generator
+
+    with pytest.raises(FileNotFoundError, match="narration"):
+        bundle_generator.build_bundle(
+            stories=[s1],
+            bundle_name="should_fail",
+            op_path=None, ed_path=None, jingle_path=None,
+        )

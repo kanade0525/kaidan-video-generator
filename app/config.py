@@ -50,6 +50,12 @@ _DEFAULTS = {
     "op_path": "",
     "op_fade_out": 1.0,
     "ed_path": "",
+    # 詰め合わせ動画 (Long を OP+ジングル区切り+ED で1〜2時間に束ねる長編)
+    # `assets/jingle/*.mp3` 等を指す。空ならジングル無しで story 間は無音直結。
+    "bundle_jingle_path": "",
+    # UI ガイド表示用 (秒)。目安より短すぎ/長すぎを警告する。
+    "bundle_target_duration_min": 3600,   # 1 時間
+    "bundle_target_duration_max": 7200,   # 2 時間
     "text_model": "gemini-2.5-flash",
     "gemini_model": "gemini-2.5-flash-lite",
     "max_chunk": 200,
