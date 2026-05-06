@@ -310,11 +310,21 @@ def _normalize_video(
     input_path: Path, output_path: Path,
     width: int = 1920, height: int = 1080, fps: int = 30,
 ) -> Path:
-    """Re-encode a video to exactly match target format for safe concat."""
+    """Re-encode a video to exactly match target format for safe concat.
+
+    Long-form 怪談 narration videos can exceed 30 min, and re-encoding with
+    libx264 preset=fast on a typical Docker container takes 4-8x realtime.
+    Scale timeout based on input duration (6x with 30min floor) so the
+    default 600s ffmpeg timeout doesn't kill the process mid-encode.
+    """
     vf = (
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={fps}"
     )
+    try:
+        timeout = max(1800, int(get_audio_duration(input_path) * 6))
+    except Exception:
+        timeout = 1800
     run_ffmpeg([
         "-i", str(input_path),
         "-vf", vf,
@@ -326,7 +336,7 @@ def _normalize_video(
         "-ac", "2",
         "-b:a", "192k",
         str(output_path),
-    ])
+    ], timeout=timeout)
     return output_path
 
 
