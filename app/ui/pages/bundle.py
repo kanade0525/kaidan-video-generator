@@ -35,14 +35,20 @@ def bundle_page():
     # State: selected story IDs in display order
     state: dict = {"order": []}  # list[story_id]
 
-    # Fetch candidates
-    stories = [
-        s for s in db.get_stories(stage="video_complete", content_type="long", limit=500)
-    ]
+    # Fetch candidates: 動画生成済以降 (video_complete, youtube_uploaded, report_submitted)
+    # YouTube投稿済 / 使用報告済も詰め合わせ素材として再利用可能。
+    bundle_eligible_stages = ("video_complete", "youtube_uploaded", "report_submitted")
+    stories: list = []
+    seen: set[int] = set()
+    for st in bundle_eligible_stages:
+        for s in db.get_stories(stage=st, content_type="long", limit=500):
+            if s.id not in seen:
+                stories.append(s)
+                seen.add(s.id)
     story_map = {s.id: s for s in stories}
 
     if not stories:
-        ui.label("video_complete 状態の Long ストーリーがありません。").classes(
+        ui.label("詰め合わせ素材になる Long ストーリーがありません (動画生成済以降)。").classes(
             "text-orange-500",
         )
         return
