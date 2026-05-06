@@ -18,6 +18,7 @@ def create_layout():
             ui.link("パイプライン", "/").classes(link_cls)
             ui.link("ストーリー管理", "/stories").classes(link_cls)
             ui.link("生成結果", "/results").classes(link_cls)
+            ui.link("詰め合わせ動画", "/long/bundle").classes(link_cls)
 
             ui.separator().classes("my-2 bg-gray-600")
 

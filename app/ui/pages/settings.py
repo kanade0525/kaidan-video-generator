@@ -144,6 +144,19 @@ def settings_page():
             ed_options, value=config.get("ed_path", ""), label="ED動画"
         ).classes("w-64")
 
+        # Bundle (詰め合わせ動画) settings
+        ui.separator().classes("my-2")
+        ui.label("詰め合わせ動画 (1〜2時間の長編)").classes("text-md font-semibold mt-2")
+        ui.label(
+            "Long作品を OP+ジングル区切り+ED で繋いだ長編動画。各ストーリー間の"
+            "切替音 (ジングル) を assets/jingle/ に置いて選択してください。",
+        ).classes("text-xs text-gray-500")
+        jingle_files = _get_jingle_files()
+        jingle_options = {"": "なし (無音0.5秒)", **{str(f): f.name for f in jingle_files}}
+        jingle_select = ui.select(
+            jingle_options, value=config.get("bundle_jingle_path", ""), label="ジングル",
+        ).classes("w-64")
+
     # Text settings
     with ui.card().classes("w-full mb-4 p-4"):
         ui.label("テキスト設定").classes("text-lg font-bold mb-2")
@@ -434,6 +447,7 @@ def settings_page():
             "op_path": op_select.value,
             "op_fade_out": op_fade.value,
             "ed_path": ed_select.value,
+            "bundle_jingle_path": jingle_select.value,
             "text_model": text_model_input.value,
             "gemini_model": gemini_model.value,
             "max_chunk": int(max_chunk.value),
@@ -487,3 +501,14 @@ def _get_video_files(subdir: str) -> list[Path]:
     if not d.exists():
         return []
     return sorted(d.glob("*.mp4"))
+
+
+def _get_jingle_files() -> list[Path]:
+    """List available jingle files (audio or short video clips)."""
+    d = Path("assets/jingle")
+    if not d.exists():
+        return []
+    files: list[Path] = []
+    for ext in ("*.mp3", "*.wav", "*.m4a", "*.mp4"):
+        files.extend(d.glob(ext))
+    return sorted(f for f in files if not f.name.startswith("."))
