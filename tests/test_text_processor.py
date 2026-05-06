@@ -613,6 +613,95 @@ class TestMecabToHiragana:
             tp._gemini_generate_with_retry(FakeClient(), "gemini-2.5-flash", "p", max_attempts=4)
         assert attempts["count"] == 1  # 1回でやめている
 
+    def test_ai_proofread_normalizes_standalone_dakuten(self, tmp_path, monkeypatch):
+        """標準濁点(U+309B)も結合用に揃えて NFC 再合成。は+゛→ばに戻る。"""
+        from app.services import text_processor as tp
+        import app.config as config_module
+        monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "c.toml")
+        config_module.save_config({
+            "text_model": "gemini-2.5-pro",
+            "ai_proofread_prompt": "{raw}|{processed}",
+        })
+        # は + U+309B (標準濁点) — 視覚的には ば
+        decomposed = "おわ" + "゛" + "さん"
+        # 注: わ + ゛ は再合成不能なのでガードで弾かれる(本来期待動作)
+        # は + ゛ なら ば に再合成され成功
+        decomposed_ok = "お" + "は" + "゛" + "さん"
+
+        class FakeResp:
+            text = decomposed_ok
+
+        class FakeModels:
+            def generate_content(self, model, contents):
+                return FakeResp()
+
+        class FakeClient:
+            models = FakeModels()
+
+        monkeypatch.setattr(tp, "get_gemini_text", lambda: FakeClient())
+
+        result = tp._ai_proofread("おばさん", "おばさん")
+        assert result == "おばさん"  # NFC 化で ば に再合成
+        assert "゛" not in result and "゙" not in result
+
+    def test_ai_proofread_rejects_orphan_standalone_dakuten(self, tmp_path, monkeypatch):
+        """わ + 標準濁点(U+309B) は再合成できないので破損として弾く。"""
+        from app.services import text_processor as tp
+        import app.config as config_module
+        monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "c.toml")
+        config_module.save_config({
+            "text_model": "gemini-2.5-pro",
+            "ai_proofread_prompt": "{raw}|{processed}",
+        })
+        # わ + 標準濁点 — 合成済み文字無し
+        orphan = "おわ" + "゛" + "さん"
+
+        class FakeResp:
+            text = orphan
+
+        class FakeModels:
+            def generate_content(self, model, contents):
+                return FakeResp()
+
+        class FakeClient:
+            models = FakeModels()
+
+        monkeypatch.setattr(tp, "get_gemini_text", lambda: FakeClient())
+
+        result = tp._ai_proofread("おばさん", "おばさん")
+        # 破損検出 → MeCab結果(=入力)を返す
+        assert result == "おばさん"
+
+    def test_ai_proofread_rejects_dakuon_reduction(self, tmp_path, monkeypatch):
+        """AI出力で濁音文字(ば/び等)が大幅減少していたらば→わ誤変換の可能性
+        ありとしてフォールバック。"""
+        from app.services import text_processor as tp
+        import app.config as config_module
+        monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "c.toml")
+        config_module.save_config({
+            "text_model": "gemini-2.5-pro",
+            "ai_proofread_prompt": "{raw}|{processed}",
+        })
+
+        # 入力 ば × 5、出力 わ × 5 (ば→わ 誤変換シナリオ、結合用濁点なし)
+        original = "ばらばらにばらまいたばあちゃん"
+        ai_corrupted = "わらわらにわらまいたわあちゃん"
+
+        class FakeResp:
+            text = ai_corrupted
+
+        class FakeModels:
+            def generate_content(self, model, contents):
+                return FakeResp()
+
+        class FakeClient:
+            models = FakeModels()
+
+        monkeypatch.setattr(tp, "get_gemini_text", lambda: FakeClient())
+        result = tp._ai_proofread(original, "バラバラにばらまいたばあちゃん")
+        # 濁音減少を検出してフォールバック (=入力を返す)
+        assert result == original
+
     def test_ai_proofread_rejects_orphan_dakuten(self, tmp_path, monkeypatch):
         """NFC化しても孤立した結合用濁点が残る場合(前文字が結合不能)は破損とみなす。"""
         from app.services import text_processor as tp
@@ -694,6 +783,31 @@ class TestMecabToHiragana:
         result = tp.process_text("今日は晴れ。", use_ai_proofread=True)
         # MeCab結果が返る
         assert "きょうわはれ" in result
+
+    def test_nfd_input_normalized(self):
+        """入力が NFD (分解形: か+゛など) で来てもNFC化されてMeCabが正しく処理。
+        スクレイピングソースが NFD で配信されているケースへの対策。"""
+        from app.services.text_processor import process_text
+        # NFD 形式で「うちのおばさんが」を作る (おば=お+は+゛, さんが=さん+か+゛)
+        nfd = "うちのお" + "は" + "゙" + "さん" + "か" + "゙" + "きた"
+        result = process_text(nfd)
+        # orphan 濁点が残っていない
+        assert "゙" not in result and "゛" not in result
+        # 正しく合成された結果を含む
+        assert "おばさん" in result or "おば" in result
+
+    def test_anonymization_circle_marks(self):
+        """伏せ字の ◯/〇/○ をまる読みに変換 (VOICEVOX で読み飛ばし/誤読を回避)。"""
+        # U+25EF LARGE CIRCLE — VOICEVOXが無視するので致命的
+        assert "まるまる" in _mecab_to_hiragana("◯◯さんの家")
+        # U+3007 IDEOGRAPHIC ZERO — VOICEVOXが ゼロ と読む
+        assert "まるまる" in _mecab_to_hiragana("〇〇さんの家")
+        # U+25CB WHITE CIRCLE
+        assert "まるまる" in _mecab_to_hiragana("○○さんの家")
+        # 3つ並びでも対応
+        assert "まるまるまる" in _mecab_to_hiragana("◯◯◯町の話")
+        # 単独
+        assert "まる" in _mecab_to_hiragana("◯町")
 
     def test_inflected_verb_reading(self):
         """活用形の動詞はsurface形の読みを使う（レンマ形ではない）。"""

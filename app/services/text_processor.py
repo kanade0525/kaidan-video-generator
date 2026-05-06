@@ -27,6 +27,16 @@ def process_text(
     dictionary missed. The AI sees the raw kanji text as reference but is
     instructed to preserve kept-as-kanji surfaces and structural newlines.
     """
+    # 入力が NFD (分解形: か+゛など) で来るとMeCabが正しくトークン化できず、
+    # 出力にも分解形 (例: か゛=2codepoint) が残ってしまう。スクレイピング元
+    # サイトのHTMLが NFD だったり、保存パイプラインで分解されるケースに対応。
+    # 標準/半角濁点も結合用に揃えてから NFC 正規化。
+    import unicodedata
+    text = (
+        text.replace("゛", "゙").replace("゜", "゚")
+        .replace("ﾞ", "゙").replace("ﾟ", "゚")
+    )
+    text = unicodedata.normalize("NFC", text)
     mecab_result = _mecab_to_hiragana(text)
     if mecab_result is not None:
         if use_ai_proofread:
@@ -102,15 +112,38 @@ def _ai_proofread(processed_text: str, raw_text: str) -> str:
         log.warning("AI校正の応答が空、MeCab結果を返す")
         return processed_text
 
-    # Gemini が NFD (分解形: は+゛) で出力するケースがあり、後段の規則適用で
-    # ば→わ+゛ の破損が発生する。NFC で再合成しておく(わ゙→ば等に戻る)。
+    # Gemini が NFD (分解形: は+゛) や 標準濁点 U+309B / 半角濁点 U+FF9E を
+    # 出力するケースがあり、後段の規則適用で ば→わ+濁点 の破損が発生する。
+    # 標準/半角濁点 を結合用濁点に揃えてから NFC で再合成 (わ゙→ば等に戻る)。
     import unicodedata
+    # 標準濁点(U+309B) → 結合用(U+3099)、標準半濁点(U+309C) → 結合用(U+309A)
+    # 半角濁点(U+FF9E) → 結合用、半角半濁点(U+FF9F) → 結合用
+    result = (
+        result
+        .replace("゛", "゙")
+        .replace("゜", "゚")
+        .replace("ﾞ", "゙")
+        .replace("ﾟ", "゚")
+    )
     result = unicodedata.normalize("NFC", result)
 
-    # ガード1: NFC化後も結合用濁点/半濁点が孤立して残る場合は破損とみなす
-    # (前文字が結合不能な場合)
-    if "゙" in result or "゚" in result:
-        log.warning("AI校正出力に孤立した結合用濁点が残存、MeCab結果を返す")
+    # ガード1: NFC化後も濁点/半濁点系コードポイントが孤立して残る場合は破損
+    # とみなす (前文字が結合不能 or 元から不正配置)
+    _DAKUTEN_CODEPOINTS = "゙゚゛゜ﾞﾟ"
+    if any(ch in result for ch in _DAKUTEN_CODEPOINTS):
+        log.warning("AI校正出力に孤立した濁点系文字が残存、MeCab結果を返す")
+        return processed_text
+
+    # ガード1.5: ば/び/ぶ/べ/ぼ が AI出力で大幅に減っていたら、ば→わ 誤変換が
+    # 行われた可能性が高い (AI が は→わ 規則を ば内部の は にも誤適用)。
+    _DAKUON_CHARS = "がぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポ"
+    in_dakuon = sum(processed_text.count(c) for c in _DAKUON_CHARS)
+    out_dakuon = sum(result.count(c) for c in _DAKUON_CHARS)
+    if in_dakuon > 0 and out_dakuon < in_dakuon * 0.9:
+        log.warning(
+            "AI校正で濁音文字が大幅減少 (%d → %d)、ば→わ誤変換の可能性、MeCab結果を返す",
+            in_dakuon, out_dakuon,
+        )
         return processed_text
 
     # ガード2: CJK互換・部首補助等の異体字ブロックを含む場合は破損とみなす
@@ -257,6 +290,21 @@ _DEFAULT_COMPOUND_REPLACEMENTS: dict[str, str] = {
     # 「非ず」(古語「あらず」) は MeCab が ヒ+ズ と誤読する。
     # 現代日本語で「非ず」と書かれる場合は 99% 古語の「あらず」読み。
     "非ず": "あらず",
+    # 伏せ字 (匿名化プレースホルダー) のまる読み。3種類の Unicode 円文字に対応:
+    #   ◯ U+25EF (LARGE CIRCLE)         — VOICEVOX が完全に無視 (致命的)
+    #   〇 U+3007 (IDEOGRAPHIC ZERO)    — VOICEVOX が ゼロ と読む (誤り)
+    #   ○ U+25CB (WHITE CIRCLE)          — VOICEVOX が マル と読む (これだけ自然)
+    # いずれも怪談で人名隠しに使われるので、まる×N に統一して読み上げる。
+    # 順序重要: 長い ◯◯ を先に置換してから単独 ◯ を処理 (奇数個ケース対応)。
+    "◯◯◯": "まるまるまる",
+    "◯◯": "まるまる",
+    "◯": "まる",
+    "〇〇〇": "まるまるまる",
+    "〇〇": "まるまる",
+    "〇": "まる",
+    "○○○": "まるまるまる",
+    "○○": "まるまる",
+    "○": "まる",
     # 四字熟語「二束三文」(にそくさんもん)。MeCab は 二/束/三/文 と4分割して
     # ニ・タバ・サン・ブン と誤読する。
     "二束三文": "にそくさんもん",
