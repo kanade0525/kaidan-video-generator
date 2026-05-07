@@ -249,6 +249,65 @@ def test_build_bundle_writes_manifest(monkeypatch, fake_story_factory):
     assert [s["title"] for s in manifest["stories"]] == ["alpha", "beta"]
 
 
+def test_build_bundle_cleans_segments_by_default(monkeypatch, fake_story_factory):
+    """Default behavior: segments/ deleted on success to free disk space."""
+    make_story, output_root = fake_story_factory
+    _patch_paths(monkeypatch, output_root)
+
+    s1 = make_story("a")
+    s2 = make_story("b")
+
+    from app.services import bundle_generator
+
+    monkeypatch.setattr(bundle_generator, "create_video",
+                        lambda images, narration, output_path, **kw: Path(output_path).write_bytes(b"x") or Path(output_path))
+    monkeypatch.setattr(bundle_generator, "_burn_long_scroll_subtitles",
+                        lambda *a, **k: Path(a[2]).write_bytes(b"x"))
+    monkeypatch.setattr(bundle_generator, "concat_videos",
+                        lambda parts, output, **kw: Path(output).write_bytes(b"x"))
+    monkeypatch.setattr(bundle_generator, "_make_silent_jingle",
+                        lambda p, **kw: Path(p).write_bytes(b"x") or p)
+
+    bundle_generator.build_bundle(
+        stories=[s1, s2],
+        bundle_name="cleanup_test",
+        op_path=None, ed_path=None, jingle_path=None,
+    )
+
+    from app.utils.paths import bundle_dir
+    seg_dir = bundle_dir("cleanup_test") / "segments"
+    assert not seg_dir.exists(), "segments/ should be deleted on success"
+
+
+def test_build_bundle_keep_segments_when_flagged(monkeypatch, fake_story_factory):
+    """keep_segments=True preserves the segments/ directory."""
+    make_story, output_root = fake_story_factory
+    _patch_paths(monkeypatch, output_root)
+
+    s1 = make_story("a")
+
+    from app.services import bundle_generator
+
+    monkeypatch.setattr(bundle_generator, "create_video",
+                        lambda images, narration, output_path, **kw: Path(output_path).write_bytes(b"x") or Path(output_path))
+    monkeypatch.setattr(bundle_generator, "_burn_long_scroll_subtitles",
+                        lambda *a, **k: Path(a[2]).write_bytes(b"x"))
+    monkeypatch.setattr(bundle_generator, "concat_videos",
+                        lambda parts, output, **kw: Path(output).write_bytes(b"x"))
+
+    bundle_generator.build_bundle(
+        stories=[s1],
+        bundle_name="keep_test",
+        op_path=None, ed_path=None, jingle_path=None,
+        keep_segments=True,
+    )
+
+    from app.utils.paths import bundle_dir
+    seg_dir = bundle_dir("keep_test") / "segments"
+    assert seg_dir.exists(), "segments/ should remain when keep_segments=True"
+    assert any(seg_dir.iterdir()), "segments/ should contain files"
+
+
 def test_build_bundle_missing_narration_raises(monkeypatch, fake_story_factory):
     """If a story is missing narration_complete.wav, raise a clear error."""
     make_story, output_root = fake_story_factory

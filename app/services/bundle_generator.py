@@ -64,12 +64,17 @@ def build_bundle(
     ed_path: Path | None = None,
     jingle_path: Path | None = None,
     progress_callback: ProgressCallback = None,
+    keep_segments: bool = False,
 ) -> Path:
     """Build a bundled long-form compilation video.
 
     Each story produces an OP/ED-less segment from its intermediate artifacts;
     segments are concatenated with `jingle_path` between them, OP prepended,
     ED appended.
+
+    `keep_segments=False` (default) deletes the `segments/` directory on
+    success — segments can be 1GB+ each and pile up. Set True if you want
+    to inspect or re-bundle quickly.
 
     Returns the path to the produced bundle mp4.
     """
@@ -124,6 +129,15 @@ def build_bundle(
     except Exception:
         pass
     _write_manifest(bdir, bundle_name, stories, duration, jingle_path)
+
+    # Clean up intermediate segments by default (they can be 1GB+ each)
+    if not keep_segments:
+        import shutil
+        try:
+            shutil.rmtree(seg_dir)
+            log.info("[bundle] 中間セグメントを削除: %s", seg_dir.name)
+        except Exception as e:
+            log.warning("[bundle] segments/ 削除失敗 (続行): %s", e)
 
     if progress_callback:
         progress_callback(total_steps, total_steps)
