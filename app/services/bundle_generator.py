@@ -117,18 +117,26 @@ def build_bundle(
     if ed_path is not None and ed_path.exists():
         parts.append(ed_path)
 
-    # 4. Concatenate everything
+    # 4. Compute YouTube chapter offsets (cumulative duration from start)
+    chapters = _compute_chapters(
+        stories, segment_paths,
+        op_path if op_path is not None and op_path.exists() else None,
+        jingle_clip if len(segment_paths) > 1 else None,
+        ed_path if ed_path is not None and ed_path.exists() else None,
+    )
+
+    # 5. Concatenate everything
     output = bundle_video_path(bundle_name)
     log.info("[bundle] 連結: %d パーツ → %s", len(parts), output.name)
     concat_videos(parts, output, width=BUNDLE_WIDTH, height=BUNDLE_HEIGHT)
 
-    # 5. Write manifest
+    # 6. Write manifest (with chapters for YouTube auto-detection)
     duration = 0.0
     try:
         duration = get_audio_duration(output)
     except Exception:
         pass
-    _write_manifest(bdir, bundle_name, stories, duration, jingle_path)
+    _write_manifest(bdir, bundle_name, stories, duration, jingle_path, chapters)
 
     # Clean up intermediate segments by default (they can be 1GB+ each)
     if not keep_segments:
@@ -229,9 +237,62 @@ def _make_silent_jingle(path: Path, *, target_width: int, target_height: int) ->
     return path
 
 
+def _compute_chapters(
+    stories: list[Story],
+    segment_paths: list[Path],
+    op_path: Path | None,
+    jingle_clip: Path | None,
+    ed_path: Path | None,
+) -> list[dict]:
+    """Compute YouTube chapter markers (cumulative offsets from bundle start).
+
+    YouTube auto-detects chapters when the description contains lines like
+    ``MM:SS Title`` (or ``H:MM:SS Title``) starting at ``00:00`` and at least
+    3 entries with monotonically increasing timestamps.
+
+    Returns: list of {title, start_seconds} dicts including OP/ED if present.
+    """
+    chapters: list[dict] = []
+    offset = 0.0
+
+    if op_path is not None:
+        chapters.append({"title": "オープニング", "start_seconds": 0.0})
+        try:
+            offset += get_audio_duration(op_path)
+        except Exception:
+            pass
+
+    jingle_dur = 0.0
+    if jingle_clip is not None:
+        try:
+            jingle_dur = get_audio_duration(jingle_clip)
+        except Exception:
+            pass
+
+    for idx, story in enumerate(stories):
+        chapters.append({
+            "title": story.title,
+            "start_seconds": offset,
+            "story_id": story.id,
+        })
+        try:
+            offset += get_audio_duration(segment_paths[idx])
+        except Exception:
+            pass
+        # Jingle between stories
+        if idx < len(stories) - 1:
+            offset += jingle_dur
+
+    if ed_path is not None:
+        chapters.append({"title": "エンディング", "start_seconds": offset})
+
+    return chapters
+
+
 def _write_manifest(
     bdir: Path, bundle_name: str, stories: list[Story],
     duration: float, jingle_path: Path | None,
+    chapters: list[dict] | None = None,
 ) -> None:
     manifest = {
         "name": bundle_name,
@@ -239,7 +300,32 @@ def _write_manifest(
         "stories": [{"id": s.id, "title": s.title} for s in stories],
         "duration_seconds": duration,
         "jingle_path": str(jingle_path) if jingle_path else "",
+        "chapters": chapters or [],
     }
     bundle_manifest_path(bundle_name).write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+
+
+def format_chapter_timestamp(seconds: float) -> str:
+    """Format seconds for a YouTube chapter line.
+
+    Always uses H:MM:SS for compositions over an hour, MM:SS otherwise.
+    YouTube requires the first chapter to be exactly 0:00 or 00:00.
+    """
+    total = int(seconds)
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h > 0:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def render_chapters_block(chapters: list[dict]) -> str:
+    """Render a chapter block usable in a YouTube video description."""
+    if not chapters:
+        return ""
+    return "\n".join(
+        f"{format_chapter_timestamp(c['start_seconds'])} {c['title']}"
+        for c in chapters
     )

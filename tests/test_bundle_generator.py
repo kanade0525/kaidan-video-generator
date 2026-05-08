@@ -308,6 +308,89 @@ def test_build_bundle_keep_segments_when_flagged(monkeypatch, fake_story_factory
     assert any(seg_dir.iterdir()), "segments/ should contain files"
 
 
+def test_format_chapter_timestamp():
+    """Chapter timestamps use MM:SS for under an hour, H:MM:SS otherwise."""
+    from app.services.bundle_generator import format_chapter_timestamp
+
+    assert format_chapter_timestamp(0) == "00:00"
+    assert format_chapter_timestamp(83) == "01:23"
+    assert format_chapter_timestamp(3599) == "59:59"
+    # YouTube requires H:MM:SS once over an hour
+    assert format_chapter_timestamp(3600) == "1:00:00"
+    assert format_chapter_timestamp(3661) == "1:01:01"
+
+
+def test_render_chapters_block():
+    """Chapter block uses YouTube auto-detect format (00:00 Title per line)."""
+    from app.services.bundle_generator import render_chapters_block
+
+    chapters = [
+        {"title": "オープニング", "start_seconds": 0.0},
+        {"title": "第1話", "start_seconds": 90.0},
+        {"title": "エンディング", "start_seconds": 5400.0},
+    ]
+    block = render_chapters_block(chapters)
+    lines = block.split("\n")
+    assert lines[0].startswith("00:00 ")
+    assert "オープニング" in lines[0]
+    assert lines[1].startswith("01:30 ")
+    assert lines[2].startswith("1:30:00 ")
+
+
+def test_build_bundle_writes_chapters(monkeypatch, fake_story_factory):
+    """Bundle manifest contains chapter offsets aligned to YouTube format."""
+    make_story, output_root = fake_story_factory
+    _patch_paths(monkeypatch, output_root)
+
+    s1 = make_story("alpha", story_id=1)
+    s2 = make_story("beta", story_id=2)
+
+    op = output_root / "op.mp4"
+    op.write_bytes(b"op")
+    ed = output_root / "ed.mp4"
+    ed.write_bytes(b"ed")
+    jingle = output_root / "jingle.mp3"
+    jingle.write_bytes(b"j")
+
+    from app.services import bundle_generator
+
+    # Stub durations: OP=10s, segment=300s each, jingle=2s
+    fake_durations = {
+        op: 10.0,
+        jingle: 2.0,
+    }
+
+    def fake_get_dur(p):
+        return fake_durations.get(Path(p), 300.0)
+
+    monkeypatch.setattr(bundle_generator, "get_audio_duration", fake_get_dur)
+    monkeypatch.setattr(bundle_generator, "create_video",
+                        lambda images, narration, output_path, **kw: Path(output_path).write_bytes(b"x") or Path(output_path))
+    monkeypatch.setattr(bundle_generator, "_burn_long_scroll_subtitles",
+                        lambda *a, **k: Path(a[2]).write_bytes(b"x"))
+    monkeypatch.setattr(bundle_generator, "concat_videos",
+                        lambda parts, output, **kw: Path(output).write_bytes(b"x"))
+
+    bundle_generator.build_bundle(
+        stories=[s1, s2],
+        bundle_name="chapters_test",
+        op_path=op, ed_path=ed, jingle_path=jingle,
+    )
+
+    from app.utils.paths import bundle_manifest_path
+    manifest = json.loads(bundle_manifest_path("chapters_test").read_text())
+    chapters = manifest["chapters"]
+
+    # Expected: OP @ 0, alpha @ 10, beta @ 10+300+2=312, ED @ 312+300=612
+    assert chapters[0] == {"title": "オープニング", "start_seconds": 0.0}
+    assert chapters[1]["title"] == "alpha"
+    assert chapters[1]["start_seconds"] == 10.0
+    assert chapters[1]["story_id"] == 1
+    assert chapters[2]["title"] == "beta"
+    assert chapters[2]["start_seconds"] == 312.0
+    assert chapters[3] == {"title": "エンディング", "start_seconds": 612.0}
+
+
 def test_build_bundle_missing_narration_raises(monkeypatch, fake_story_factory):
     """If a story is missing narration_complete.wav, raise a clear error."""
     make_story, output_root = fake_story_factory
