@@ -276,3 +276,181 @@ def bundle_page():
         on_click=lambda: (timer.activate(), do_generate()),
         color="primary",
     ).classes("mt-4")
+
+    # ── Existing bundles section ───────────────────────────────────────────
+    ui.separator().classes("my-6")
+    ui.label("既存の詰め合わせ動画").classes("text-xl font-bold")
+    _render_bundle_list()
+
+
+def _render_bundle_list():
+    """List bundles found under output/bundles/ with chapter preview + upload."""
+    import json as _json
+
+    from app.utils.paths import OUTPUT_BASE
+    bundles_root = OUTPUT_BASE / "bundles"
+    if not bundles_root.exists():
+        ui.label("(まだ詰め合わせ動画はありません)").classes("text-gray-500")
+        return
+
+    bundle_dirs = sorted(
+        [d for d in bundles_root.iterdir() if d.is_dir()],
+        key=lambda d: d.stat().st_mtime, reverse=True,
+    )
+    if not bundle_dirs:
+        ui.label("(まだ詰め合わせ動画はありません)").classes("text-gray-500")
+        return
+
+    for bdir in bundle_dirs:
+        manifest_file = bdir / "manifest.json"
+        video_file = bdir / f"{bdir.name}.mp4"
+        if not manifest_file.exists():
+            continue
+        try:
+            manifest = _json.loads(manifest_file.read_text())
+        except Exception:
+            continue
+
+        with ui.card().classes("w-full mb-3 p-4"):
+            with ui.row().classes("items-center gap-4 w-full"):
+                ui.label(manifest.get("name", bdir.name)).classes("text-lg font-bold flex-1")
+                dur = manifest.get("duration_seconds", 0)
+                m, s = divmod(int(dur), 60)
+                h, m = divmod(m, 60)
+                dur_text = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+                ui.label(f"尺 {dur_text}").classes("text-sm text-gray-500")
+                story_n = len(manifest.get("stories", []))
+                ui.label(f"{story_n}話").classes("text-sm text-gray-500")
+
+            chapters = manifest.get("chapters", [])
+            if chapters:
+                with ui.expansion("章 (YouTubeチャプター)").classes("w-full text-sm"):
+                    for ch in chapters:
+                        from app.services.bundle_generator import format_chapter_timestamp
+                        ts = format_chapter_timestamp(ch["start_seconds"])
+                        ui.label(f"{ts}  {ch['title']}").classes("font-mono text-xs")
+
+            _render_bundle_youtube_upload(bdir.name, manifest, video_file)
+
+
+def _render_bundle_youtube_upload(bundle_name: str, manifest: dict, video_file):
+    """Per-bundle YouTube upload UI."""
+    import threading
+
+    from app.services import youtube_uploader
+    from app.services.bundle_generator import render_chapters_block
+
+    if not video_file.exists():
+        ui.label("動画ファイルが見つかりません").classes("text-red-500 text-sm")
+        return
+
+    # Show YouTube ID if previously uploaded (saved in manifest)
+    yt_id = manifest.get("youtube_video_id", "")
+    if yt_id:
+        with ui.row().classes("items-center gap-2"):
+            ui.label("YouTubeアップロード済").classes("text-green-500 font-bold")
+            ui.link(f"https://youtube.com/watch?v={yt_id}",
+                    f"https://youtube.com/watch?v={yt_id}",
+                    new_tab=True).classes("text-sm")
+        return
+
+    if not youtube_uploader.is_authenticated():
+        ui.label(
+            "YouTube未認証 — /settings 等から認証してください",
+        ).classes("text-orange-500 text-sm")
+        return
+
+    # Resolve title / description from templates
+    chapters_block = render_chapters_block(manifest.get("chapters", []))
+    title_tmpl = cfg_get("bundle_youtube_title_template") or "{name}"
+    desc_tmpl = cfg_get("bundle_youtube_description_template") or "{chapters}"
+    yt_title = title_tmpl.format(name=manifest.get("name", bundle_name))
+    yt_description = desc_tmpl.format(
+        name=manifest.get("name", bundle_name),
+        chapters=chapters_block,
+    )
+
+    title_input = ui.input("タイトル", value=yt_title).classes("w-full")
+    description_area = ui.textarea("説明", value=yt_description).classes("w-full font-mono text-xs").props("rows=10")
+
+    privacy = ui.select(
+        ["private", "unlisted", "public"],
+        value=cfg_get("youtube_privacy_status") or "private",
+        label="公開状態",
+    ).classes("w-48")
+
+    progress = ui.linear_progress(value=0).classes("w-full mt-2").props("rounded")
+    progress.visible = False
+    status = ui.label("").classes("text-sm")
+
+    work = {"running": False, "done": False, "error": None, "result": None}
+
+    def do_upload():
+        work.update(running=True, done=False, error=None, result=None)
+        progress.visible = True
+        progress.value = 0
+        status.text = "アップロード中..."
+        status.classes(replace="text-sm text-blue-500")
+        upload_btn.disable()
+
+        tags = (cfg_get("bundle_youtube_tags") or "").split(",")
+        tags = [t.strip() for t in tags if t.strip()]
+        cat = cfg_get("youtube_category_id") or "24"
+
+        def run():
+            try:
+                result = youtube_uploader.upload_video(
+                    video_path=video_file,
+                    title=title_input.value,
+                    description=description_area.value,
+                    tags=tags,
+                    category_id=cat,
+                    privacy_status=privacy.value,
+                )
+                work["result"] = result
+                # Save the YT id back into manifest
+                vid = result.get("video_id", "")
+                if vid:
+                    import json as _json
+                    from app.utils.paths import bundle_manifest_path
+                    m = _json.loads(bundle_manifest_path(bundle_name).read_text())
+                    m["youtube_video_id"] = vid
+                    bundle_manifest_path(bundle_name).write_text(
+                        _json.dumps(m, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+            except Exception as e:
+                work["error"] = str(e)
+            work["done"] = True
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def poll():
+        if not work["running"]:
+            timer.active = False
+            return
+        try:
+            if work["done"]:
+                work["running"] = False
+                upload_btn.enable()
+                err = work["error"]
+                if err:
+                    progress.value = 0
+                    status.text = f"エラー: {err[:200]}"
+                    status.classes(replace="text-sm text-red-500")
+                else:
+                    progress.value = 1.0
+                    res = work["result"] or {}
+                    vid = res.get("video_id", "")
+                    status.text = f"完了 → https://youtube.com/watch?v={vid}"
+                    status.classes(replace="text-sm text-green-600")
+        except (RuntimeError, AttributeError):
+            timer.active = False
+
+    timer = ui.timer(1.0, poll, active=False)
+
+    upload_btn = ui.button(
+        "YouTubeにアップロード",
+        on_click=lambda: (timer.activate(), do_upload()),
+        color="red",
+    ).classes("mt-2")
