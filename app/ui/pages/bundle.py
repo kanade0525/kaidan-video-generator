@@ -301,15 +301,17 @@ def _render_bundle_list():
         ui.label("(まだ詰め合わせ動画はありません)").classes("text-gray-500")
         return
 
-    for bdir in bundle_dirs:
+    list_outer = ui.column().classes("w-full")
+
+    def render_one(bdir):
         manifest_file = bdir / "manifest.json"
         video_file = bdir / f"{bdir.name}.mp4"
         if not manifest_file.exists():
-            continue
+            return
         try:
             manifest = _json.loads(manifest_file.read_text())
         except Exception:
-            continue
+            return
 
         with ui.card().classes("w-full mb-3 p-4"):
             with ui.row().classes("items-center gap-4 w-full"):
@@ -322,15 +324,94 @@ def _render_bundle_list():
                 story_n = len(manifest.get("stories", []))
                 ui.label(f"{story_n}話").classes("text-sm text-gray-500")
 
+                # Delete button (with confirm dialog)
+                def make_delete(b_path=bdir):
+                    def _do():
+                        with ui.dialog() as dialog, ui.card():
+                            ui.label(
+                                f"「{b_path.name}」を削除します。\n"
+                                "動画ファイル・manifest を含むバンドルディレクトリ全体が削除されます。"
+                                "元に戻せません。続行しますか？",
+                            ).classes("whitespace-pre-line")
+                            with ui.row():
+                                def confirm_delete():
+                                    import shutil
+                                    try:
+                                        shutil.rmtree(b_path)
+                                        ui.notify(f"{b_path.name} を削除しました", color="positive")
+                                        dialog.close()
+                                        # Refresh list
+                                        list_outer.clear()
+                                        with list_outer:
+                                            redraw_list()
+                                    except Exception as e:
+                                        ui.notify(f"削除失敗: {e}", color="negative")
+                                ui.button("削除", on_click=confirm_delete, color="red")
+                                ui.button("キャンセル", on_click=dialog.close)
+                        dialog.open()
+                    return _do
+
+                ui.button(
+                    "削除",
+                    on_click=make_delete(),
+                    color="red",
+                ).props("size=sm flat")
+
             chapters = manifest.get("chapters", [])
+            from app.services.bundle_generator import (
+                estimate_chapters_from_manifest, format_chapter_timestamp,
+            )
             if chapters:
                 with ui.expansion("章 (YouTubeチャプター)").classes("w-full text-sm"):
                     for ch in chapters:
-                        from app.services.bundle_generator import format_chapter_timestamp
                         ts = format_chapter_timestamp(ch["start_seconds"])
                         ui.label(f"{ts}  {ch['title']}").classes("font-mono text-xs")
+            else:
+                # Old bundle without chapters — offer retroactive computation
+                with ui.row().classes("items-center gap-2"):
+                    ui.label("(章なし)").classes("text-orange-500 text-sm")
+
+                    def make_recompute(b_name=bdir.name, mf_path=manifest_file):
+                        def _do():
+                            import json as _json
+                            try:
+                                m = _json.loads(mf_path.read_text())
+                                m["chapters"] = estimate_chapters_from_manifest(m)
+                                mf_path.write_text(
+                                    _json.dumps(m, ensure_ascii=False, indent=2),
+                                    encoding="utf-8",
+                                )
+                                ui.notify(
+                                    f"{b_name}: 章 {len(m['chapters'])} 件を再計算しました。"
+                                    "ページをリロードしてください。",
+                                    color="positive",
+                                )
+                            except Exception as e:
+                                ui.notify(f"再計算失敗: {e}", color="negative")
+                        return _do
+
+                    ui.button(
+                        "章を再計算",
+                        on_click=make_recompute(),
+                        color="secondary",
+                    ).props("size=sm")
 
             _render_bundle_youtube_upload(bdir.name, manifest, video_file)
+
+    def redraw_list():
+        # Re-scan in case dirs were deleted
+        cur = sorted(
+            [d for d in bundles_root.iterdir() if d.is_dir()],
+            key=lambda d: d.stat().st_mtime, reverse=True,
+        )
+        if not cur:
+            ui.label("(詰め合わせ動画がありません)").classes("text-gray-500")
+            return
+        for d in cur:
+            render_one(d)
+
+    with list_outer:
+        redraw_list()
 
 
 def _render_bundle_youtube_upload(bundle_name: str, manifest: dict, video_file):
