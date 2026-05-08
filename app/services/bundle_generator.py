@@ -321,6 +321,95 @@ def format_chapter_timestamp(seconds: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 
+def estimate_chapters_from_manifest(manifest: dict) -> list[dict]:
+    """Reconstruct chapters for a previously-built bundle whose manifest
+    doesn't contain them (created before the chapter feature existed).
+
+    Uses each story's ``narration_complete.wav`` duration plus the same
+    OP/title/leading-silence/trailing-silence overhead the bundle pipeline
+    inserts. The result is within a few seconds of the exact offsets that
+    would be computed during a fresh build.
+
+    The story list (in order) is read from ``manifest['stories']``. Bundle
+    OP/ED paths come from current ``cfg_get`` since the manifest doesn't
+    record them historically.
+    """
+    from app import database as db
+    from app.config import get as cfg_get
+    from app.utils.paths import narration_path
+
+    stories_meta = manifest.get("stories", [])
+    if not stories_meta:
+        return []
+
+    op_p = cfg_get("op_path")
+    ed_p = cfg_get("ed_path")
+    jingle_p = cfg_get("bundle_jingle_path")
+
+    chapters: list[dict] = []
+    offset = 0.0
+
+    if op_p and Path(op_p).exists():
+        chapters.append({"title": "オープニング", "start_seconds": 0.0})
+        try:
+            offset += get_audio_duration(Path(op_p))
+        except Exception:
+            pass
+
+    jingle_dur = 0.0
+    if jingle_p and Path(jingle_p).exists():
+        try:
+            jingle_dur = get_audio_duration(Path(jingle_p))
+        except Exception:
+            pass
+    else:
+        # Fallback to silent jingle duration the pipeline uses
+        jingle_dur = SILENT_JINGLE_DURATION
+
+    # Per-story segment overhead (matches `create_video` defaults for long form):
+    # leading_silence + title_silence_before + title_audio + title_silence_after
+    # + trailing_silence. Only the title portion varies; silences are config.
+    leading = cfg_get("leading_silence") or 2.0
+    trailing = cfg_get("trailing_silence") or 2.0
+    title_silence_before = 1.0
+    title_silence_after = 1.0
+
+    for idx, sm in enumerate(stories_meta):
+        title = sm.get("title", "")
+        chapters.append({
+            "title": title, "start_seconds": offset, "story_id": sm.get("id"),
+        })
+        # Try to read narration + title narration durations
+        narr_dur = 0.0
+        title_dur = 0.0
+        try:
+            n = narration_path(title, "long")
+            if n.exists():
+                narr_dur = get_audio_duration(n)
+        except Exception:
+            pass
+        try:
+            from app.utils.paths import story_dir
+            ta = story_dir(title, "long") / "title_narration.wav"
+            if ta.exists():
+                title_dur = get_audio_duration(ta)
+        except Exception:
+            pass
+
+        seg_dur = (
+            title_silence_before + title_dur + title_silence_after
+            + leading + narr_dur + trailing
+        )
+        offset += seg_dur
+        if idx < len(stories_meta) - 1:
+            offset += jingle_dur
+
+    if ed_p and Path(ed_p).exists():
+        chapters.append({"title": "エンディング", "start_seconds": offset})
+
+    return chapters
+
+
 def render_chapters_block(chapters: list[dict]) -> str:
     """Render a chapter block usable in a YouTube video description."""
     if not chapters:
