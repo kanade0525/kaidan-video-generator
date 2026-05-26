@@ -204,12 +204,16 @@ def create_title_clip(
     total_dur = silence_before + audio_dur + silence_after
     fade_out_start = max(0, total_dur - fade_out)
 
+    # yuv420p chroma subsampling requires even width/height. Force-even via
+    # scale=trunc/2*2 so source images with odd dimensions don't break libx264
+    # with "Could not open encoder before EOF" (-22 Invalid argument).
     run_ffmpeg([
         "-loop", "1",
         "-i", str(image),
         "-i", str(audio),
         "-filter_complex",
-        f"[0:v]fade=in:st=0:d={fade_in},fade=out:st={fade_out_start:.2f}:d={fade_out}[v];"
+        f"[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,"
+        f"fade=in:st=0:d={fade_in},fade=out:st={fade_out_start:.2f}:d={fade_out}[v];"
         f"[1:a]adelay={int(silence_before * 1000)}|{int(silence_before * 1000)},"
         f"apad=pad_dur={silence_after}[a]",
         "-map", "[v]",
