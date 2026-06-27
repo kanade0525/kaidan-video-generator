@@ -33,6 +33,13 @@ USER_INFO_URL = "https://open.tiktokapis.com/v2/user/info/"
 INBOX_INIT_URL = "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/"
 STATUS_URL = "https://open.tiktokapis.com/v2/post/publish/status/fetch/"
 
+# Multi-chunk upload constants (TikTok Content Posting API).
+# - chunk_size must be in [5MB, 64MB]
+# - last chunk may be larger (up to 2 * chunk_size - 1) so the remainder gets
+#   appended rather than producing a too-small final chunk
+SINGLE_CHUNK_MAX = 64 * 1024 * 1024
+MULTI_CHUNK_SIZE = 10 * 1024 * 1024
+
 # Scopes required for Inbox/Draft upload. `user.info.basic` is for the
 # username display in the UI, `video.upload` is for the inbox upload itself.
 # `video.publish` is NOT requested (Direct Post requires harder review).
@@ -208,23 +215,25 @@ def upload_video_to_inbox(video_path: str | Path, progress_callback=None) -> dic
     if video_size == 0:
         raise RuntimeError("動画ファイルが空です")
 
-    # TikTok requires chunk_size in [5MB, 64MB]. For single-chunk upload the
-    # whole file goes as one chunk (when size ≤ 64MB). Shorts are typically
-    # well under this. Multi-chunk is added later if needed.
-    if video_size > 64 * 1024 * 1024:
-        raise RuntimeError(
-            f"動画サイズが64MBを超えています ({video_size} bytes)。"
-            "現在の実装は単一チャンクアップロードのみ対応。",
-        )
-
-    chunk_size = video_size
-    total_chunk_count = 1
+    # TikTok requires chunk_size in [5MB, 64MB] (last chunk may include remainder).
+    # ≤64MB → single chunk (chunk_size = video_size). >64MB → multi-chunk.
+    if video_size <= SINGLE_CHUNK_MAX:
+        chunk_size = video_size
+        total_chunk_count = 1
+    else:
+        chunk_size = MULTI_CHUNK_SIZE
+        # Use floor so the last chunk absorbs any remainder bytes (so its
+        # actual size can exceed chunk_size by up to chunk_size - 1).
+        total_chunk_count = video_size // chunk_size
 
     log.info(
-        "TikTok Inbox アップロード開始: %s (%d bytes)", video_path.name, video_size,
+        "TikTok Inbox アップロード開始: %s (%d bytes, %d chunks)",
+        video_path.name, video_size, total_chunk_count,
     )
+    # Progress steps: init + N chunks + status check
+    total_steps = 2 + total_chunk_count
     if progress_callback:
-        progress_callback(0, 3)
+        progress_callback(0, total_steps)
 
     # Step 1: init upload
     init_resp = requests.post(
@@ -253,27 +262,38 @@ def upload_video_to_inbox(video_path: str | Path, progress_callback=None) -> dic
         raise RuntimeError(f"TikTok init レスポンス不正: {init_data}")
     log.info("publish_id=%s, upload_url取得", publish_id)
     if progress_callback:
-        progress_callback(1, 3)
+        progress_callback(1, total_steps)
 
-    # Step 2: upload bytes via PUT to the returned URL
+    # Step 2: upload bytes via PUT(s) to the returned URL.
+    # Intermediate chunks return 206; the final chunk returns 201.
     with open(video_path, "rb") as f:
-        body = f.read()
-    put_resp = requests.put(
-        upload_url,
-        headers={
-            "Content-Range": f"bytes 0-{video_size - 1}/{video_size}",
-            "Content-Type": "video/mp4",
-        },
-        data=body,
-        timeout=300,
-    )
-    if put_resp.status_code not in (200, 201):
-        raise RuntimeError(
-            f"TikTok 動画アップロード失敗: HTTP {put_resp.status_code} {put_resp.text[:200]}",
-        )
-    log.info("動画ファイルアップロード完了")
-    if progress_callback:
-        progress_callback(2, 3)
+        for i in range(total_chunk_count):
+            start = i * chunk_size
+            # Final chunk absorbs any remainder (so its byte range extends to EOF).
+            end = video_size - 1 if i == total_chunk_count - 1 else start + chunk_size - 1
+            length = end - start + 1
+            f.seek(start)
+            chunk_bytes = f.read(length)
+            put_resp = requests.put(
+                upload_url,
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{video_size}",
+                    "Content-Type": "video/mp4",
+                },
+                data=chunk_bytes,
+                timeout=600,
+            )
+            if put_resp.status_code not in (200, 201, 206):
+                raise RuntimeError(
+                    f"TikTok 動画アップロード失敗 (chunk {i + 1}/{total_chunk_count}): "
+                    f"HTTP {put_resp.status_code} {put_resp.text[:200]}",
+                )
+            log.info(
+                "チャンク %d/%d アップロード完了 (%d bytes)",
+                i + 1, total_chunk_count, length,
+            )
+            if progress_callback:
+                progress_callback(2 + i, total_steps)
 
     # Step 3: optional status check (eventually consistent — first poll may say PROCESSING)
     status = "PROCESSING_UPLOAD"
@@ -293,6 +313,6 @@ def upload_video_to_inbox(video_path: str | Path, progress_callback=None) -> dic
         log.warning("ステータス取得に失敗 (動画自体は送信済み): %s", e)
 
     if progress_callback:
-        progress_callback(3, 3)
+        progress_callback(total_steps, total_steps)
 
     return {"publish_id": publish_id, "status": status}

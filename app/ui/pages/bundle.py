@@ -23,6 +23,41 @@ from app.utils.paths import (
 log = get_logger("kaidan.ui.bundle")
 
 
+def _collect_bundled_story_ids(bundles_root=None) -> dict[int, list[str]]:
+    """Scan existing bundle manifests → {story_id: [bundle_name, ...]}.
+
+    既存の output/bundles/*/manifest.json を走査し、過去に詰め合わせへ
+    含めたことのある story_id ごとに、含めた詰め合わせ名のリストを返す。
+    選択UIで「使用済み」を表示するために使う。
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from app.utils.paths import OUTPUT_BASE
+
+    result: dict[int, list[str]] = {}
+    root = _Path(bundles_root) if bundles_root is not None else OUTPUT_BASE / "bundles"
+    if not root.exists():
+        return result
+    for bdir in root.iterdir():
+        if not bdir.is_dir():
+            continue
+        mf = bdir / "manifest.json"
+        if not mf.exists():
+            continue
+        try:
+            manifest = _json.loads(mf.read_text())
+        except Exception:
+            continue
+        name = manifest.get("name", bdir.name)
+        for st in manifest.get("stories", []):
+            sid = st.get("id")
+            if sid is None:
+                continue
+            result.setdefault(sid, []).append(name)
+    return result
+
+
 def bundle_page():
     """Render the 詰め合わせ動画 creation page."""
     ui.label("詰め合わせ動画 (1〜2時間の長編)").classes("text-2xl font-bold mb-2")
@@ -46,6 +81,9 @@ def bundle_page():
                 stories.append(s)
                 seen.add(s.id)
     story_map = {s.id: s for s in stories}
+
+    # 過去に詰め合わせへ含めた story_id → 含めた詰め合わせ名リスト
+    bundled = _collect_bundled_story_ids()
 
     if not stories:
         ui.label("詰め合わせ素材になる Long ストーリーがありません (動画生成済以降)。").classes(
@@ -116,6 +154,10 @@ def bundle_page():
                 with ui.row().classes("items-center gap-2 bg-gray-100 p-2 rounded w-full"):
                     ui.label(f"{pos + 1}.").classes("font-mono w-8")
                     ui.label(story.title).classes("flex-1")
+                    if sid in bundled:
+                        ui.label(f"🔁使用済({len(bundled[sid])})").classes(
+                            "text-xs text-amber-600 font-bold",
+                        ).tooltip("使用済み詰め合わせ: " + ", ".join(bundled[sid]))
                     ui.label(f"{int(dur_sec / 60)}分{int(dur_sec % 60):02d}秒").classes(
                         "text-xs text-gray-500 w-20",
                     )
@@ -150,10 +192,15 @@ def bundle_page():
 
     # ── Add-story selector ─────────────────────────────────────────────────
     def selector_options():
-        return {
-            s.id: f"{s.title} ({int(durations.get(s.id, 0.0) / 60)}分)"
-            for s in stories if s.id not in state["order"]
-        }
+        opts: dict[int, str] = {}
+        for s in stories:
+            if s.id in state["order"]:
+                continue
+            label = f"{s.title} ({int(durations.get(s.id, 0.0) / 60)}分)"
+            if s.id in bundled:
+                label = f"🔁 {label} ※過去の詰め合わせで使用済 ({len(bundled[s.id])}件)"
+            opts[s.id] = label
+        return opts
 
     with ui.row().classes("items-end gap-2 mt-4"):
         select_widget = ui.select(selector_options(), label="ストーリーを追加").classes("w-96")
@@ -276,3 +323,262 @@ def bundle_page():
         on_click=lambda: (timer.activate(), do_generate()),
         color="primary",
     ).classes("mt-4")
+
+    # ── Existing bundles section ───────────────────────────────────────────
+    ui.separator().classes("my-6")
+    ui.label("既存の詰め合わせ動画").classes("text-xl font-bold")
+    _render_bundle_list()
+
+
+def _render_bundle_list():
+    """List bundles found under output/bundles/ with chapter preview + upload."""
+    import json as _json
+
+    from app.utils.paths import OUTPUT_BASE
+    bundles_root = OUTPUT_BASE / "bundles"
+    if not bundles_root.exists():
+        ui.label("(まだ詰め合わせ動画はありません)").classes("text-gray-500")
+        return
+
+    bundle_dirs = sorted(
+        [d for d in bundles_root.iterdir() if d.is_dir()],
+        key=lambda d: d.stat().st_mtime, reverse=True,
+    )
+    if not bundle_dirs:
+        ui.label("(まだ詰め合わせ動画はありません)").classes("text-gray-500")
+        return
+
+    list_outer = ui.column().classes("w-full")
+
+    def render_one(bdir):
+        manifest_file = bdir / "manifest.json"
+        video_file = bdir / f"{bdir.name}.mp4"
+        if not manifest_file.exists():
+            return
+        try:
+            manifest = _json.loads(manifest_file.read_text())
+        except Exception:
+            return
+
+        with ui.card().classes("w-full mb-3 p-4"):
+            with ui.row().classes("items-center gap-4 w-full"):
+                ui.label(manifest.get("name", bdir.name)).classes("text-lg font-bold flex-1")
+                dur = manifest.get("duration_seconds", 0)
+                m, s = divmod(int(dur), 60)
+                h, m = divmod(m, 60)
+                dur_text = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+                ui.label(f"尺 {dur_text}").classes("text-sm text-gray-500")
+                story_n = len(manifest.get("stories", []))
+                ui.label(f"{story_n}話").classes("text-sm text-gray-500")
+
+                # Delete button (with confirm dialog)
+                def make_delete(b_path=bdir):
+                    def _do():
+                        with ui.dialog() as dialog, ui.card():
+                            ui.label(
+                                f"「{b_path.name}」を削除します。\n"
+                                "動画ファイル・manifest を含むバンドルディレクトリ全体が削除されます。"
+                                "元に戻せません。続行しますか？",
+                            ).classes("whitespace-pre-line")
+                            with ui.row():
+                                def confirm_delete():
+                                    import shutil
+                                    try:
+                                        shutil.rmtree(b_path)
+                                        ui.notify(f"{b_path.name} を削除しました", color="positive")
+                                        dialog.close()
+                                        # Refresh list
+                                        list_outer.clear()
+                                        with list_outer:
+                                            redraw_list()
+                                    except Exception as e:
+                                        ui.notify(f"削除失敗: {e}", color="negative")
+                                ui.button("削除", on_click=confirm_delete, color="red")
+                                ui.button("キャンセル", on_click=dialog.close)
+                        dialog.open()
+                    return _do
+
+                ui.button(
+                    "削除",
+                    on_click=make_delete(),
+                    color="red",
+                ).props("size=sm flat")
+
+            chapters = manifest.get("chapters", [])
+            from app.services.bundle_generator import (
+                estimate_chapters_from_manifest, format_chapter_timestamp,
+            )
+            if chapters:
+                with ui.expansion("章 (YouTubeチャプター)").classes("w-full text-sm"):
+                    for ch in chapters:
+                        ts = format_chapter_timestamp(ch["start_seconds"])
+                        ui.label(f"{ts}  {ch['title']}").classes("font-mono text-xs")
+            else:
+                # Old bundle without chapters — offer retroactive computation
+                with ui.row().classes("items-center gap-2"):
+                    ui.label("(章なし)").classes("text-orange-500 text-sm")
+
+                    def make_recompute(b_name=bdir.name, mf_path=manifest_file):
+                        def _do():
+                            import json as _json
+                            try:
+                                m = _json.loads(mf_path.read_text())
+                                m["chapters"] = estimate_chapters_from_manifest(m)
+                                mf_path.write_text(
+                                    _json.dumps(m, ensure_ascii=False, indent=2),
+                                    encoding="utf-8",
+                                )
+                                ui.notify(
+                                    f"{b_name}: 章 {len(m['chapters'])} 件を再計算しました。"
+                                    "ページをリロードしてください。",
+                                    color="positive",
+                                )
+                            except Exception as e:
+                                ui.notify(f"再計算失敗: {e}", color="negative")
+                        return _do
+
+                    ui.button(
+                        "章を再計算",
+                        on_click=make_recompute(),
+                        color="secondary",
+                    ).props("size=sm")
+
+            _render_bundle_youtube_upload(bdir.name, manifest, video_file)
+
+    def redraw_list():
+        # Re-scan in case dirs were deleted
+        cur = sorted(
+            [d for d in bundles_root.iterdir() if d.is_dir()],
+            key=lambda d: d.stat().st_mtime, reverse=True,
+        )
+        if not cur:
+            ui.label("(詰め合わせ動画がありません)").classes("text-gray-500")
+            return
+        for d in cur:
+            render_one(d)
+
+    with list_outer:
+        redraw_list()
+
+
+def _render_bundle_youtube_upload(bundle_name: str, manifest: dict, video_file):
+    """Per-bundle YouTube upload UI."""
+    import threading
+
+    from app.services import youtube_uploader
+    from app.services.bundle_generator import render_chapters_block
+
+    if not video_file.exists():
+        ui.label("動画ファイルが見つかりません").classes("text-red-500 text-sm")
+        return
+
+    # Show YouTube ID if previously uploaded (saved in manifest)
+    yt_id = manifest.get("youtube_video_id", "")
+    if yt_id:
+        with ui.row().classes("items-center gap-2"):
+            ui.label("YouTubeアップロード済").classes("text-green-500 font-bold")
+            ui.link(f"https://youtube.com/watch?v={yt_id}",
+                    f"https://youtube.com/watch?v={yt_id}",
+                    new_tab=True).classes("text-sm")
+        return
+
+    if not youtube_uploader.is_authenticated():
+        ui.label(
+            "YouTube未認証 — /settings 等から認証してください",
+        ).classes("text-orange-500 text-sm")
+        return
+
+    # Resolve title / description from templates
+    chapters_block = render_chapters_block(manifest.get("chapters", []))
+    title_tmpl = cfg_get("bundle_youtube_title_template") or "{name}"
+    desc_tmpl = cfg_get("bundle_youtube_description_template") or "{chapters}"
+    yt_title = title_tmpl.format(name=manifest.get("name", bundle_name))
+    yt_description = desc_tmpl.format(
+        name=manifest.get("name", bundle_name),
+        chapters=chapters_block,
+    )
+
+    title_input = ui.input("タイトル", value=yt_title).classes("w-full")
+    description_area = ui.textarea("説明", value=yt_description).classes("w-full font-mono text-xs").props("rows=10")
+
+    privacy = ui.select(
+        ["private", "unlisted", "public"],
+        value=cfg_get("youtube_privacy_status") or "private",
+        label="公開状態",
+    ).classes("w-48")
+
+    progress = ui.linear_progress(value=0).classes("w-full mt-2").props("rounded")
+    progress.visible = False
+    status = ui.label("").classes("text-sm")
+
+    work = {"running": False, "done": False, "error": None, "result": None}
+
+    def do_upload():
+        work.update(running=True, done=False, error=None, result=None)
+        progress.visible = True
+        progress.value = 0
+        status.text = "アップロード中..."
+        status.classes(replace="text-sm text-blue-500")
+        upload_btn.disable()
+
+        tags = (cfg_get("bundle_youtube_tags") or "").split(",")
+        tags = [t.strip() for t in tags if t.strip()]
+        cat = cfg_get("youtube_category_id") or "24"
+
+        def run():
+            try:
+                result = youtube_uploader.upload_video(
+                    video_path=video_file,
+                    title=title_input.value,
+                    description=description_area.value,
+                    tags=tags,
+                    category_id=cat,
+                    privacy_status=privacy.value,
+                )
+                work["result"] = result
+                # Save the YT id back into manifest
+                vid = result.get("video_id", "")
+                if vid:
+                    import json as _json
+                    from app.utils.paths import bundle_manifest_path
+                    m = _json.loads(bundle_manifest_path(bundle_name).read_text())
+                    m["youtube_video_id"] = vid
+                    bundle_manifest_path(bundle_name).write_text(
+                        _json.dumps(m, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+            except Exception as e:
+                work["error"] = str(e)
+            work["done"] = True
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def poll():
+        if not work["running"]:
+            timer.active = False
+            return
+        try:
+            if work["done"]:
+                work["running"] = False
+                upload_btn.enable()
+                err = work["error"]
+                if err:
+                    progress.value = 0
+                    status.text = f"エラー: {err[:200]}"
+                    status.classes(replace="text-sm text-red-500")
+                else:
+                    progress.value = 1.0
+                    res = work["result"] or {}
+                    vid = res.get("video_id", "")
+                    status.text = f"完了 → https://youtube.com/watch?v={vid}"
+                    status.classes(replace="text-sm text-green-600")
+        except (RuntimeError, AttributeError):
+            timer.active = False
+
+    timer = ui.timer(1.0, poll, active=False)
+
+    upload_btn = ui.button(
+        "YouTubeにアップロード",
+        on_click=lambda: (timer.activate(), do_upload()),
+        color="red",
+    ).classes("mt-2")

@@ -98,15 +98,33 @@ def create_slideshow(
     log.info("スライドショー: %d枚, 各%.1fs, 合計%.1fs",
              len(images), final_durations[0], sum(final_durations))
 
-    # Single image: simple -loop 1 with audio
+    # Single image: simple -loop 1 with audio.
+    # 長尺ストーリー (詰め合わせの 10 分超ナレーション等) では静止画でも
+    # フレーム数が膨大になり既定 600s では足りない。尺に比例させて余裕を持たせる。
     if len(images) == 1:
-        vf_args = ["-vf", vf_scale] if vf_scale else []
+        # scale/crop を毎フレーム適用すると 10 分超の動画で巨大 PNG を数万回
+        # 再デコード&スケールして極端に遅くなる。先に 1 回だけスケールした
+        # 画像を作り、それをループする (出力ピクセルは同一)。
+        src_image = images[0]
+        prescaled: Path | None = None
+        if vf_scale:
+            prescaled = output_path.parent / "_slideshow_prescaled.png"
+            run_ffmpeg([
+                "-i", str(images[0]),
+                "-vf", vf_scale,
+                "-frames:v", "1",
+                str(prescaled),
+            ])
+            src_image = prescaled
+
+        enc_timeout = max(600, int(total_duration * 3) + 300)
         run_ffmpeg([
             "-loop", "1",
-            "-i", str(images[0]),
+            "-i", str(src_image),
             "-i", str(audio_path),
-            *vf_args,
             "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-tune", "stillimage",
             "-pix_fmt", "yuv420p",
             "-r", str(fps),
             "-c:a", "aac",
@@ -114,7 +132,9 @@ def create_slideshow(
             "-t", f"{total_duration:.3f}",
             "-movflags", "+faststart",
             str(output_path),
-        ])
+        ], timeout=enc_timeout)
+        if prescaled is not None:
+            prescaled.unlink(missing_ok=True)
         return output_path
 
     # Multiple images: generate each as a silent video clip, then concat + add audio.
@@ -204,12 +224,16 @@ def create_title_clip(
     total_dur = silence_before + audio_dur + silence_after
     fade_out_start = max(0, total_dur - fade_out)
 
+    # yuv420p chroma subsampling requires even width/height. Force-even via
+    # scale=trunc/2*2 so source images with odd dimensions don't break libx264
+    # with "Could not open encoder before EOF" (-22 Invalid argument).
     run_ffmpeg([
         "-loop", "1",
         "-i", str(image),
         "-i", str(audio),
         "-filter_complex",
-        f"[0:v]fade=in:st=0:d={fade_in},fade=out:st={fade_out_start:.2f}:d={fade_out}[v];"
+        f"[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,"
+        f"fade=in:st=0:d={fade_in},fade=out:st={fade_out_start:.2f}:d={fade_out}[v];"
         f"[1:a]adelay={int(silence_before * 1000)}|{int(silence_before * 1000)},"
         f"apad=pad_dur={silence_after}[a]",
         "-map", "[v]",
@@ -245,15 +269,19 @@ def add_fade(
         f"afade=out:st={fade_out_start:.2f}:d={fade_out}"
     )
 
+    # 長尺ストーリー (詰め合わせの 10〜15 分セグメント) ではフル尺の再エンコードに
+    # なるため、既定 600s では足りない。尺に比例させ、preset も高速側にする。
+    timeout = max(1800, int(duration * 6))
     run_ffmpeg([
         "-i", str(input_path),
         "-vf", vfilter,
         "-af", afilter,
         "-c:v", "libx264",
+        "-preset", "veryfast",
         "-c:a", "aac",
         "-movflags", "+faststart",
         str(output_path),
-    ])
+    ], timeout=timeout)
     return output_path
 
 
@@ -295,14 +323,16 @@ def add_fade_to_clip(
     duration = get_audio_duration(input_path)
     fade_start = max(0, duration - fade_out)
 
+    timeout = max(1800, int(duration * 6))
     run_ffmpeg([
         "-i", str(input_path),
         "-vf", f"fade=out:st={fade_start:.2f}:d={fade_out}",
         "-af", f"afade=out:st={fade_start:.2f}:d={fade_out}",
         "-c:v", "libx264",
+        "-preset", "veryfast",
         "-c:a", "aac",
         str(output_path),
-    ])
+    ], timeout=timeout)
     return output_path
 
 
@@ -338,6 +368,63 @@ def _normalize_video(
         str(output_path),
     ], timeout=timeout)
     return output_path
+
+
+def _probe_video_params(path: Path) -> dict:
+    """Probe a file's primary video stream params via ffprobe (best-effort).
+
+    Returns {} on any failure so callers fall back to full re-encode.
+    """
+    import json as _json
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet", "-print_format", "json",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name,width,height,pix_fmt,r_frame_rate",
+                str(path),
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        streams = _json.loads(result.stdout or "{}").get("streams", [])
+    except Exception:
+        return {}
+    if not streams:
+        return {}
+    s = streams[0]
+    fps = 0.0
+    try:
+        num, den = s.get("r_frame_rate", "0/1").split("/")
+        fps = float(num) / float(den) if float(den) else 0.0
+    except Exception:
+        fps = 0.0
+    return {
+        "codec": s.get("codec_name"),
+        "width": s.get("width"),
+        "height": s.get("height"),
+        "pix_fmt": s.get("pix_fmt"),
+        "fps": fps,
+    }
+
+
+def _video_matches_concat_target(path: Path, width: int, height: int, fps: int) -> bool:
+    """True if the video stream already matches the concat target.
+
+    When it matches we can stream-copy the (expensive) video during concat
+    normalization instead of re-encoding it — a huge win for long bundle
+    segments that are already h264/yuv420p at the target resolution/fps.
+    """
+    p = _probe_video_params(path)
+    if not p:
+        return False
+    return (
+        p.get("codec") == "h264"
+        and p.get("width") == width
+        and p.get("height") == height
+        and p.get("pix_fmt") == "yuv420p"
+        and abs(p.get("fps", 0.0) - fps) <= 0.5
+    )
 
 
 CJK_FONT_PATHS = [
@@ -878,15 +965,37 @@ def concat_videos(
     output_path: Path,
     width: int = 1920,
     height: int = 1080,
+    fps: int = 30,
 ) -> Path:
-    """Concatenate multiple video files, normalizing format first."""
+    """Concatenate multiple video files, normalizing format first.
+
+    Parts whose video already matches the target (h264/yuv420p/WxH/fps) skip
+    the expensive video re-encode: their video is stream-copied and only the
+    audio is re-encoded to a uniform aac/44100/stereo so MPEG-TS concat stays
+    safe. Mismatched parts (e.g. OP/ED with a different format) fall back to a
+    full re-encode.
+    """
     temp_dir = output_path.parent
     normalized_parts = []
 
     for i, part in enumerate(parts):
         norm_path = temp_dir / f"norm_{i}.ts"
-        # Encode to MPEG-TS for safe concat
-        _normalize_video(part, norm_path, width=width, height=height)
+        if _video_matches_concat_target(part, width, height, fps):
+            # 動画はコピー、音声だけ統一 (動画再エンコードを回避)。
+            try:
+                a_timeout = max(900, int(get_audio_duration(part) * 2))
+            except Exception:
+                a_timeout = 900
+            run_ffmpeg([
+                "-i", str(part),
+                "-c:v", "copy",
+                "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
+                "-f", "mpegts",
+                str(norm_path),
+            ], timeout=a_timeout)
+        else:
+            # Encode to MPEG-TS for safe concat
+            _normalize_video(part, norm_path, width=width, height=height, fps=fps)
         normalized_parts.append(norm_path)
 
     # Use concat protocol with intermediate TS files

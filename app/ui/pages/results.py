@@ -599,6 +599,48 @@ def _show_images_result(story):
                                 render_slides()
                             return delete_img
 
+                        def make_replace(f=img_file):
+                            def open_replace_dialog():
+                                from app.services.image_generator import replace_scene_image
+
+                                target_w, target_h = (
+                                    (1080, 1920) if story.content_type == "short" else (1792, 1024)
+                                )
+
+                                with ui.dialog() as dlg, ui.card().classes("w-[420px]"):
+                                    ui.label(f"画像を差し替え: {f}").classes("text-base font-bold")
+                                    ui.label(
+                                        f"アップロードした画像は {target_w}×{target_h} に "
+                                        "リサイズ・センタークロップされます。",
+                                    ).classes("text-xs text-gray-500")
+
+                                    async def on_upload(e):
+                                        try:
+                                            data = await e.file.read()
+                                            replace_scene_image(
+                                                img_dir / f, data, story.content_type,
+                                            )
+                                            ui.notify(f"{f} を差し替えました", color="positive")
+                                            dlg.close()
+                                            render_slides()
+                                        except Exception as ex:
+                                            log.exception("replace image failed")
+                                            ui.notify(f"差し替え失敗: {ex}", color="negative")
+
+                                    ui.upload(
+                                        on_upload=on_upload,
+                                        auto_upload=True,
+                                        max_files=1,
+                                        max_file_size=20_000_000,
+                                    ).props('accept="image/*"').classes("w-full")
+                                    with ui.row().classes("justify-end mt-2"):
+                                        ui.button("閉じる", on_click=dlg.close).props("flat")
+                                dlg.open()
+                            return open_replace_dialog
+
+                        ui.button(
+                            icon="swap_horiz", on_click=make_replace(), color="orange",
+                        ).props("flat size=sm").tooltip("画像を差し替える")
                         ui.button(icon="delete", on_click=make_delete(), color="red").props("flat size=sm")
                         slide_inputs.append({"file": img_file, "duration": dur_input, "order": order_input})
 
@@ -902,6 +944,86 @@ def _show_youtube_upload(story):
     # Upload form
     with ui.card().classes("w-full p-4 mt-2"):
         is_short = story.content_type == "short"
+
+        # Thumbnail section. Defaults to the auto-generated title card; a user
+        # upload to custom_thumbnail.{png,jpg} overrides it (persists between
+        # page reloads).
+        sdir = story_dir(story.title, story.content_type)
+        from app.pipeline.stages import title_card_filename as _tc_name
+        default_thumb = images_dir(story.title, story.content_type) / _tc_name(story.content_type)
+
+        def _current_thumb_path():
+            for ext in ("png", "jpg", "jpeg"):
+                cp = sdir / f"custom_thumbnail.{ext}"
+                if cp.exists():
+                    return cp
+            return default_thumb if default_thumb.exists() else None
+
+        thumb_static_path = f"/thumb/{story.id}"
+        app.add_static_files(thumb_static_path, str(sdir))
+        # Also expose images dir under the same id namespace so we can show
+        # the default title card before any custom upload exists.
+        thumb_img_static_path = f"/thumb_img/{story.id}"
+        app.add_static_files(thumb_img_static_path, str(images_dir(story.title, story.content_type)))
+
+        ui.label("サムネイル").classes("text-md font-semibold mt-1")
+        ui.label(
+            "未指定ならタイトルカードが自動で使われます。アップロードした画像は そのまま YouTube に送信されます (PNG/JPG, 2MB以下推奨)。",
+        ).classes("text-xs text-gray-500")
+        thumb_preview_row = ui.row().classes("items-center gap-2 mt-1")
+
+        def _render_thumb_preview():
+            thumb_preview_row.clear()
+            cur = _current_thumb_path()
+            with thumb_preview_row:
+                if cur is None:
+                    ui.label("(タイトルカードもまだ生成されていません)").classes("text-xs text-gray-400")
+                    return
+                ts = int(cur.stat().st_mtime)
+                is_custom = cur.name.startswith("custom_thumbnail")
+                if is_custom:
+                    url = f"{thumb_static_path}/{cur.name}?t={ts}"
+                else:
+                    url = f"{thumb_img_static_path}/{cur.name}?t={ts}"
+                ui.image(url).classes(
+                    "w-24 h-44 rounded object-cover" if is_short else "w-32 h-20 rounded object-cover",
+                )
+                ui.label("カスタム" if is_custom else "タイトルカード(自動)").classes("text-xs text-gray-600")
+                if is_custom:
+                    def _clear_custom():
+                        for ext in ("png", "jpg", "jpeg"):
+                            (sdir / f"custom_thumbnail.{ext}").unlink(missing_ok=True)
+                        ui.notify("カスタムサムネイルをクリア", color="warning")
+                        _render_thumb_preview()
+                    ui.button(icon="restart_alt", on_click=_clear_custom, color="grey").props(
+                        "flat size=sm",
+                    ).tooltip("カスタムを解除しタイトルカードに戻す")
+
+        async def _on_thumb_upload(e):
+            try:
+                data = await e.file.read()
+                name = (e.file.name or "thumb.png").lower()
+                ext = "png" if name.endswith(".png") else ("jpeg" if name.endswith(".jpeg") else "jpg")
+                # Remove any existing custom thumbnail (any extension) first.
+                for old_ext in ("png", "jpg", "jpeg"):
+                    (sdir / f"custom_thumbnail.{old_ext}").unlink(missing_ok=True)
+                (sdir / f"custom_thumbnail.{ext}").write_bytes(data)
+                ui.notify("サムネイルを差し替えました", color="positive")
+                _render_thumb_preview()
+            except Exception as ex:
+                log.exception("thumbnail upload failed")
+                ui.notify(f"差し替え失敗: {ex}", color="negative")
+
+        ui.upload(
+            on_upload=_on_thumb_upload,
+            auto_upload=True,
+            max_files=1,
+            max_file_size=4_000_000,
+        ).props('accept="image/png,image/jpeg" label="サムネイル画像をアップロード"').classes("w-full")
+        _render_thumb_preview()
+
+        ui.separator().classes("my-3")
+
         title_template = cfg_get("shorts_youtube_title_template" if is_short else "youtube_title_template")
         category = story.categories[0] if story.categories else "怪談"
         if is_short:
@@ -1024,12 +1146,9 @@ def _show_youtube_upload(story):
                     def on_progress(cur, total):
                         upload_state["progress"] = cur / total if total > 0 else 0
 
-                    # Use title card as thumbnail
-                    from app.pipeline.stages import title_card_filename
-                    thumb = (
-                        images_dir(story.title, story.content_type)
-                        / title_card_filename(story.content_type)
-                    )
+                    # Thumbnail: user-uploaded custom_thumbnail.* takes priority
+                    # over the auto-generated title card.
+                    thumb = _current_thumb_path()
                     result = youtube_uploader.upload_video(
                         video_path=video_path(story.title, story.content_type),
                         title=yt_title.value,
@@ -1038,7 +1157,7 @@ def _show_youtube_upload(story):
                         category_id=yt_category.value,
                         privacy_status=yt_privacy.value,
                         publish_at=publish_at,
-                        thumbnail_path=thumb if thumb.exists() else None,
+                        thumbnail_path=thumb,
                         progress_callback=on_progress,
                     )
                     db.set_youtube_video_id(story.id, result["video_id"])

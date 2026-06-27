@@ -56,6 +56,24 @@ _DEFAULTS = {
     # UI ガイド表示用 (秒)。目安より短すぎ/長すぎを警告する。
     "bundle_target_duration_min": 3600,   # 1 時間
     "bundle_target_duration_max": 7200,   # 2 時間
+    # YouTube に詰め合わせ動画を投稿する際のテンプレート。
+    # {name}=詰め合わせ名, {chapters}=YouTube章フォーマット (00:00 タイトル) ブロック
+    "bundle_youtube_title_template": "【怪談朗読】詰め合わせ｜{name}",
+    "bundle_youtube_description_template": (
+        "【怪談朗読 詰め合わせ】{name}\n\n"
+        "百鬼朗読へようこそ。\n"
+        "怪談を続けてお楽しみいただける詰め合わせ動画です。\n"
+        "チャンネル登録・高評価よろしくお願いします。\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "目次\n"
+        "{chapters}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "音声: VOICEVOX\n"
+        "BGM: 「Where the Light Never Speaks」松浦洋介\n"
+        "(DOVA-SYNDROME: https://dova-s.jp/bgm/play22758.html)\n\n"
+        "#怪談 #ホラー #朗読 #怖い話 #百鬼朗読 #怪談朗読詰め合わせ #睡眠用 #作業用BGM"
+    ),
+    "bundle_youtube_tags": "怪談,ホラー,朗読,怖い話,心霊,恐怖,怪談朗読,詰め合わせ,睡眠用,作業用BGM,百鬼朗読,長編",
     "text_model": "gemini-2.5-flash",
     "gemini_model": "gemini-2.5-flash-lite",
     "max_chunk": 200,
