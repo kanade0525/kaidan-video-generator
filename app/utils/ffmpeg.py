@@ -572,20 +572,47 @@ def _tokenize_morphemes(text: str) -> list[str]:
     return tokens
 
 
-def _split_subtitle_text(text: str, max_chars: int = 19) -> list[str]:
-    """Split text into subtitle segments using morpheme-aware boundaries.
+def _split_into_sentences(text: str) -> list[str]:
+    """Split text into sentences at 。！？ (full/half width).
 
-    Uses MeCab to tokenize into meaningful units, then greedily groups
-    tokens into lines of max_chars. This ensures splits never break
-    mid-word and never start with punctuation like 、 or 」.
+    The ending punctuation and any trailing closing brackets (」）】』) stay
+    attached to the sentence, so a closing quote never becomes an orphan and the
+    next sentence always starts cleanly. Concatenating the result reproduces the
+    original text exactly.
     """
-    if len(text) <= max_chars:
-        return [text]
+    enders = "。！？!?"
+    closers = "」）】』"
+    sentences: list[str] = []
+    start = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] in enders:
+            j = i + 1
+            while j < n and (text[j] in enders or text[j] in closers):
+                j += 1
+            sentences.append(text[start:j])
+            start = j
+            i = j
+        else:
+            i += 1
+    if start < n:
+        sentences.append(text[start:])
+    return sentences
 
+
+def _split_long_sentence(text: str, max_chars: int) -> list[str]:
+    """Sub-split a single sentence that exceeds max_chars on morpheme boundaries.
+
+    Uses MeCab to tokenize into meaningful units, then greedily groups tokens
+    into lines so splits never break mid-word and never start with punctuation
+    like 、 or 」. Each returned segment is strictly ≤ max_chars (a token longer
+    than max_chars is force-split).
+    """
     tokens = _tokenize_morphemes(text)
 
-    # Pre-process: attach closing brackets/punctuation to previous token
-    # so they never become the start of a new segment.
+    # Attach closing brackets/punctuation to the previous token so they never
+    # become the start of a new segment.
     merged_tokens: list[str] = []
     for token in tokens:
         if token and token[0] in "」）】』。、！？" and merged_tokens:
@@ -595,55 +622,76 @@ def _split_subtitle_text(text: str, max_chars: int = 19) -> list[str]:
 
     segments: list[str] = []
     current = ""
-
     for token in merged_tokens:
         if len(current) + len(token) <= max_chars:
             current += token
         else:
             if current:
                 segments.append(current)
-            # If a single token exceeds max_chars, force-split it
+            # If a single token exceeds max_chars, force-split it.
             if len(token) > max_chars:
                 while token:
                     segments.append(token[:max_chars])
                     token = token[max_chars:]
+                current = ""
             else:
                 current = token
-                continue
-            current = ""
-
     if current:
         segments.append(current)
 
-    # Remove empty segments
     segments = [s for s in segments if s.strip()]
 
-    # Merge short fragments and segments starting with punctuation
-    # into neighbors to avoid orphans and bad starts.
-    merge_limit = max_chars + 4
+    # Merge short fragments and punctuation-leading fragments into a neighbor to
+    # avoid orphans and bad starts — but never exceed max_chars.
     merged: list[str] = []
     for seg in segments:
-        should_merge = False
-        if merged:
-            # Merge short segments (≤4 chars like "。", "なった。", "しかし、")
-            if len(seg) <= 4:
-                should_merge = True
-            # Merge segments starting with closing brackets/punctuation
-            elif seg[0] in "、。！？」）】』":
-                should_merge = True
-
-        if should_merge and len(merged[-1]) + len(seg) <= merge_limit:
+        should_merge = bool(merged) and (
+            len(seg) <= 4 or seg[0] in "、。！？」）】』"
+        )
+        if should_merge and len(merged[-1]) + len(seg) <= max_chars:
             merged[-1] += seg
         else:
             merged.append(seg)
 
-    # Merge short leading fragment forward
-    if len(merged) > 1 and len(merged[0]) <= 4:
-        if len(merged[0]) + len(merged[1]) <= merge_limit:
-            merged[1] = merged[0] + merged[1]
-            merged.pop(0)
+    # Merge a short leading fragment forward.
+    if len(merged) > 1 and len(merged[0]) <= 4 and len(merged[0]) + len(merged[1]) <= max_chars:
+        merged[1] = merged[0] + merged[1]
+        merged.pop(0)
 
     return merged if merged else [text]
+
+
+def _split_subtitle_text(text: str, max_chars: int = 19) -> list[str]:
+    """Split text into subtitle segments using sentence- and morpheme-aware
+    boundaries.
+
+    Text is first divided into sentences at 。！？ so a line never packs the
+    start of a new sentence onto one that already ended a sentence. Consecutive
+    sentences are greedily combined while they fit within max_chars; any single
+    sentence longer than max_chars is sub-split on morpheme boundaries. Every
+    returned segment is ≤ max_chars and concatenating them reproduces the input.
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    segments: list[str] = []
+    current = ""
+    for sentence in _split_into_sentences(text):
+        if len(sentence) > max_chars:
+            if current:
+                segments.append(current)
+                current = ""
+            segments.extend(_split_long_sentence(sentence, max_chars))
+        elif len(current) + len(sentence) <= max_chars:
+            current += sentence
+        else:
+            if current:
+                segments.append(current)
+            current = sentence
+    if current:
+        segments.append(current)
+
+    return segments if segments else [text]
 
 
 def generate_scroll_image(
