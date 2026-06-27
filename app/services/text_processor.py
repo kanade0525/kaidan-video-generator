@@ -172,6 +172,45 @@ def _ai_proofread(processed_text: str, raw_text: str) -> str:
     return result
 
 
+def ai_proofread(processed_text: str, raw_text: str) -> str:
+    """Public wrapper around the Gemini proofreader.
+
+    Returns the corrected hiragana text (or the input unchanged if the safety
+    guards reject the model output). Used by the UI's review-then-apply flow to
+    compute a diff before persisting; raises on hard API failures so the caller
+    can surface the error.
+    """
+    return _ai_proofread(processed_text, raw_text)
+
+
+def build_inline_diff(before: str, after: str) -> list[tuple[str, str]]:
+    """Character-level diff between two strings for inline highlight display.
+
+    Returns a list of (op, text) segments where op is one of:
+      - "equal":  unchanged text (present in both)
+      - "delete": text only in `before` (removed)
+      - "insert": text only in `after` (added)
+    A replacement is emitted as a delete immediately followed by an insert.
+    Reconstructing: "".join(t for op,t in segs if op!="insert") == before and
+    "".join(t for op,t in segs if op!="delete") == after.
+    """
+    import difflib
+
+    sm = difflib.SequenceMatcher(a=before, b=after, autojunk=False)
+    segments: list[tuple[str, str]] = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            segments.append(("equal", before[i1:i2]))
+        elif tag == "delete":
+            segments.append(("delete", before[i1:i2]))
+        elif tag == "insert":
+            segments.append(("insert", after[j1:j2]))
+        elif tag == "replace":
+            segments.append(("delete", before[i1:i2]))
+            segments.append(("insert", after[j1:j2]))
+    return segments
+
+
 def _llm_convert(text: str, prompt_template: str | None, model: str | None) -> str:
     """LLM-only conversion (used as fallback when MeCab unavailable)."""
     model_name = model or cfg_get("text_model") or "gemini-2.5-flash"
@@ -463,6 +502,47 @@ def _keep_as_kanji() -> set[str]:
     return _DEFAULT_KEEP_AS_KANJI | set(user)
 
 
+# Kanji (incl. 々〆 踊り字) used to detect when a pre-tokenization replacement
+# would fire *inside* a longer kanji run and corrupt it (e.g. 仮名 inside
+# 片仮名/平仮名, 額 inside 金額).
+_KANJI_CLASS = "一-龯々〆"
+_HAS_KANJI_RE = re.compile(f"[{_KANJI_CLASS}]")
+_ALL_KANJI_RE = re.compile(f"^[{_KANJI_CLASS}]+$")
+
+
+def _apply_compound_replacements(text: str, replacements: dict[str, str]) -> str:
+    """Apply compound replacements before MeCab tokenization, safely.
+
+    Sources are applied longest-first (so 日本人形 wins over 日本人, 〇〇 over 〇).
+
+    A leading-kanji guard is applied ONLY to "reading-conversion" entries —
+    where the source is all-kanji and the destination is pure kana (no kanji),
+    e.g. 仮名→かめい, 額→ひたい, 鏡→かがみ. These are the dangerous ones: naive
+    str.replace let a short kanji entry fire as the *tail* of a longer kanji
+    word and corrupt its reading (片仮名→かたかめい, 金額→きんひたい, 望遠鏡→
+    ぼうえんかがみ, 橋梁→はしはり — all suffix positions). The guard suppresses a
+    match only when it is immediately preceded by another kanji, so it still
+    fires standalone or after kana.
+
+    Crucially the guard checks only the *preceding* char, not the following one:
+    prefix compounds like 中国人→ちゅうごくじん must still fire in 中国人観光客
+    (followed by kanji). Annotation/insertion entries that keep the kanji
+    (話大→話、大, 部屋中→部屋じゅう, にはいって→に入って) and symbol/kana
+    sources are replaced verbatim, preserving their intended mid-word behaviour.
+    """
+    for src in sorted(replacements, key=len, reverse=True):
+        if not src:
+            continue
+        dst = replacements[src]
+        is_reading_conversion = bool(_ALL_KANJI_RE.match(src)) and not _HAS_KANJI_RE.search(dst)
+        if is_reading_conversion:
+            pattern = f"(?<![{_KANJI_CLASS}]){re.escape(src)}"
+            text = re.sub(pattern, lambda m, d=dst: d, text)
+        else:
+            text = text.replace(src, dst)
+    return text
+
+
 def _mecab_to_hiragana(text: str) -> str | None:
     """Convert text to hiragana using MeCab (kanji→reading + particle は/へ→わ/え).
 
@@ -505,8 +585,7 @@ def _mecab_to_hiragana_segment(text: str) -> str | None:
     # readings override everything else (e.g., 優曇華（うどんげ） → うどんげ).
     text = _apply_furigana(text)
 
-    for src, dst in _compound_replacements().items():
-        text = text.replace(src, dst)
+    text = _apply_compound_replacements(text, _compound_replacements())
 
     reading_overrides = _reading_overrides()
     keep_as_kanji = _keep_as_kanji()
