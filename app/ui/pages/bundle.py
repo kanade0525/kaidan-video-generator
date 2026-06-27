@@ -23,6 +23,41 @@ from app.utils.paths import (
 log = get_logger("kaidan.ui.bundle")
 
 
+def _collect_bundled_story_ids(bundles_root=None) -> dict[int, list[str]]:
+    """Scan existing bundle manifests → {story_id: [bundle_name, ...]}.
+
+    既存の output/bundles/*/manifest.json を走査し、過去に詰め合わせへ
+    含めたことのある story_id ごとに、含めた詰め合わせ名のリストを返す。
+    選択UIで「使用済み」を表示するために使う。
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from app.utils.paths import OUTPUT_BASE
+
+    result: dict[int, list[str]] = {}
+    root = _Path(bundles_root) if bundles_root is not None else OUTPUT_BASE / "bundles"
+    if not root.exists():
+        return result
+    for bdir in root.iterdir():
+        if not bdir.is_dir():
+            continue
+        mf = bdir / "manifest.json"
+        if not mf.exists():
+            continue
+        try:
+            manifest = _json.loads(mf.read_text())
+        except Exception:
+            continue
+        name = manifest.get("name", bdir.name)
+        for st in manifest.get("stories", []):
+            sid = st.get("id")
+            if sid is None:
+                continue
+            result.setdefault(sid, []).append(name)
+    return result
+
+
 def bundle_page():
     """Render the 詰め合わせ動画 creation page."""
     ui.label("詰め合わせ動画 (1〜2時間の長編)").classes("text-2xl font-bold mb-2")
@@ -46,6 +81,9 @@ def bundle_page():
                 stories.append(s)
                 seen.add(s.id)
     story_map = {s.id: s for s in stories}
+
+    # 過去に詰め合わせへ含めた story_id → 含めた詰め合わせ名リスト
+    bundled = _collect_bundled_story_ids()
 
     if not stories:
         ui.label("詰め合わせ素材になる Long ストーリーがありません (動画生成済以降)。").classes(
@@ -116,6 +154,10 @@ def bundle_page():
                 with ui.row().classes("items-center gap-2 bg-gray-100 p-2 rounded w-full"):
                     ui.label(f"{pos + 1}.").classes("font-mono w-8")
                     ui.label(story.title).classes("flex-1")
+                    if sid in bundled:
+                        ui.label(f"🔁使用済({len(bundled[sid])})").classes(
+                            "text-xs text-amber-600 font-bold",
+                        ).tooltip("使用済み詰め合わせ: " + ", ".join(bundled[sid]))
                     ui.label(f"{int(dur_sec / 60)}分{int(dur_sec % 60):02d}秒").classes(
                         "text-xs text-gray-500 w-20",
                     )
@@ -150,10 +192,15 @@ def bundle_page():
 
     # ── Add-story selector ─────────────────────────────────────────────────
     def selector_options():
-        return {
-            s.id: f"{s.title} ({int(durations.get(s.id, 0.0) / 60)}分)"
-            for s in stories if s.id not in state["order"]
-        }
+        opts: dict[int, str] = {}
+        for s in stories:
+            if s.id in state["order"]:
+                continue
+            label = f"{s.title} ({int(durations.get(s.id, 0.0) / 60)}分)"
+            if s.id in bundled:
+                label = f"🔁 {label} ※過去の詰め合わせで使用済 ({len(bundled[s.id])}件)"
+            opts[s.id] = label
+        return opts
 
     with ui.row().classes("items-end gap-2 mt-4"):
         select_widget = ui.select(selector_options(), label="ストーリーを追加").classes("w-96")

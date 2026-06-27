@@ -557,6 +557,17 @@ def do_images_short(story: Story, progress_callback: ProgressCallback = None) ->
     log.info("[images:short] %d 画像生成", len(paths))
 
 
+def build_short_credit_lines(story: Story, author: str) -> list[str]:
+    """Build the credit overlay lines for a Shorts video.
+
+    HHS図書館は作者情報を取得していないため、出典を「ホラホリ図書館」とし作者行を省く。
+    奇々怪々由来は出典+作者の3行構成。
+    """
+    if story.source == "hhs":
+        return ["ホラホリ図書館", f"「{story.title}」"]
+    return ["奇々怪々", f"「{story.title}」", f"作者: {author}"]
+
+
 def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> None:
     """Stage: Create final short video (vertical, no OP/ED, with subtitles + credit)."""
     from app.config import get as cfg_get
@@ -661,11 +672,7 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
         author = meta_data.get("author", author)
 
     output = video_path(story.title, ct)
-    credit_lines = [
-        "奇々怪々",
-        f"「{story.title}」",
-        f"作者: {author}",
-    ]
+    credit_lines = build_short_credit_lines(story, author)
 
     log.info("[video:short] 字幕・バナー・クレジットを一括焼き込み中...")
     burn_all_overlays(

@@ -82,11 +82,18 @@ def init_db() -> None:
             pass  # Column already exists
     conn.execute("CREATE INDEX IF NOT EXISTS idx_content_type ON stories(content_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_content_type_stage ON stories(content_type, stage)")
-    # Backfill source for rows where it was defaulted but should differ based on URL/content_type.
-    # Existing shorts are all from kikikaikai; existing longs are all from hhs.
+    # Self-correct source from URL on every startup (idempotent).
+    # 旧: content_type=short は全て kikikaikai と決め打ちしていたが、HHS→Short 移送
+    # 機能が増えた後はそれが destructive になり HHS 由来 Short の source を毎起動で
+    # kikikaikai に書き換えていた。URL ベースの判定なら同じ URL に対して何度走らせ
+    # ても結果が一致するので安全。
     conn.execute(
         "UPDATE stories SET source = 'kikikaikai' "
-        "WHERE content_type = 'short' AND (source IS NULL OR source = '' OR source = 'hhs')"
+        "WHERE url LIKE '%kikikaikai%' AND source != 'kikikaikai'"
+    )
+    conn.execute(
+        "UPDATE stories SET source = 'hhs' "
+        "WHERE url LIKE '%hhs.parasite.jp%' AND source != 'hhs'"
     )
     conn.commit()
 

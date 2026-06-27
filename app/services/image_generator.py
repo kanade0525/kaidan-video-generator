@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import requests
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from app.config import get as cfg_get
 from app.pipeline.retry import with_retry
@@ -402,6 +402,31 @@ def degrade_to_vhs(image_data: bytes) -> bytes:
     buf = BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def replace_scene_image(
+    target_path: Path,
+    source_bytes: bytes,
+    content_type: str = "short",
+) -> Path:
+    """Overwrite an existing scene PNG with a user-supplied image.
+
+    The source is cover-fit (scale up so the smaller dim fills the target,
+    then center-crop) to the canonical dimensions for the content type:
+    Shorts → 1080×1920, Long → 1792×1024. This matches what the slideshow
+    pipeline expects so the resulting video doesn't letterbox or break
+    libx264 even-dimension constraints.
+    """
+    target_w, target_h = (1080, 1920) if content_type == "short" else (1792, 1024)
+    img = Image.open(BytesIO(source_bytes))
+    img = ImageOps.exif_transpose(img)
+    img = ImageOps.fit(img, (target_w, target_h), method=Image.LANCZOS, centering=(0.5, 0.5))
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(target_path, "PNG")
+    log.info("シーン画像を差し替え: %s (%dx%d)", target_path, target_w, target_h)
+    return target_path
 
 
 def generate_fallback_image(width: int = 1792, height: int = 1024) -> bytes:
