@@ -753,6 +753,34 @@ class TestMecabToHiragana:
         result = tp._ai_proofread("ab", "あいうえお")
         assert result == "ab"
 
+    def test_ai_proofread_rejects_cyrillic_homoglyph(self, tmp_path, monkeypatch):
+        """AIが視覚的に酷似した別スクリプト(キリル等)を混ぜたらフォールバック。
+
+        改善プロンプトで Gemini がまれに「た」→「та」(キリル)等の同形異字を
+        出力するため。日本語怪談に非日本語スクリプトが出たら破損とみなす。
+        """
+        from app.services import text_processor as tp
+
+        import app.config as config_module
+        monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "c.toml")
+        config_module.save_config({
+            "text_model": "gemini-2.5-flash",
+            "ai_proofread_prompt": "{raw}|{processed}",
+        })
+        # 「お」をキリル「о」(U+043E) に置換した出力
+        corrupted = "あいうоお"
+        class FakeResp:
+            text = corrupted
+        class FakeModels:
+            def generate_content(self, model, contents):
+                return FakeResp()
+        class FakeClient:
+            models = FakeModels()
+        monkeypatch.setattr(tp, "get_gemini_text", lambda: FakeClient())
+
+        result = tp._ai_proofread("あいうえお", "あいうえお")
+        assert result == "あいうえお"  # キリル混入でフォールバック
+
     def test_ai_proofread_uses_configured_prompt(self, tmp_path, monkeypatch):
         """設定の ai_proofread_prompt がそのまま Gemini に渡される。"""
         from app.services import text_processor as tp
@@ -846,6 +874,20 @@ class TestMecabToHiragana:
         # 橋梁 → きょうりょう (梁→はり に壊されない)
         assert "きょうりょう" in _mecab_to_hiragana("橋梁を渡った。")
 
+    def test_kagami_reading_by_context(self):
+        """単漢字「鏡」は独立時かがみ、複合語ではきょう (既定辞書, 回帰)。
+
+        MeCab は文頭ダッシュ直後の独立した「鏡」を音読みキョウと返すが、
+        望遠鏡/鏡面/鏡台 等の複合語ではきょうが正しい。前後ガードで両立する。
+        """
+        # 独立した鏡 → かがみ (―― ダッシュ直後でも)
+        assert "かがみ" in _mecab_to_hiragana("――鏡に自分の姿を映す。")
+        assert "きょう" not in _mecab_to_hiragana("鏡を覗いた。")
+        # 複合語の鏡 → きょう (壊さない)
+        assert "ぼうえんきょう" in _mecab_to_hiragana("望遠鏡を覗く。")
+        assert "きょうめん" in _mecab_to_hiragana("鏡面に布を掛ける。")
+        assert "きょうだい" in _mecab_to_hiragana("鏡台の前に座る。")
+
 
 class TestApplyCompoundReplacements:
     """前処理置換の漢字境界ガード（config.toml に依存しない決定論テスト）。"""
@@ -864,6 +906,19 @@ class TestApplyCompoundReplacements:
         reps = {"仮名": "かめい", "額": "ひたい"}
         assert _apply_compound_replacements("仮名を使う", reps) == "かめいを使う"
         assert _apply_compound_replacements("額が痛い", reps) == "ひたいが痛い"
+
+    def test_single_kanji_reading_guarded_both_sides(self):
+        """単漢字の読み変換は前後どちらに漢字があっても発火しない。
+
+        鏡は独立時のみ かがみ。望遠鏡(前方漢字)・鏡面(後続漢字)では発火させない。
+        """
+        reps = {"鏡": "かがみ"}
+        assert _apply_compound_replacements("望遠鏡", reps) == "望遠鏡"   # 前方漢字
+        assert _apply_compound_replacements("鏡面", reps) == "鏡面"       # 後続漢字
+        assert _apply_compound_replacements("三面鏡", reps) == "三面鏡"
+        # 単独・かな/記号隣接では発火
+        assert _apply_compound_replacements("――鏡に", reps) == "――かがみに"
+        assert _apply_compound_replacements("古い鏡が", reps) == "古いかがみが"
 
     def test_reading_conversion_fires_before_following_kanji(self):
         """接頭複合語 (中国人→ちゅうごくじん) は後続が漢字でも発火する。
