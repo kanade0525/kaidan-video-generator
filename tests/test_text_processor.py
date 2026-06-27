@@ -2,7 +2,11 @@
 
 import pytest
 
-from app.services.text_processor import _katakana_to_hiragana, _mecab_to_hiragana
+from app.services.text_processor import (
+    _apply_compound_replacements,
+    _katakana_to_hiragana,
+    _mecab_to_hiragana,
+)
 
 
 def _mecab_available() -> bool:
@@ -821,3 +825,81 @@ class TestMecabToHiragana:
         assert _mecab_to_hiragana("寝ていた") == "ねていた"
         # 珍しくない → めずらしくない (not めずらしいない)
         assert _mecab_to_hiragana("珍しくない") == "めずらしくない"
+
+    def test_katakana_word_not_misread(self):
+        """片仮名/平仮名 が「かたかめい/たいらかめい」に壊れない (回帰)。
+
+        MeCab は 片仮名=カタカナ, 平仮名=ヒラガナ と正しく読む。前処理の
+        部分文字列置換 (仮名→かめい 等) が長い語を壊さないことを保証する。
+        """
+        assert _mecab_to_hiragana("片仮名") == "かたかな"
+        assert _mecab_to_hiragana("平仮名") == "ひらがな"
+        assert "かめい" not in _mecab_to_hiragana("これは片仮名と平仮名です。")
+
+    def test_amount_and_compound_not_corrupted(self):
+        """額/鏡/梁 の読み是正が長い複合語を壊さない (回帰)。"""
+        # 金額/半額/総額 → きんがく/はんがく/そうがく (額→ひたい に壊されない)
+        assert "きんがく" in _mecab_to_hiragana("金額を確認した。")
+        assert "はんがく" in _mecab_to_hiragana("半額になった。")
+        # 望遠鏡 → ぼうえんきょう (鏡→かがみ に壊されない)
+        assert "ぼうえんきょう" in _mecab_to_hiragana("望遠鏡で覗いた。")
+        # 橋梁 → きょうりょう (梁→はり に壊されない)
+        assert "きょうりょう" in _mecab_to_hiragana("橋梁を渡った。")
+
+
+class TestApplyCompoundReplacements:
+    """前処理置換の漢字境界ガード（config.toml に依存しない決定論テスト）。"""
+
+    def test_reading_conversion_guarded_inside_kanji_run(self):
+        """漢字→かな の読み変換は、長い漢字語の内側では発火しない。"""
+        reps = {"仮名": "かめい", "額": "ひたい", "鏡": "かがみ", "梁": "はり"}
+        assert _apply_compound_replacements("片仮名", reps) == "片仮名"
+        assert _apply_compound_replacements("平仮名", reps) == "平仮名"
+        assert _apply_compound_replacements("金額", reps) == "金額"
+        assert _apply_compound_replacements("望遠鏡", reps) == "望遠鏡"
+        assert _apply_compound_replacements("橋梁", reps) == "橋梁"
+
+    def test_reading_conversion_fires_at_boundary(self):
+        """単独・かな隣接では従来どおり読み変換が発火する。"""
+        reps = {"仮名": "かめい", "額": "ひたい"}
+        assert _apply_compound_replacements("仮名を使う", reps) == "かめいを使う"
+        assert _apply_compound_replacements("額が痛い", reps) == "ひたいが痛い"
+
+    def test_reading_conversion_fires_before_following_kanji(self):
+        """接頭複合語 (中国人→ちゅうごくじん) は後続が漢字でも発火する。
+
+        ガードは「前方の漢字」だけを見るので、接尾位置の破壊
+        (片仮名/金額) は防ぎつつ、接頭複合語は壊さない。
+        """
+        reps = {"中国人": "ちゅうごくじん", "日本人": "にほんじん"}
+        assert _apply_compound_replacements("中国人観光客", reps) == "ちゅうごくじん観光客"
+        assert _apply_compound_replacements("日本人形劇", reps) == "にほんじん形劇"
+
+    def test_annotation_entry_fires_mid_kanji_run(self):
+        """漢字を残す注釈系 (話大→話、大) は漢字に挟まれていても発火する。"""
+        reps = {"話大": "話、大"}
+        assert _apply_compound_replacements("話大好き", reps) == "話、大好き"
+        assert _apply_compound_replacements("話大事な", reps) == "話、大事な"
+
+    def test_kanji_retaining_conversion_not_guarded(self):
+        """dst に漢字が残る部分変換 (部屋中→部屋じゅう) はガードしない。"""
+        reps = {"部屋中": "部屋じゅう"}
+        assert _apply_compound_replacements("部屋中", reps) == "部屋じゅう"
+
+    def test_longest_source_first(self):
+        """より長い src を優先 (日本人形 が 日本人 に負けない)。"""
+        reps = {"日本人": "にほんじん", "日本人形": "にほんにんぎょう"}
+        assert _apply_compound_replacements("日本人形", reps) == "にほんにんぎょう"
+        assert _apply_compound_replacements("日本人", reps) == "にほんじん"
+
+    def test_symbol_and_kana_sources_verbatim(self):
+        """記号・かな src は素直に置換 (境界ガードなし)。"""
+        reps = {"〇〇": "まるまる", "にはいって": "に入って"}
+        assert _apply_compound_replacements("〇〇さん", reps) == "まるまるさん"
+        assert _apply_compound_replacements("中にはいって", reps) == "中に入って"
+
+    def test_dst_with_special_chars_is_literal(self):
+        """dst が正規表現メタ文字を含んでも文字通り挿入される。"""
+        reps = {"額面": r"\1がくめん"}  # all-kanji src, kana+backref-like dst
+        # dst に漢字が無いのでガード対象。\1 はリテラルとして出る (置換崩れしない)
+        assert _apply_compound_replacements("額面", reps) == r"\1がくめん"

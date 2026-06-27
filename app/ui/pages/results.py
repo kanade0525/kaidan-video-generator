@@ -450,6 +450,32 @@ def _show_scrape_result(story):
     _retry_button(story, "scraped", "再スクレイピング")
 
 
+def _diff_html(segments) -> str:
+    """Render build_inline_diff segments as inline-highlighted HTML.
+
+    削除=赤(取り消し線)、追加=緑。改行は pre-wrap で保持。入力はHTMLエスケープ。
+    """
+    import html as _html
+
+    parts = []
+    for op, text in segments:
+        esc = _html.escape(text)
+        if op == "delete":
+            parts.append(
+                f'<span style="background:#fde2e1;color:#b91c1c;'
+                f'text-decoration:line-through;">{esc}</span>'
+            )
+        elif op == "insert":
+            parts.append(f'<span style="background:#dcfce7;color:#166534;">{esc}</span>')
+        else:
+            parts.append(f"<span>{esc}</span>")
+    return (
+        '<div style="white-space:pre-wrap;word-break:break-word;">'
+        + "".join(parts)
+        + "</div>"
+    )
+
+
 def _show_text_result(story):
     proc_path = processed_text_path(story.title, story.content_type)
     if proc_path.exists():
@@ -481,6 +507,132 @@ def _show_text_result(story):
             ui.notify(f"処理済みテキストを保存（{len(new_chunks)}チャンク）", color="positive")
 
         ui.button("テキストを保存", on_click=save_processed, color="green").props("size=sm")
+
+        # ── AI校正プレビュー (Gemini, レビューしてから適用) ─────────────────
+        ui.separator().classes("my-4")
+        ui.label("AI校正プレビュー").classes("text-lg font-semibold")
+        ui.label(
+            "現在の処理済みテキストを原文と照合し、Gemini が漢字の読み間違いを修正します。"
+            "変更箇所(赤=削除/緑=追加)を確認してから適用できます。1回ごとに API 課金あり。",
+        ).classes("text-xs text-gray-500")
+
+        with ui.row().classes("items-center gap-2 mt-1"):
+            proof_btn = ui.button("AI校正プレビュー", color="purple").props(
+                "size=sm icon=auto_fix_high",
+            )
+            proof_spinner = ui.spinner(size="sm")
+            proof_spinner.visible = False
+            proof_status = ui.label("").classes("text-sm text-gray-500")
+        diff_container = ui.column().classes("w-full gap-1")
+
+        proof_state = {"running": False, "done": False, "error": None, "result": None}
+
+        def _apply_proof():
+            import json as _json
+
+            from app.services.text_processor import split_into_chunks
+            new_text = proof_state.get("result")
+            if not new_text:
+                return
+            proc_path.write_text(new_text, encoding="utf-8")
+            new_chunks = split_into_chunks(new_text)
+            chunks_path(story.title, story.content_type).write_text(
+                _json.dumps(new_chunks, ensure_ascii=False, indent=2),
+            )
+            textarea.value = new_text
+            edited["text"] = new_text
+            char_label.text = f"文字数: {len(new_text)}"
+            proof_state["result"] = None
+            diff_container.clear()
+            proof_status.text = "校正を適用しました"
+            proof_status.classes(replace="text-sm text-green-600")
+            log.info("AI校正を適用: %d文字, %dチャンク", len(new_text), len(new_chunks))
+            ui.notify(f"AI校正を適用（{len(new_chunks)}チャンク）", color="positive")
+
+        def _discard_proof():
+            proof_state["result"] = None
+            diff_container.clear()
+            proof_status.text = "破棄しました"
+            proof_status.classes(replace="text-sm text-gray-500")
+
+        def _render_diff():
+            from app.services.text_processor import build_inline_diff
+            diff_container.clear()
+            result = proof_state.get("result")
+            before = edited["text"]
+            with diff_container:
+                if result is None:
+                    return
+                if result == before:
+                    ui.label("変更なし（修正の必要は見つかりませんでした）").classes(
+                        "text-sm text-green-600",
+                    )
+                    return
+                segs = build_inline_diff(before, result)
+                n_change = sum(1 for op, _ in segs if op != "equal")
+                ui.label(f"変更候補: {n_change}セグメント（赤=削除 / 緑=追加）").classes(
+                    "text-sm text-gray-600",
+                )
+                ui.html(_diff_html(segs)).classes(
+                    "w-full p-2 border rounded bg-white overflow-x-auto",
+                )
+                with ui.row().classes("gap-2 mt-1"):
+                    ui.button("適用", on_click=_apply_proof, color="green").props("size=sm")
+                    ui.button("破棄", on_click=_discard_proof, color="grey").props("flat size=sm")
+
+        def _run_proofread():
+            import threading
+
+            from app.services.text_processor import ai_proofread
+            proof_state.update(running=True, done=False, error=None, result=None)
+            diff_container.clear()
+            proof_spinner.visible = True
+            proof_status.text = "Gemini で校正中..."
+            proof_status.classes(replace="text-sm text-blue-500")
+            proof_btn.disable()
+            before = edited["text"]
+            try:
+                raw = raw_content_path(story.title, story.content_type).read_text(encoding="utf-8")
+            except Exception:
+                raw = ""
+
+            def work():
+                try:
+                    proof_state["result"] = ai_proofread(before, raw)
+                except Exception as e:
+                    proof_state["error"] = str(e)
+                proof_state["done"] = True
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def _poll_proof():
+            if not proof_state["running"]:
+                proof_timer.active = False
+                return
+            try:
+                if proof_state["done"]:
+                    proof_state["running"] = False
+                    proof_spinner.visible = False
+                    proof_btn.enable()
+                    if proof_state["error"]:
+                        proof_status.text = f"校正失敗: {proof_state['error'][:120]}"
+                        proof_status.classes(replace="text-sm text-red-500")
+                    else:
+                        proof_status.text = "校正完了。変更を確認してください。"
+                        proof_status.classes(replace="text-sm text-green-600")
+                        _render_diff()
+                    proof_timer.active = False
+            except RuntimeError:
+                proof_state["running"] = False
+                proof_timer.active = False
+
+        proof_timer = ui.timer(0.5, _poll_proof, active=False)
+
+        def _start_proof():
+            _run_proofread()
+            proof_timer.active = True
+
+        proof_btn.on_click(_start_proof)
 
         # Title furigana editing
         ui.separator().classes("my-4")
