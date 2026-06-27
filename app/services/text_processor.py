@@ -151,6 +151,13 @@ def _ai_proofread(processed_text: str, raw_text: str) -> str:
         log.warning("AI校正出力に異体字が混入、MeCab結果を返す")
         return processed_text
 
+    # ガード2.5: 視覚的に酷似した別スクリプト(キリル/ギリシャ/ハングル)を AI が
+    # 紛れ込ませた場合は破損とみなす。LLM はまれに「た」→「та」(キリル т+а) の
+    # ような同形異字を出力する。日本語怪談本文には現れないので一律破損扱い。
+    if re.search(r"[Ͱ-ϿЀ-ԯᄀ-ᇿ가-힯]", result):
+        log.warning("AI校正出力に非日本語スクリプト(キリル等)が混入、MeCab結果を返す")
+        return processed_text
+
     # ガード3: 行数が大きく変わっている場合は信用しない (構造破壊の保険)
     raw_lines = processed_text.count("\n")
     new_lines = result.count("\n")
@@ -402,6 +409,12 @@ _DEFAULT_COMPOUND_REPLACEMENTS: dict[str, str] = {
     # ので「へやちゅう」になり、加えて VOICEVOX が「へ」を助詞え誤解析して
     # 「ながらへやちゅう」を「ナガラエ・ヤチュウ」(=夜中) と読んで意味が壊れる。
     "部屋中": "部屋じゅう",
+    # 単漢字「鏡」: 単独なら かがみ だが、MeCab は文頭(特に ―― ダッシュ直後)で
+    # 音読み キョウ を返すことがある(「――鏡に」→きょう)。一方 望遠鏡/鏡面/鏡台
+    # 等の複合語では きょう が正しい。_apply_compound_replacements の単漢字
+    # 前後ガードにより、前後とも漢字でないとき(=独立した鏡)だけ かがみ に置換し、
+    # 望遠+鏡/鏡+面 のような複合は触らない。怪談で鏡は頻出のため既定に置く。
+    "鏡": "かがみ",
 }
 
 # Kanji to keep as-is (skip hiragana conversion) because VOICEVOX mis-reads
@@ -515,20 +528,24 @@ def _apply_compound_replacements(text: str, replacements: dict[str, str]) -> str
 
     Sources are applied longest-first (so 日本人形 wins over 日本人, 〇〇 over 〇).
 
-    A leading-kanji guard is applied ONLY to "reading-conversion" entries —
+    A kanji-boundary guard is applied ONLY to "reading-conversion" entries —
     where the source is all-kanji and the destination is pure kana (no kanji),
-    e.g. 仮名→かめい, 額→ひたい, 鏡→かがみ. These are the dangerous ones: naive
-    str.replace let a short kanji entry fire as the *tail* of a longer kanji
-    word and corrupt its reading (片仮名→かたかめい, 金額→きんひたい, 望遠鏡→
-    ぼうえんかがみ, 橋梁→はしはり — all suffix positions). The guard suppresses a
-    match only when it is immediately preceded by another kanji, so it still
-    fires standalone or after kana.
+    e.g. 鏡→かがみ, 額→ひたい, 中国人→ちゅうごくじん. Naive str.replace let such
+    an entry fire as part of a longer kanji word and corrupt its reading
+    (片仮名→かたかめい, 金額→きんひたい). The guard scope depends on the source
+    length:
 
-    Crucially the guard checks only the *preceding* char, not the following one:
-    prefix compounds like 中国人→ちゅうごくじん must still fire in 中国人観光客
-    (followed by kanji). Annotation/insertion entries that keep the kanji
-    (話大→話、大, 部屋中→部屋じゅう, にはいって→に入って) and symbol/kana
-    sources are replaced verbatim, preserving their intended mid-word behaviour.
+    - Single-kanji (鏡, 額, 梁): the kanji reads differently in ANY compound —
+      both as a prefix that MeCab splits off (望遠鏡=きょう) and as a suffix
+      (鏡面=きょう). So fire only when truly standalone: guard BOTH sides
+      (前後とも漢字でないとき)。これで「――鏡に」=かがみ、「望遠鏡」「鏡面」=きょう。
+    - Multi-kanji (中国人, 既読, 仮名): the whole entry is the unit and must
+      still fire as a prefix before more kanji (中国人観光客→ちゅうごくじん…).
+      Guard only the preceding side (block 仮名 inside 片仮名).
+
+    Annotation/insertion entries that keep the kanji (話大→話、大, 部屋中→部屋
+    じゅう, にはいって→に入って) and symbol/kana sources are replaced verbatim,
+    preserving their intended mid-word behaviour.
     """
     for src in sorted(replacements, key=len, reverse=True):
         if not src:
@@ -536,7 +553,10 @@ def _apply_compound_replacements(text: str, replacements: dict[str, str]) -> str
         dst = replacements[src]
         is_reading_conversion = bool(_ALL_KANJI_RE.match(src)) and not _HAS_KANJI_RE.search(dst)
         if is_reading_conversion:
-            pattern = f"(?<![{_KANJI_CLASS}]){re.escape(src)}"
+            if len(src) == 1:
+                pattern = f"(?<![{_KANJI_CLASS}]){re.escape(src)}(?![{_KANJI_CLASS}])"
+            else:
+                pattern = f"(?<![{_KANJI_CLASS}]){re.escape(src)}"
             text = re.sub(pattern, lambda m, d=dst: d, text)
         else:
             text = text.replace(src, dst)
