@@ -1101,15 +1101,13 @@ def _show_youtube_upload(story):
         # upload to custom_thumbnail.{png,jpg} overrides it (persists between
         # page reloads).
         sdir = story_dir(story.title, story.content_type)
-        from app.pipeline.stages import title_card_filename as _tc_name
-        default_thumb = images_dir(story.title, story.content_type) / _tc_name(story.content_type)
 
         def _current_thumb_path():
-            for ext in ("png", "jpg", "jpeg"):
-                cp = sdir / f"custom_thumbnail.{ext}"
-                if cp.exists():
-                    return cp
-            return default_thumb if default_thumb.exists() else None
+            # Shared resolver: custom_thumbnail.* > title card. Same logic the
+            # do_youtube_upload pipeline stage uses, so UI preview and actual
+            # upload always agree.
+            from app.pipeline.stages import resolve_thumbnail_path
+            return resolve_thumbnail_path(story.title, story.content_type)
 
         thumb_static_path = f"/thumb/{story.id}"
         app.add_static_files(thumb_static_path, str(sdir))

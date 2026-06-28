@@ -179,7 +179,8 @@ def set_thumbnail(video_id: str, thumbnail_path: str | Path) -> None:
         return
 
     service = _get_service()
-    media = MediaFileUpload(str(thumbnail_path), mimetype="image/png")
+    mimetype = "image/jpeg" if thumbnail_path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+    media = MediaFileUpload(str(thumbnail_path), mimetype=mimetype)
 
     try:
         service.thumbnails().set(

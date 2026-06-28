@@ -113,6 +113,24 @@ def title_card_filename(content_type: str) -> str:
     return SHORTS_TITLE_CARD_FILENAME if content_type == "short" else TITLE_CARD_FILENAME
 
 
+def resolve_thumbnail_path(title: str, content_type: str) -> Path | None:
+    """Resolve the YouTube thumbnail for a story.
+
+    A user-uploaded custom_thumbnail.{png,jpg,jpeg} in the story dir takes
+    priority over the auto-generated title card; returns None if neither exists.
+    Shared by the manual upload UI and the do_youtube_upload pipeline stage so
+    both honor a custom thumbnail — previously the stage always used the title
+    card, so custom thumbnails were ignored on auto/scheduled/retry uploads.
+    """
+    sdir = story_dir(title, content_type)
+    for ext in ("png", "jpg", "jpeg"):
+        custom = sdir / f"custom_thumbnail.{ext}"
+        if custom.exists():
+            return custom
+    card = images_dir(title, content_type) / title_card_filename(content_type)
+    return card if card.exists() else None
+
+
 def load_scene_images(
     img_dir: Path, slideshow_config_path: Path, content_type: str = "long",
 ) -> tuple[list[Path], list[float] | None]:
@@ -417,6 +435,12 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
             minute=cfg_get("youtube_schedule_minute") or 0,
         )
 
+    # Thumbnail: user-uploaded custom_thumbnail.* takes priority over the
+    # auto-generated title card (same resolver as the manual upload UI).
+    # 以前はここで thumbnail_path を渡しておらず、長編はサムネ未設定で
+    # アップロードされていた(YouTube自動生成フレームになる)。
+    thumbnail = resolve_thumbnail_path(story.title, ct)
+
     result = youtube_uploader.upload_video(
         video_path=vid,
         title=yt_title,
@@ -425,6 +449,7 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
         category_id=category_id,
         privacy_status=privacy,
         publish_at=publish_at,
+        thumbnail_path=thumbnail,
         progress_callback=progress_callback,
     )
 
@@ -828,8 +853,9 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
             minute=cfg_get("youtube_schedule_minute") or 0,
         )
 
-    # Use title card as thumbnail
-    thumbnail = images_dir(story.title, ct) / title_card_filename(ct)
+    # Thumbnail: user-uploaded custom_thumbnail.* takes priority over the
+    # auto-generated title card (same resolver as the manual upload UI).
+    thumbnail = resolve_thumbnail_path(story.title, ct)
 
     result = youtube_uploader.upload_video(
         video_path=vid,
@@ -839,7 +865,7 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
         category_id=category_id,
         privacy_status=privacy,
         publish_at=publish_at,
-        thumbnail_path=thumbnail if thumbnail.exists() else None,
+        thumbnail_path=thumbnail,
         progress_callback=progress_callback,
     )
 
