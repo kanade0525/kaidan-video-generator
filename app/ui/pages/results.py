@@ -669,7 +669,11 @@ def _show_voice_result(story):
     if narr_path.exists():
         # Serve audio file with cache-busting timestamp
         ts = int(narr_path.stat().st_mtime)
-        static_path = f"/audio/{story.id}"
+        # Key the static route by content_type too: a story keeps its id after
+        # long→short 移行, and add_static_files は同一URLパスの先勝ちなので、
+        # id だけだと長編で登録したルート(=長編ディレクトリ)が短編でも使われ、
+        # 再生成した短編音声が反映されない。
+        static_path = f"/audio/{story.id}-{story.content_type}"
         app.add_static_files(static_path, str(narr_path.parent))
         ui.audio(f"{static_path}/{narr_path.name}?t={ts}").classes("w-full")
 
@@ -694,7 +698,7 @@ def _show_images_result(story):
     images = sorted(img_dir.glob("*.png"))
 
     if images:
-        static_path = f"/images/{story.id}"
+        static_path = f"/images/{story.id}-{story.content_type}"
         app.add_static_files(static_path, str(img_dir))
 
         # Load or create slideshow config
@@ -818,7 +822,7 @@ def _show_video_result(story):
     vid_path = video_path(story.title, story.content_type)
     if vid_path.exists():
         ts = int(vid_path.stat().st_mtime)
-        static_path = f"/video/{story.id}"
+        static_path = f"/video/{story.id}-{story.content_type}"
         app.add_static_files(static_path, str(vid_path.parent))
 
         if story.content_type == "short":
@@ -1109,11 +1113,11 @@ def _show_youtube_upload(story):
             from app.pipeline.stages import resolve_thumbnail_path
             return resolve_thumbnail_path(story.title, story.content_type)
 
-        thumb_static_path = f"/thumb/{story.id}"
+        thumb_static_path = f"/thumb/{story.id}-{story.content_type}"
         app.add_static_files(thumb_static_path, str(sdir))
         # Also expose images dir under the same id namespace so we can show
         # the default title card before any custom upload exists.
-        thumb_img_static_path = f"/thumb_img/{story.id}"
+        thumb_img_static_path = f"/thumb_img/{story.id}-{story.content_type}"
         app.add_static_files(thumb_img_static_path, str(images_dir(story.title, story.content_type)))
 
         ui.label("サムネイル").classes("text-md font-semibold mt-1")
