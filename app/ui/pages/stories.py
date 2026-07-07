@@ -73,6 +73,8 @@ def stories_page(category: str = "", page: int = 0):
 
             columns = [
                 {"name": "title", "label": "タイトル", "field": "title", "align": "left"},
+                {"name": "char_count", "label": "文字数", "field": "char_count",
+                 "align": "right", "sortable": True},
                 {"name": "url", "label": "URL", "field": "url", "align": "left"},
                 {"name": "categories", "label": "カテゴリ", "field": "categories"},
                 {"name": "stage", "label": "ステージ", "field": "stage"},
@@ -84,6 +86,7 @@ def stories_page(category: str = "", page: int = 0):
                 rows.append({
                     "id": s.id,
                     "title": s.title[:30],
+                    "char_count": s.char_count if s.char_count is not None else "-",
                     "url": s.url,
                     "categories": ", ".join(s.categories),
                     "stage": STAGE_LABELS.get(s.stage, s.stage),

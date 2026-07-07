@@ -24,6 +24,12 @@ from app.utils.log import setup_logging
 setup_logging()
 init_db()
 
+# Backfill char_count for stories scraped before it was tracked (idempotent,
+# cheap after first run). Lets the UI show 文字数 for existing HHS 長編.
+from app.pipeline.stages import backfill_char_counts  # noqa: E402
+
+backfill_char_counts()
+
 
 @ui.page("/")
 def index():
