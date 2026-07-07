@@ -420,3 +420,34 @@ class TestRecoverRunning:
 
         count = db.recover_running()
         assert count == 2
+
+
+class TestCharCountBackfill:
+    def test_missing_char_count_listed_then_excluded(self):
+        s = db.add_story(url="https://a.com/1", content_type="long")
+        # char_count は未設定 → 一覧に含まれる
+        missing = db.get_stories_missing_char_count()
+        assert s.id in [m.id for m in missing]
+        # 設定後は除外される
+        db.update_char_count(s.id, 1234)
+        assert s.id not in [m.id for m in db.get_stories_missing_char_count()]
+        assert db.get_story_by_id(s.id).char_count == 1234
+
+    def test_backfill_reads_raw_content(self, tmp_path, monkeypatch):
+        from app.pipeline import stages
+        s = db.add_story(url="https://a.com/story", title="t", content_type="long")
+        raw = tmp_path / "raw.txt"
+        raw.write_text("あ" * 500, encoding="utf-8")
+        monkeypatch.setattr(stages, "raw_content_path", lambda title, ct: raw)
+
+        updated = stages.backfill_char_counts()
+        assert updated == 1
+        assert db.get_story_by_id(s.id).char_count == 500
+        # 冪等: 2回目は0件
+        assert stages.backfill_char_counts() == 0
+
+    def test_backfill_skips_when_no_raw_file(self, tmp_path, monkeypatch):
+        from app.pipeline import stages
+        db.add_story(url="https://a.com/nofile", content_type="long")
+        monkeypatch.setattr(stages, "raw_content_path", lambda title, ct: tmp_path / "missing.txt")
+        assert stages.backfill_char_counts() == 0

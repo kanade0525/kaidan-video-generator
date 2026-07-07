@@ -37,9 +37,32 @@ def do_scrape(story: Story, progress_callback: ProgressCallback = None) -> None:
     ct = story.content_type
     out = raw_content_path(story.title, ct)
     out.write_text(content, encoding="utf-8")
+    db.update_char_count(story.id, len(content))
     if progress_callback:
         progress_callback(1, 1)
     log.info("[scrape] 保存: %s (%d chars)", out.name, len(content))
+
+
+def backfill_char_counts() -> int:
+    """Idempotent backfill of char_count from raw_content for stories missing it.
+
+    Long stories scraped before char_count tracking have NULL. Reads each
+    story's raw_content.txt (if present) and records its length. Returns the
+    number updated. Cheap after the first run — remaining NULL rows are
+    un-scraped stories with no raw file, which are skipped.
+    """
+    updated = 0
+    for story in db.get_stories_missing_char_count():
+        try:
+            raw = raw_content_path(story.title, story.content_type)
+            if raw.exists():
+                db.update_char_count(story.id, len(raw.read_text(encoding="utf-8")))
+                updated += 1
+        except Exception as e:  # noqa: BLE001 — best-effort backfill
+            log.warning("[backfill char_count] %s: %s", story.title, e)
+    if updated:
+        log.info("[backfill char_count] %d件の文字数を補完", updated)
+    return updated
 
 
 def do_text(

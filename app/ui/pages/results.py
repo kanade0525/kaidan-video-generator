@@ -90,7 +90,11 @@ def results_page(
         detail_container.clear()
         with detail_container:
             # Progress indicator
-            ui.label(f"「{story.title}」").classes("text-xl font-bold mb-2")
+            ui.label(f"「{story.title}」").classes("text-xl font-bold mb-1")
+            if story.char_count is not None:
+                ui.label(f"文字数: {story.char_count:,}字").classes(
+                    "text-sm text-gray-500 mb-2",
+                )
 
             if story.categories:
                 with ui.row().classes("gap-1 mb-3 items-center"):
@@ -183,7 +187,10 @@ def results_page(
                 ui.label("該当なし").classes("text-gray-500")
                 return
             from app.ui.url_state import resolve_initial_story
-            options = {s.id: f"{s.title} [{STAGE_LABELS.get(s.stage, s.stage)}]" for s in stories}
+            options = {}
+            for s in stories:
+                cc = f"（{s.char_count:,}字）" if s.char_count is not None else ""
+                options[s.id] = f"{s.title}{cc} [{STAGE_LABELS.get(s.stage, s.stage)}]"
             initial = resolve_initial_story(story_id, options)
             sel = ui.select(options, label="ストーリー選択", value=initial).classes("w-96")
             sel.on_value_change(lambda e: show_detail(e.value))

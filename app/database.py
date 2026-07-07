@@ -343,6 +343,16 @@ def update_stage(story_id: int, stage: str, error: str | None = None) -> None:
     conn.commit()
 
 
+def get_stories_missing_char_count() -> list[Story]:
+    """Stories whose char_count is not yet set (for one-time backfill).
+
+    Long HHS stories scraped before char_count tracking have NULL here.
+    """
+    conn = _get_conn()
+    rows = conn.execute("SELECT * FROM stories WHERE char_count IS NULL").fetchall()
+    return [_row_to_story(r) for r in rows]
+
+
 def update_char_count(story_id: int, char_count: int) -> None:
     """Update the character count for a story."""
     conn = _get_conn()
