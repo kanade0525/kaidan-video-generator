@@ -15,6 +15,7 @@ from app.utils.paths import (
     chunks_path,
     images_dir,
     narration_path,
+    original_chunks_path,
     processed_text_path,
     raw_content_path,
     story_dir,
@@ -483,6 +484,81 @@ def _diff_html(segments) -> str:
     )
 
 
+def save_processed_text(story, new_text: str) -> int:
+    """Persist edited processed (hiragana) text and regenerate both chunk files.
+
+    Rewrites processed_text.txt, chunks.json (音声用ひらがなチャンク) and
+    original_chunks.json (字幕用に原文を同数へ1:1分割) — do_text と同じ処理 —
+    ので、続く「音声再生成」で修正読みが反映され、字幕との対応数もズレない。
+    Returns the chunk count.
+    """
+    import json as _json
+
+    from app.services.text_processor import split_into_chunks, split_into_n_chunks
+    ct = story.content_type
+    processed_text_path(story.title, ct).write_text(new_text, encoding="utf-8")
+    new_chunks = split_into_chunks(new_text)
+    chunks_path(story.title, ct).write_text(
+        _json.dumps(new_chunks, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+    raw_p = raw_content_path(story.title, ct)
+    if raw_p.exists():
+        orig_chunks = split_into_n_chunks(raw_p.read_text(encoding="utf-8"), len(new_chunks))
+        original_chunks_path(story.title, ct).write_text(
+            _json.dumps(orig_chunks, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+    log.info("処理後テキスト保存: %d文字, %dチャンク", len(new_text), len(new_chunks))
+    return len(new_chunks)
+
+
+def _voice_text_editor(story):
+    """Edit the processed (hiragana) text while listening in the voice tab.
+
+    音声を聞いて読み間違いに気づいたら、その場で処理後テキストを直して保存し、
+    下の「音声再生成」で聞き直せる。原文を左に並べて参照できる。
+    """
+    proc_path = processed_text_path(story.title, story.content_type)
+    if not proc_path.exists():
+        ui.label("処理後テキストが未生成です（先にテキスト処理を実行してください）").classes(
+            "text-gray-500 text-sm",
+        )
+        return
+
+    raw_path = raw_content_path(story.title, story.content_type)
+    raw_text = raw_path.read_text(encoding="utf-8") if raw_path.exists() else ""
+    proc_text = proc_path.read_text(encoding="utf-8")
+    edited = {"text": proc_text}
+
+    ui.label("読み修正").classes("text-md font-semibold")
+    ui.label(
+        "音声を聞いて読み間違いに気づいたら、右の「処理後テキスト」を直して保存 → "
+        "下の「音声再生成」で反映して聞き直せます。",
+    ).classes("text-xs text-gray-500")
+    with ui.row().classes("w-full gap-4 items-start no-wrap mt-1"):
+        with ui.column().classes("flex-1 gap-1"):
+            ui.label("原文（参照）").classes("text-sm font-semibold text-gray-500")
+            ui.textarea(value=raw_text).props("readonly dense autogrow").classes(
+                "w-full",
+            ).style("font-size:14px;line-height:1.7;")
+        with ui.column().classes("flex-1 gap-1"):
+            char_label = ui.label(f"処理後テキスト（{len(proc_text)}字・編集可）").classes(
+                "text-sm font-semibold text-gray-500",
+            )
+            ta = ui.textarea(value=proc_text).props("dense autogrow").classes(
+                "w-full",
+            ).style("font-size:15px;line-height:1.7;")
+            ta.on_value_change(lambda e: edited.update(text=e.value))
+
+    def _save():
+        n = save_processed_text(story, edited["text"])
+        char_label.text = f"処理後テキスト（{len(edited['text'])}字・編集可）"
+        ui.notify(
+            f"保存しました（{n}チャンク）。下の「音声再生成」で反映します。", color="positive",
+        )
+
+    ui.button("テキストを保存", on_click=_save, color="green").props("size=sm icon=save")
+
+
 def _show_text_result(story):
     proc_path = processed_text_path(story.title, story.content_type)
     if proc_path.exists():
@@ -499,19 +575,10 @@ def _show_text_result(story):
             ui.label(f"チャンク数: {len(chunks)}").classes("text-sm text-gray-500 mt-2")
 
         def save_processed():
-            import json as _json
-
-            from app.services.text_processor import split_into_chunks
             new_text = edited["text"]
-            log.info("テキスト保存: %d文字, 先頭50文字: %s", len(new_text), new_text[:50])
-            proc_path.write_text(new_text, encoding="utf-8")
-            # Re-split into chunks using the proper splitter
-            new_chunks = split_into_chunks(new_text)
-            chunk_file = chunks_path(story.title, story.content_type)
-            chunk_file.write_text(_json.dumps(new_chunks, ensure_ascii=False, indent=2))
-            log.info("チャンク保存: %d チャンク", len(new_chunks))
+            n = save_processed_text(story, new_text)
             char_label.text = f"文字数: {len(new_text)}"
-            ui.notify(f"処理済みテキストを保存（{len(new_chunks)}チャンク）", color="positive")
+            ui.notify(f"処理済みテキストを保存（{n}チャンク）", color="positive")
 
         ui.button("テキストを保存", on_click=save_processed, color="green").props("size=sm")
 
@@ -535,17 +602,10 @@ def _show_text_result(story):
         proof_state = {"running": False, "done": False, "error": None, "result": None}
 
         def _apply_proof():
-            import json as _json
-
-            from app.services.text_processor import split_into_chunks
             new_text = proof_state.get("result")
             if not new_text:
                 return
-            proc_path.write_text(new_text, encoding="utf-8")
-            new_chunks = split_into_chunks(new_text)
-            chunks_path(story.title, story.content_type).write_text(
-                _json.dumps(new_chunks, ensure_ascii=False, indent=2),
-            )
+            n = save_processed_text(story, new_text)
             textarea.value = new_text
             edited["text"] = new_text
             char_label.text = f"文字数: {len(new_text)}"
@@ -553,8 +613,7 @@ def _show_text_result(story):
             diff_container.clear()
             proof_status.text = "校正を適用しました"
             proof_status.classes(replace="text-sm text-green-600")
-            log.info("AI校正を適用: %d文字, %dチャンク", len(new_text), len(new_chunks))
-            ui.notify(f"AI校正を適用（{len(new_chunks)}チャンク）", color="positive")
+            ui.notify(f"AI校正を適用（{n}チャンク）", color="positive")
 
         def _discard_proof():
             proof_state["result"] = None
@@ -692,10 +751,12 @@ def _show_voice_result(story):
     else:
         ui.label("未生成").classes("text-gray-500")
 
-    _retry_button(story, "voice_generated", "音声再生成")
+    # 音声を聞きながら処理後テキストを直せる編集エリア（保存でチャンク再生成）
+    ui.separator().classes("my-4")
+    _voice_text_editor(story)
 
     ui.separator().classes("my-4")
-    _text_reference_panel(story)
+    _retry_button(story, "voice_generated", "音声再生成")
 
 
 def _show_images_result(story):
