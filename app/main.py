@@ -36,6 +36,17 @@ from app.pipeline import autopilot  # noqa: E402
 
 autopilot.start_if_enabled()
 
+# アップ済みなのにローカルに残っている Short を保管先へ移す。保管先 (Drive) が
+# 一時的に使えず移せなかった分の拾い直し。Drive への書き込みは遅いことがある
+# ので、起動を待たせないよう別スレッドで流す。
+import threading  # noqa: E402
+
+from app.pipeline import archive  # noqa: E402
+
+threading.Thread(
+    target=archive.archive_uploaded_shorts, name="short-archive-sweep", daemon=True,
+).start()
+
 
 @ui.page("/")
 def index():

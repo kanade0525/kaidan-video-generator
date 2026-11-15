@@ -1391,6 +1391,10 @@ def _show_youtube_upload(story):
                     )
                     db.set_youtube_video_id(story.id, result["video_id"])
                     db.update_stage(story.id, "youtube_uploaded")
+                    # Short は上げ終えた動画を保管先へ移してローカルを空ける
+                    from app.pipeline.executor import after_stage_completed
+
+                    after_stage_completed(story.content_type, "youtube_uploaded", story.id)
 
                     msg = f"完了! {result['url']}"
                     if result.get("publish_at"):

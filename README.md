@@ -349,7 +349,13 @@ GEMINI_API_KEY=...                    # Gemini API キー（テキスト・画�
 OPENAI_API_KEY=...                    # フォールバック用（任意）
 YOUTUBE_CLIENT_SECRET_PATH=...        # OAuth クライアント情報 JSON
 VOICEVOX_HOST=http://localhost:50021  # VOICEVOX エンドポイント
+SHORTS_ARCHIVE_HOST_DIR=...           # アップ済み Short の保管先フォルダ（任意。Google Drive など）
 ```
+
+`SHORTS_ARCHIVE_HOST_DIR` を設定すると、Short を YouTube に上げ終えた時点で完成動画（mp4）を
+そのフォルダへ移し、ローカルの mp4・音声・画像を削除する（台本などのテキストは残る）。
+コピー後にサイズと SHA-256 が一致したときだけ削除し、保管先に同名で中身の違うファイルが
+ある場合や保管先が空（未マウント）の場合は何も消さない。未設定なら何もしない。
 
 ### Docker（推奨）
 

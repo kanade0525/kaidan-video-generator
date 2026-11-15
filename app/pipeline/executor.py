@@ -35,6 +35,23 @@ STAGE_CONCURRENCY = {
 POLL_INTERVAL = 5.0
 
 
+def after_stage_completed(content_type: str, stage: str, story_id: int) -> None:
+    """ステージ完了後の後片付け。ここでの失敗はステージの成否に影響させない。
+
+    Short を YouTube に上げ終えたら、完成動画を保管先へ移してローカルを空ける。
+    アップロードは既に成功しているので、移動に失敗しても失敗扱いにしない
+    (失敗扱いにすると再実行で YouTube に重複アップロードしかねない)。
+    """
+    if content_type != "short" or stage != "youtube_uploaded":
+        return
+    try:
+        from app.pipeline import archive
+
+        archive.archive_story_by_id(story_id)
+    except Exception as e:
+        log.warning("保管先への移動に失敗 (ステージは完了扱い): id=%s - %s", story_id, e)
+
+
 class StageExecutor:
     """Manages workers for a single pipeline stage."""
 
@@ -184,6 +201,7 @@ class StageExecutor:
             db.add_log("INFO", f"Completed: {story.title}", self.target_stage, story.id)
             bus.publish(STAGE_COMPLETED, {"stage": self.target_stage, "story_id": story.id})
             log.info("✓ %s: %s", self.target_stage, story.title)
+            after_stage_completed(self.content_type, self.target_stage, story.id)
         except Exception as e:
             error_msg = str(e)[:500]
             db.mark_failed(story.id, self.target_stage, error_msg, content_type=self.content_type)
@@ -298,6 +316,7 @@ class Pipeline:
             func(story, progress_callback=progress_callback, **stage_kwargs)
             db.update_stage(story.id, target_stage)
             db.add_log("INFO", f"Manual run completed: {story.title}", target_stage, story.id)
+            after_stage_completed(self.content_type, target_stage, story.id)
         except Exception as e:
             db.mark_failed(story.id, target_stage, str(e)[:500], content_type=self.content_type)
             db.add_log("ERROR", str(e)[:500], target_stage, story.id)

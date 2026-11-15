@@ -18,10 +18,15 @@ services:
       - "8080:8080"
     environment:
       - VOICEVOX_HOST=http://voicevox:50021
+      # アップ済み Short の保管先 (コンテナ内パス)。.env に
+      # SHORTS_ARCHIVE_HOST_DIR があるときだけ有効になる。
+      - SHORTS_ARCHIVE_DIR=${SHORTS_ARCHIVE_HOST_DIR:+/app/archive/shorts}
     volumes:
       - ./app:/app/app
       - ./output:/app/output
       - ./data:/app/data
       - ./assets:/app/assets
+      # 保管先 (Google Drive のフォルダなど)。未設定なら使われない空フォルダを繋ぐ。
+      - ${SHORTS_ARCHIVE_HOST_DIR:-./data/shorts_archive}:/app/archive/shorts
     env_file:
       - .env
