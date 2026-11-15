@@ -158,16 +158,29 @@ class TestStageGateRegistry:
         assert "youtube_uploaded" in STAGE_GATES
 
     def test_expensive_stages_are_gated(self):
-        """金と容量を食う工程は在庫ブレーキの対象。"""
-        from app.pipeline.stages import video_inventory_gate
+        """金と容量を食う工程は、在庫ブレーキとコスト上限の両方を見るゲートの対象。"""
+        from app.pipeline.stages import generation_gate
 
         for stage in ("voice_generated", "images_generated", "video_complete"):
-            assert STAGE_GATES[stage] is video_inventory_gate
+            assert STAGE_GATES[stage] is generation_gate
 
-    def test_cheap_stages_are_not_gated(self):
-        """スクレイピングとテキスト処理は素通し。"""
-        for stage in ("scraped", "text_processed"):
-            assert stage not in STAGE_GATES
+    def test_generation_gate_applies_inventory_brake(self, monkeypatch):
+        """コスト上限に余裕があっても、在庫が上限なら生成を止める。"""
+        from app.pipeline import stages
+
+        monkeypatch.setattr(stages, "api_cost_gate", lambda ct: (True, ""))
+        monkeypatch.setattr(stages, "video_inventory_gate", lambda ct: (False, "在庫が上限"))
+        assert stages.generation_gate("short") == (False, "在庫が上限")
+
+    def test_scraping_is_not_gated(self):
+        """スクレイピングは無料で軽いので素通し。"""
+        assert "scraped" not in STAGE_GATES
+
+    def test_text_stage_is_not_held_by_inventory(self):
+        """テキスト処理は課金するのでコスト上限は見るが、在庫ブレーキでは止めない。"""
+        from app.pipeline.stages import api_cost_gate
+
+        assert STAGE_GATES["text_processed"] is api_cost_gate
 
     def test_report_stage_has_post_delay(self):
         """使用報告は外部フォーム送信なので連投しない。"""
