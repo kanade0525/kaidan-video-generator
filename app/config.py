@@ -12,6 +12,24 @@ _DEFAULTS = {
     "pitch": 0.0,
     "intonation": 1.0,
     "volume": 2.0,
+    # ── 「間」の調整 (VOICEVOX AudioQuery のフィールドにそのまま反映) ──
+    # 怪談朗読は間の取り方で怖さが変わるので UI から調整できるようにしている。
+    # None 相当 (負値) を入れるとそのフィールドは触らず VOICEVOX 既定のまま。
+    "pre_phoneme_length": 0.1,    # 発話前の無音 (秒)
+    "post_phoneme_length": 0.1,   # 発話後の無音 (秒)
+    "pause_length_scale": 1.0,    # 句読点ポーズの倍率 (VOICEVOX 0.16+)
+    # 改行をどう読ませるか。"period"=。(現状/長い間) / "comma"=、(短い間) /
+    # "none"=区切り無しで直結。
+    "voice_newline_mode": "period",
+    # アクセントの自然さ。
+    #   "hiragana"       = ひらがな原稿をそのまま読ませる (従来動作)
+    #   "verified_kanji" = 読みを矯正した語だけかなにした「漢字混じり原稿」を
+    #                      VOICEVOX に渡す。ただし audio_query のモーラ列が
+    #                      ひらがな原稿と一致した場合のみ採用し、少しでも読みが
+    #                      変わるチャンクはひらがな原稿へ自動フォールバックする。
+    # ひらがなだけの文は OpenJTalk が語境界を推定できずアクセントが平板化する
+    # ため、読みが同一であることを検証したうえで漢字を残すほうが自然に聞こえる。
+    "voice_accent_mode": "verified_kanji",
     "image_model": "gemini-2.5-flash-image",
     "image_size": "1792x1024",
     "image_aspect_ratio": "16:9",
@@ -77,6 +95,10 @@ _DEFAULTS = {
     "text_model": "gemini-2.5-flash",
     "gemini_model": "gemini-2.5-flash-lite",
     "max_chunk": 200,
+    # テキストステージで AI 校正 (Gemini) を自動適用するか。True にすると
+    # 「AI校正プレビュー → 適用」の手動ステップ無しで完全自動化できる。
+    # UI の手動プレビュー/差分確認フローは有効なまま残る。
+    "text_ai_proofread_enabled": True,
     "text_prompt": (
         "以下の日本語テキストをVOICEVOX朗読用にひらがな化してください。\n\n"
         "【変換ルール】\n"
@@ -149,9 +171,38 @@ _DEFAULTS = {
     "youtube_channel_name": "",
     "youtube_contact_email": "",
     "youtube_schedule_enabled": True,
+    # "weekly" = 毎週指定曜日 (従来動作) / "interval" = N日おき
+    "youtube_schedule_mode": "interval",
+    "youtube_schedule_interval_days": 2,
     "youtube_schedule_day": "saturday",
     "youtube_schedule_hour": 20,
     "youtube_schedule_minute": 0,
+    # ── アップロードの堅牢化 ──
+    # 1MB チャンクだと 30 分動画で 2000 リクエストになり、途中で
+    # BrokenPipe / ConnectionReset を踏む確率が高い。大きめのチャンクに
+    # して回数を減らしつつ、切断時は resumable セッションを再開する。
+    "youtube_upload_chunk_mb": 8,
+    "youtube_upload_max_retries": 10,
+    # ── オートパイロット (起動時に全ワーカーを自動開始) ──
+    "autopilot_long_enabled": False,
+    "autopilot_short_enabled": False,
+    # 自動運転時のブレーキ。未処理ストーリーが1000件以上あるので、これが無いと
+    # ワーカーが動画を作り続けて YouTube のクォータを使い切る。
+    # 1日あたりのアップロード上限。YouTube Data API は videos.insert 1回で
+    # 1600 ユニット消費し、1日の割当が 10000 なので実質 6 本が上限。
+    "youtube_daily_upload_limit": 5,
+    # 予約投稿がこの日数より先まで埋まっていたら、それ以上アップロードしない。
+    # 「1日おき投稿」なら常に 2週間分の在庫を持って自動停止する状態になる。
+    "youtube_schedule_max_ahead_days": 14,
+    # 24時間あたりの API 費用の上限 (USD)。超えたら生成系を止める。
+    # 事前見積もりを外して 5,000 円のクレジットを一晩で使い切ったことがあるので、
+    # 見積もりではなく **実測の積み上げ** で止める。0 で無効。
+    "api_daily_cost_limit_usd": 3.0,
+    # 未投稿の完成動画がこの本数に達したら、音声・画像・動画の生成を止める。
+    # アップロード側だけ絞っても上流が回り続けると、未処理ストーリー (1000件超)
+    # を延々と動画化してディスクと画像APIを食い潰す。投稿されて在庫が減ったら
+    # 自動で再開するので、必要な分だけ作り続ける状態になる。0 で無効。
+    "autopilot_max_ready_videos": 10,
     # Shorts settings
     "shorts_leading_silence": 0.0,
     "shorts_trailing_silence": 0.5,
@@ -161,6 +212,66 @@ _DEFAULTS = {
     "shorts_max_char_count": 880,
     "shorts_target_char_count": 440,
     "shorts_vhs_enabled": True,
+    # ── Shorts 画像の調達方法 ──────────────────────────────────
+    # 2枚目以降 (本編シーン) の調達方法。
+    # "pool_first" = assets/shorts/scene/ に画像があればそこから決定的に選ぶ。
+    #                無ければ AI 生成にフォールバック。
+    # "pool"       = プールのみ (空ならエラー)
+    # "ai"         = 毎回 AI 生成
+    # 1枚目はタイトル文字を焼き込む都合で作品ごとに固有なので、プール対象外。
+    "shorts_scene_source": "pool_first",
+    # プール画像に VHS ポストエフェクトを掛けるか。手動で差し替えていた
+    # 従来運用 (replace_scene_image) は VHS 無しだったので既定 False。
+    "shorts_pool_apply_vhs": False,
+    # Shorts 専用の画像モデル。空なら image_model を継承。
+    # 注意: imagen-* 系は Gemini Developer API キーでは動かない
+    # (generate_images は Vertex AI 専用。"This method is only supported in
+    # Gemini Enterprise Agent Platform mode" で失敗する)。
+    # gemini-2.5-flash-image は日本語が崩れる (赤い土 → 我い土)。
+    # 3.1-flash-image はタイトル文字を正しく描けるので、これを既定にする。
+    "shorts_image_model": "gemini-3.1-flash-image",
+    # サムネイルのバッジはカテゴリ名をそのまま出す。長すぎる等の理由で
+    # 別の文言にしたいカテゴリだけここで上書きする。
+    # カテゴリ未設定の作品はバッジ自体を出さない。
+    "shorts_badge_overrides": {"合掌コンクール応募作品": "ホラホリ図書館"},
+    # 1枚目 (サムネイル) のプロンプト。画像AIにタイトル文字ごと描かせる。
+    # {title} = 動画タイトル, {subject} = 本文から起こした「何を写すか」の一文,
+    # {badge_instruction} = カテゴリバッジの指示 (未設定なら「出すな」に変わる)。
+    "shorts_thumbnail_prompt": (
+        "YouTube thumbnail for a Japanese kaidan (ghost story) narration channel.\n\n"
+        "CONCEPT: Authentic Japanese horror. Quiet dread and an uncanny presence — "
+        "not cheap horror, not zombies, not splatter. Cinematic film-still quality, "
+        "realistic textures, natural human anatomy and perspective. Dark tonality, "
+        "strong shadows, deep blacks, dark blues and greys, with blood-red used only "
+        "as an accent.\n\n"
+        "SUBJECT: {subject}\n"
+        "Place this subject large, in the centre-to-right of the frame. Keep the "
+        "background dark and uncluttered so the subject reads instantly. Simple, "
+        "strong composition.\n\n"
+        "TEXT (must be rendered in the image, in correct Japanese):\n"
+        "{badge_instruction}"
+        "- Left side, large and vertical: the video title, reading exactly: {title}\n"
+        "- Typography: heavy Japanese brush calligraphy, aged washi paper feel, "
+        "horror-movie title styling. White and red on black, with blood spatter, "
+        "cracks and worn texture.\n"
+        "- The Japanese characters must be correct, clean and unbroken. No invented "
+        "glyphs.\n\n"
+        "FRAMING: the photographic scene must fill the ENTIRE frame, edge to edge and "
+        "corner to corner. Absolutely no black bars, no letterboxing, no borders, no "
+        "empty margins and no flat blank areas. The bottom of the frame must still "
+        "show the scene (floor, ground, shadow), just without any important subject "
+        "or text in it.\n\n"
+        "SAFE AREA (the YouTube Shorts interface overlays the frame): compose so that "
+        "no face, no key subject and no text falls within the right 15% or the bottom "
+        "25% of the frame. Those regions must still contain scenery — they are simply "
+        "kept free of anything important. Never crop a face or a character at the "
+        "frame edge.\n\n"
+        "DO NOT INCLUDE: any logo, watermark, app icon, play button, social media "
+        "mark, UI element, subscribe button, timestamp, signature or brand mark of "
+        "any kind. No YouTube or Shorts iconography. No English text.\n\n"
+        "QUALITY: high-quality cinematic visual, readable at thumbnail size, striking "
+        "enough to stop a scroll. Aspect ratio 9:16, vertical."
+    ),
     "shorts_speed": 1.15,
     "shorts_scrape_delay": 2.0,
     "shorts_endscreen_duration": 5.0,
@@ -197,6 +308,12 @@ _DEFAULTS = {
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "#怪談 #ホラー #朗読 #怖い話 #Shorts #ホラホリ #百鬼朗読"
     ),
+    # Shorts のタイトル・説明文をどこから作るか。
+    #   "template" = 下のテンプレートをそのまま使う (チャンネルの定型フォーマット)
+    #   "llm"      = Gemini に釣りタイトルを書かせる
+    # LLM 版はテンプレートの体裁 (百鬼朗読の挨拶・BGMクレジット・タグ構成) を
+    # 一切踏襲しないため、既定はテンプレート。
+    "shorts_metadata_source": "template",
     # Shorts 特化タグ: 睡眠用/作業用BGM 等の長尺向けは除外。
     # ホラホリは HHS由来 Short のみ upload 時に追加（source依存）。
     "shorts_youtube_tags": (
@@ -246,7 +363,10 @@ _DEFAULTS = {
         "絶対に変えない。\n"
         "4. カタカナ・数字・アルファベット・記号・改行はそのまま。\n"
         "5. 直す箇所が無ければ入力を一字一句そのまま返す。説明・前置き・コードブロックは"
-        "付けず、本文のみ返す。\n\n"
+        "付けず、本文のみ返す。\n"
+        "6. 下記【漢字のまま残す語】に挙がっている語は、意図的に漢字のまま残して"
+        "あります。誤変換ではないのでひらがなに直さず、漢字のまま出力してください。\n\n"
+        "{keep_kanji}"
         "## 出力に絶対含めてはいけない文字\n"
         "- 結合用濁点 U+3099, 結合用半濁点 U+309A\n"
         "- 標準濁点 U+309B, 標準半濁点 U+309C, 半角濁点 U+FF9E, 半角半濁点 U+FF9F\n"

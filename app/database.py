@@ -12,12 +12,23 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "kaidan.db"
 _local = threading.local()
 
 
+# WAL は使わない。macOS の Docker バインドマウト上では WAL の共有メモリ
+# (-shm) が正しく扱えず、アプリが接続を保持している間、他プロセスからは
+# "unable to open database file" になる。さらに稼働中のアプリ自身も途中から
+# 書き込みに失敗し、ステージ更新が丸ごと落ちて 444 件が :running のまま
+# 取り残された。ワーカーは単一プロセス + 数スレッドなので WAL の同時実行性は
+# 不要で、DELETE モードで十分。
+_JOURNAL_MODE = "DELETE"
+
+
 def _get_conn() -> sqlite3.Connection:
     """Get a thread-local database connection."""
     if not hasattr(_local, "conn") or _local.conn is None:
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(DB_PATH), timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA journal_mode={_JOURNAL_MODE}")
+        # 別スレッド/別プロセスが書き込み中でも即座に諦めず待つ
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row
         _local.conn = conn
@@ -64,6 +75,24 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_logs_story ON logs(story_id);
         CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp DESC);
+
+        -- API 利用実績。どのモデルで何トークン使い、いくら掛かったかを
+        -- 1 呼び出しずつ残す。以前は使用量が請求画面でしか分からず、
+        -- gemini-2.5-pro の思考トークンで 5,000 円を使い切るまで気づけなかった。
+        CREATE TABLE IF NOT EXISTS api_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            model TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            story_id INTEGER,
+            input_tokens INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0,
+            thinking_tokens INTEGER DEFAULT 0,
+            images INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_usage_ts ON api_usage(timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_usage_model ON api_usage(model);
         CREATE INDEX IF NOT EXISTS idx_story_categories_story ON story_categories(story_id);
         CREATE INDEX IF NOT EXISTS idx_stage_completions_story ON stage_completions(story_id);
     """)
@@ -75,6 +104,13 @@ def init_db() -> None:
         ("char_count", "INTEGER"),
         ("title_furigana", "TEXT DEFAULT ''"),
         ("source", "TEXT DEFAULT 'hhs'"),
+        # YouTube に予約投稿した公開日時 (RFC3339/JST)。N日おき投稿で次の枠を
+        # 決めるときの基準になる。未アップロード or 予約なしは NULL。
+        ("scheduled_publish_at", "TEXT"),
+        # 実際に YouTube へ送信した日時 (UTC ISO8601)。1日のアップロード上限は
+        # これで数える。ステージ完了で数えると、既に投稿済みでスキップされた
+        # 作品まで枠を消費してしまう。
+        ("youtube_uploaded_at", "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE stories ADD COLUMN {col} {definition}")
@@ -373,7 +409,59 @@ def update_title_furigana(story_id: int, title_furigana: str) -> None:
     conn.commit()
 
 
-def set_youtube_video_id(story_id: int, video_id: str) -> None:
+def set_scheduled_publish_at(story_id: int, publish_at: str | None) -> None:
+    """予約投稿の公開日時を記録する。"""
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE stories SET scheduled_publish_at = ?, updated_at = ? WHERE id = ?",
+        (publish_at, _now(), story_id),
+    )
+    conn.commit()
+
+
+def mark_uploaded(
+    story_id: int, video_id: str, publish_at: str | None = None,
+) -> None:
+    """アップロード成功を記録する (動画ID・送信日時・予約日時をまとめて)。
+
+    送信日時は「本当に API を叩いた回数」を数えるためのもの。既にアップロード
+    済みでスキップした作品はここを通らないので、日次上限を無駄に消費しない。
+    """
+    conn = _get_conn()
+    now = _now()
+    conn.execute(
+        "UPDATE stories SET youtube_video_id = ?, youtube_uploaded_at = ?, "
+        "scheduled_publish_at = ?, updated_at = ? WHERE id = ?",
+        (video_id, now, publish_at, now, story_id),
+    )
+    conn.commit()
+
+
+def count_uploads_since(since_iso: str) -> int:
+    """`since_iso` 以降に実際にアップロードした本数。"""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM stories WHERE youtube_uploaded_at >= ?",
+        (since_iso,),
+    ).fetchone()
+    return row["n"] if row else 0
+
+
+def get_latest_scheduled_publish_at() -> str | None:
+    """予約済みの中で最も遅い公開日時を返す。1件も無ければ None。
+
+    N日おき投稿で「次の空き枠」を決めるのに使う。ISO8601 の文字列比較は
+    同一タイムゾーン表記なら時系列順と一致するので MAX() で足りる。
+    """
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT MAX(scheduled_publish_at) AS latest FROM stories "
+        "WHERE scheduled_publish_at IS NOT NULL AND scheduled_publish_at != ''"
+    ).fetchone()
+    return row["latest"] if row and row["latest"] else None
+
+
+def set_youtube_video_id(story_id: int, video_id: str | None) -> None:
     """Store the YouTube video ID for a story."""
     conn = _get_conn()
     conn.execute(
@@ -383,12 +471,22 @@ def set_youtube_video_id(story_id: int, video_id: str) -> None:
     conn.commit()
 
 
-def reset_to_stage(story_id: int, target_stage: str) -> None:
-    """Reset a story to a specific stage, clearing later completions."""
+def reset_to_stage(
+    story_id: int, target_stage: str, content_type: str = "long",
+) -> None:
+    """Reset a story to a specific stage, clearing later completions.
+
+    `content_type` でステージ一覧を切り替える。長編と Shorts で並びが
+    変わっても、消すべき「以降の完了記録」を正しく特定できるようにするため。
+    エラーも消すので、ワーカーが再びこのストーリーを拾えるようになる。
+    """
     conn = _get_conn()
     now = _now()
-    idx = STAGES.index(target_stage)
-    later_stages = STAGES[idx + 1 :]
+    stage_list = stages_for(content_type)
+    if target_stage not in stage_list:
+        raise ValueError(f"unknown stage for {content_type}: {target_stage}")
+    idx = stage_list.index(target_stage)
+    later_stages = stage_list[idx + 1 :]
 
     conn.execute(
         "UPDATE stories SET stage = ?, error = NULL, updated_at = ? WHERE id = ?",
@@ -627,6 +725,70 @@ def add_log(
         (_now(), level, stage, story_id, message),
     )
     conn.commit()
+
+
+def record_api_usage(
+    model: str,
+    purpose: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    thinking_tokens: int = 0,
+    images: int = 0,
+    cost_usd: float = 0.0,
+    story_id: int | None = None,
+) -> None:
+    """API 1 回分の消費を記録する。
+
+    課金は事後に請求画面を見るしかなかったので、走らせている最中に
+    「いくら使ったか」が分からなかった。呼び出しごとに残しておけば、
+    上限での自動停止も UI 表示もここから作れる。
+    """
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO api_usage (timestamp, model, purpose, story_id, input_tokens, "
+        "output_tokens, thinking_tokens, images, cost_usd) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (_now(), model, purpose, story_id, input_tokens, output_tokens,
+         thinking_tokens, images, cost_usd),
+    )
+    conn.commit()
+
+
+def get_api_cost_since(since_iso: str) -> float:
+    """`since_iso` 以降の概算費用 (USD)。上限判定に使う。"""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0) AS c FROM api_usage WHERE timestamp >= ?",
+        (since_iso,),
+    ).fetchone()
+    return float(row["c"]) if row else 0.0
+
+
+def get_api_usage_summary(since_iso: str) -> list[dict]:
+    """モデル×用途ごとの利用実績。UI 表示用。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT model, purpose, COUNT(*) AS calls, "
+        "SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, "
+        "SUM(thinking_tokens) AS thinking_tokens, SUM(images) AS images, "
+        "SUM(cost_usd) AS cost_usd "
+        "FROM api_usage WHERE timestamp >= ? "
+        "GROUP BY model, purpose ORDER BY cost_usd DESC",
+        (since_iso,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_recent_api_usage(limit: int = 50) -> list[dict]:
+    """直近の API 呼び出し明細。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT u.*, s.title FROM api_usage u "
+        "LEFT JOIN stories s ON s.id = u.story_id "
+        "ORDER BY u.timestamp DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_logs(

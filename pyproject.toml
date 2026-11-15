@@ -3,6 +3,14 @@ name = "kaidan-video-generator"
 version = "0.2.0"
 requires-python = ">=3.11"
 
+[tool.pytest.ini_options]
+# NiceGUI の user フィクスチャは async テストなので自動モードが要る。
+# (同期テストには影響しない)
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# NiceGUI の user フィクスチャに、ページ定義のあるモジュールを教える
+main_file = "app/main.py"
+
 [tool.ruff]
 target-version = "py310"
 line-length = 100

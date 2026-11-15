@@ -17,6 +17,7 @@ Web からのストーリー取得 → テキスト処理（ひらがな変換�
 - [システムアーキテクチャ](#システムアーキテクチャ)
 - [パイプライン処理フロー](#パイプライン処理フロー)
 - [データベース](#データベース)
+- [オートパイロット（全自動運転）](#オートパイロット全自動運転)
 - [工夫している点](#工夫している点)
 - [ディレクトリ構成](#ディレクトリ構成)
 - [セットアップ](#セットアップ)
@@ -228,6 +229,43 @@ erDiagram
 - **N+1 回避** — 一覧取得時に `story_categories` と `stage_completions` をバッチクエリで一括ロード
 - **優先度付きキュー** — `get_stories_at_stage()` は `char_count ASC` でソートし、短いストーリーを優先処理
 
+## オートパイロット（全自動運転）
+
+スクレイピングから YouTube への予約投稿・使用報告までを人手なしで回すモード。
+パイプライン画面または設定画面のスイッチで ON/OFF し、設定に永続化されるので
+アプリを再起動しても自動で走り出す（既定は OFF）。
+
+### 投稿間隔
+
+`youtube_schedule_mode = "interval"` + `youtube_schedule_interval_days = 2` で
+「1日おき」に公開予約される。次の枠は **DB に記録済みの最も遅い公開日時**
+（`stories.scheduled_publish_at`）を起点に決めるので、まとめて 5 本
+アップロードしても 2 日ずつずれて並ぶ。
+
+### 暴走を防ぐ 2 段のブレーキ
+
+未処理ストーリーが 1000 件以上あるため、ブレーキなしでは容量と API を
+使い切ってしまう。ゲートで止まった作品は失敗扱いにならず、条件が解消すれば
+自動で流れ出す。
+
+| 設定 | 既定 | 効果 |
+| --- | --- | --- |
+| `autopilot_max_ready_videos` | 10 | 未投稿の完成動画がこの本数に達したら**音声・画像・動画の生成を停止**（0 で無効） |
+| `youtube_daily_upload_limit` | 5 | 24 時間あたりのアップロード上限。`videos.insert` は 1600 ユニット / 日次割当 10000 なので実質 6 本が限界 |
+| `youtube_schedule_max_ahead_days` | 14 | 予約がこの日数より先まで埋まったらアップロードを停止 |
+
+結果として「常に 2 週間分の予約を持ったまま待機し、公開されて空いた分だけ
+作り足す」ジャストインタイム動作になる。
+
+### 自動化された手作業
+
+| 以前の手作業 | 自動化の方法 |
+| --- | --- |
+| AI 校正をかけて「適用」を押す | `text_ai_proofread_enabled`（既定 ON）でテキスト処理が校正済みを直接出力。差分レビュー用の手動フローも残存 |
+| Shorts 1 枚目を外部で作って差し替え | `assets/shorts/title_bg/` に画像を置くと、そこから決定的に選択（`shorts_title_bg_source`） |
+| Shorts 2 枚目を毎回 AI 生成 | `assets/shorts/scene/` のプールから選択（`shorts_scene_source`） |
+| ホラホリへの使用報告 | `report_submitted` ステージとして自動実行（HHS 由来以外は自動スキップ） |
+
 ## 工夫している点
 
 ### パイプライン設計
@@ -275,6 +313,7 @@ erDiagram
 | [app/pipeline/stages.py](app/pipeline/stages.py) | 各ステージのワーカー関数（長尺・Shorts 両対応） |
 | [app/pipeline/events.py](app/pipeline/events.py) | EventBus (Pub/Sub) |
 | [app/pipeline/retry.py](app/pipeline/retry.py) | 指数バックオフデコレータ |
+| [app/pipeline/autopilot.py](app/pipeline/autopilot.py) | オートパイロットの起動・停止・永続化 |
 | **[app/services/](app/services/)** | |
 | [app/services/scraper.py](app/services/scraper.py) | HHS Library スクレイパー |
 | [app/services/kikikaikai_scraper.py](app/services/kikikaikai_scraper.py) | 奇々怪々 スクレイパー（Shorts 用） |
@@ -283,6 +322,7 @@ erDiagram
 | [app/services/image_generator.py](app/services/image_generator.py) | Gemini 画像生成 + VHS フィルタ |
 | [app/services/video_generator.py](app/services/video_generator.py) | FFmpeg 動画合成 |
 | [app/services/youtube_uploader.py](app/services/youtube_uploader.py) | YouTube Data API アップロード |
+| [app/services/image_pool.py](app/services/image_pool.py) | Shorts 用キュレーション画像プール |
 | [app/services/clients.py](app/services/clients.py) | 共有 API クライアント |
 | **[app/ui/pages/](app/ui/pages/)** | |
 | [app/ui/pages/pipeline.py](app/ui/pages/pipeline.py) | 長尺パイプライン監視 UI |
@@ -293,6 +333,7 @@ erDiagram
 | **[app/utils/](app/utils/)** | FFmpeg ラッパー、パス管理、ログ |
 | [data/](data/) | `kaidan.db`、`config.toml`（実行時生成） |
 | [assets/](assets/) | BGM・オープニング・エンディング素材 |
+| [assets/shorts/](assets/shorts/) | Shorts 画像プール（`title_bg/` = 1枚目, `scene/` = 2枚目以降） |
 | [output/](output/) | ストーリーごとの生成物（`output/<title>/`） |
 | [tests/](tests/) | pytest スイート |
 

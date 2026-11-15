@@ -129,6 +129,8 @@ def results_page(
             if story.error:
                 ui.label(f"エラー: {story.error}").classes("text-red-500 mb-2")
 
+            _render_rewind_panel(story, on_done=lambda: show_detail(sid))
+
             # Tabs for each stage output
             with ui.tabs().classes("w-full") as tabs:
                 scrape_tab = ui.tab("スクレイピング")
@@ -503,10 +505,15 @@ def save_processed_text(story, new_text: str) -> int:
     )
     raw_p = raw_content_path(story.title, ct)
     if raw_p.exists():
-        orig_chunks = split_into_n_chunks(raw_p.read_text(encoding="utf-8"), len(new_chunks))
+        raw = raw_p.read_text(encoding="utf-8")
+        orig_chunks = split_into_n_chunks(raw, len(new_chunks))
         original_chunks_path(story.title, ct).write_text(
             _json.dumps(orig_chunks, ensure_ascii=False, indent=2), encoding="utf-8",
         )
+        # アクセント用の漢字混じり原稿もチャンク数を合わせ直す。数が合わないと
+        # 音声生成側で使われず、せっかくの手直しがアクセントに反映されない。
+        from app.pipeline.stages import save_narration_source
+        save_narration_source(story, raw, new_text)
     log.info("処理後テキスト保存: %d文字, %dチャンク", len(new_text), len(new_chunks))
     return len(new_chunks)
 
@@ -1557,3 +1564,136 @@ def _show_usage_report_tab(story):
 
     label = "再送信" if already_reported else "使用報告を送信"
     btn = ui.button(label, on_click=do_report_start, color="purple").props("size=sm")
+
+
+def _render_rewind_panel(story, on_done=None):
+    """ステージを巻き戻して作り直すパネル。
+
+    「どの工程からやり直すか」を選ぶ形にしている。内部ではその1つ手前の
+    ステージに戻すが、ユーザーが意識するのは「画像から作り直す」であって
+    「voice_generated に戻す」ではないため。
+    """
+    from app.models import STAGE_LABELS
+    from app.pipeline import rewind
+
+    stages = rewind.redoable_stages(story.content_type)
+    options = {s: f"{STAGE_LABELS.get(s, s)} からやり直す" for s in stages}
+
+    with ui.expansion("やり直す（ステージを巻き戻す）", icon="restart_alt").classes(
+        "w-full mb-3 border rounded",
+    ):
+        ui.label(
+            "選んだ工程から後ろが未処理に戻り、ワーカー（またはタブ内の再処理"
+            "ボタン）で作り直せるようになります。"
+        ).classes("text-xs text-gray-500")
+
+        with ui.row().classes("items-end gap-3 flex-wrap mt-2"):
+            stage_select = ui.select(
+                options,
+                value="images_generated" if "images_generated" in options else stages[0],
+                label="やり直す工程",
+            ).classes("w-72")
+            delete_files = ui.checkbox("生成済みファイルも削除する").mark(
+                "rewind-delete-files",
+            )
+            clear_youtube = ui.checkbox(
+                "YouTube動画IDも消す（再アップロードする）",
+            ).mark("rewind-clear-youtube")
+
+        summary = ui.label("").classes("text-sm text-gray-600 mt-1")
+        warning = ui.label("").classes("text-sm text-amber-700")
+
+        def _build_plan():
+            return rewind.plan(
+                story,
+                stage_select.value,
+                delete_artifacts=bool(delete_files.value),
+                clear_youtube=bool(clear_youtube.value),
+            )
+
+        def _refresh_summary():
+            try:
+                plan = _build_plan()
+            except ValueError as e:
+                summary.text = str(e)
+                return
+            parts = [
+                f"やり直す工程: {' → '.join(plan.redo_labels)}",
+                f"ステージは「{STAGE_LABELS.get(plan.new_stage, plan.new_stage)}」に戻ります",
+            ]
+            if delete_files.value:
+                parts.append(f"削除するファイル: {len(plan.artifacts)}個")
+            summary.text = " / ".join(parts)
+
+            # YouTube に上がっている作品を作り直す場合の注意
+            if "youtube_uploaded" in plan.redo_stages and story.youtube_video_id:
+                if plan.clears_youtube:
+                    warning.text = (
+                        "YouTube上の既存動画は消えません。動画IDの紐付けだけを外すので、"
+                        "作り直した動画は別の動画として新規アップロードされます。"
+                        "元の動画はYouTube側で手動削除してください。"
+                    )
+                else:
+                    warning.text = (
+                        "動画IDが残っているため、YouTubeへの再アップロードはスキップされます。"
+                        "上げ直したい場合は「YouTube動画IDも消す」にチェックしてください。"
+                    )
+            else:
+                warning.text = ""
+
+        stage_select.on_value_change(lambda _: _refresh_summary())
+        delete_files.on_value_change(lambda _: _refresh_summary())
+        clear_youtube.on_value_change(lambda _: _refresh_summary())
+        _refresh_summary()
+
+        def _execute(dialog, plan):
+            dialog.close()
+            deleted = rewind.apply(story, plan)
+            msg = f"「{STAGE_LABELS.get(plan.redo_from, plan.redo_from)}」からやり直せます"
+            if deleted:
+                msg += f"（{deleted}個のファイルを削除）"
+            ui.notify(msg, color="positive")
+            if on_done:
+                # 画面の作り直しは次のティックまで遅らせる。このハンドラは
+                # 再構築対象の中にあるダイアログから呼ばれているので、その場で
+                # 差し替えると要素を走査中に消すことになる。
+                ui.timer(0.1, on_done, once=True)
+
+        def _confirm():
+            # 取り消せない操作なので、消すものを列挙してから確認を取る
+            plan = _build_plan()
+            with ui.dialog() as dialog, ui.card().classes("p-4 max-w-xl"):
+                ui.label("やり直しの確認").classes("text-lg font-bold")
+                ui.label(f"「{story.title}」").classes("text-sm text-gray-600")
+                ui.label(
+                    f"やり直す工程: {' → '.join(plan.redo_labels)}",
+                ).classes("text-sm mt-2")
+                if plan.clears_youtube:
+                    ui.label("YouTube動画IDの紐付けを外します").classes(
+                        "text-sm text-amber-700",
+                    )
+                if plan.artifacts:
+                    ui.label(
+                        f"次の {len(plan.artifacts)} 個のファイルを削除します"
+                        "（元に戻せません）",
+                    ).classes("text-sm text-red-600 mt-2")
+                    with ui.scroll_area().classes("h-40 w-full border rounded"):
+                        for path in plan.artifacts:
+                            ui.label(path.name).classes("text-xs font-mono")
+                else:
+                    ui.label(
+                        "ファイルは削除しません（作り直すと上書きされます）",
+                    ).classes("text-sm text-gray-500 mt-2")
+
+                with ui.row().classes("gap-2 mt-3 justify-end w-full"):
+                    ui.button("キャンセル", on_click=dialog.close).props("flat")
+                    ui.button(
+                        "やり直す",
+                        on_click=lambda: _execute(dialog, plan),
+                        color="red",
+                    ).mark("rewind-confirm")
+            dialog.open()
+
+        ui.button("やり直す", on_click=_confirm, color="orange").props(
+            "size=sm icon=restart_alt",
+        ).classes("mt-2").mark("rewind-run")

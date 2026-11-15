@@ -227,13 +227,21 @@ def create_title_clip(
     # yuv420p chroma subsampling requires even width/height. Force-even via
     # scale=trunc/2*2 so source images with odd dimensions don't break libx264
     # with "Could not open encoder before EOF" (-22 Invalid argument).
+    # fade フィルタは d=0 を「フェード無し」ではなく「既定の nb_frames(25)を使う」
+    # と解釈する。fade_in=0 を渡しても 25フレーム(30fpsで約0.8秒)のフェードが
+    # 掛かってしまうので、無効化したいときはフィルタ自体を外す。
+    video_filters = ["scale=trunc(iw/2)*2:trunc(ih/2)*2"]
+    if fade_in > 0:
+        video_filters.append(f"fade=in:st=0:d={fade_in}")
+    video_filters.append(f"fade=out:st={fade_out_start:.2f}:d={fade_out}")
+    video_chain = ",".join(video_filters)
+
     run_ffmpeg([
         "-loop", "1",
         "-i", str(image),
         "-i", str(audio),
         "-filter_complex",
-        f"[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,"
-        f"fade=in:st=0:d={fade_in},fade=out:st={fade_out_start:.2f}:d={fade_out}[v];"
+        f"[0:v]{video_chain}[v];"
         f"[1:a]adelay={int(silence_before * 1000)}|{int(silence_before * 1000)},"
         f"apad=pad_dur={silence_after}[a]",
         "-map", "[v]",

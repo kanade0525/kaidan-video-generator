@@ -1,0 +1,10 @@
+# テスト実行用の依存。アプリ本体 (requirements.txt / Dockerfile) には含めない。
+#   pip install -r requirements.txt -r requirements-dev.txt
+pytest>=8.0
+# NiceGUI の user フィクスチャ (UIページのスモークテスト) が async なので必要。
+# 入っていないと tests/test_ui_pages.py がスキップされる。
+pytest-asyncio>=0.24
+ruff>=0.6
+# ひらがな化・アクセント解析のテストで使う
+mecab-python3>=1.0
+unidic-lite>=1.0

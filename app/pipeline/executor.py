@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from app import database as db
@@ -13,7 +14,12 @@ from app.pipeline.events import (
     WORKER_STOPPED,
     bus,
 )
-from app.pipeline.stages import STAGE_FUNCTIONS
+from app.pipeline.stages import (
+    STAGE_FUNCTIONS,
+    STAGE_GATES,
+    STAGE_POST_DELAY,
+    is_quota_error,
+)
 from app.utils.log import get_logger
 
 log = get_logger("kaidan.executor")
@@ -32,9 +38,15 @@ POLL_INTERVAL = 5.0
 class StageExecutor:
     """Manages workers for a single pipeline stage."""
 
-    def __init__(self, target_stage: str, content_type: str = "long"):
+    def __init__(
+        self, target_stage: str, content_type: str = "long",
+        on_fatal_error: Callable[[str], None] | None = None,
+    ):
         self.target_stage = target_stage
         self.content_type = content_type
+        # 続けても無駄な失敗 (課金切れ等) を踏んだときに呼ぶ。Pipeline が
+        # 全ワーカーの停止を仕込む。
+        self.on_fatal_error = on_fatal_error
         self.input_stage = prev_stage(target_stage, content_type) or "pending"
         self.max_workers = STAGE_CONCURRENCY.get(target_stage, 1)
         self._executor: ThreadPoolExecutor | None = None
@@ -42,6 +54,9 @@ class StageExecutor:
         self._stop_event = threading.Event()
         self._active_count = 0
         self._lock = threading.Lock()
+        # ゲートで待たされている理由。5秒ごとに同じ内容を出し続けないよう、
+        # 変化したときだけログに出す。UI の表示にも使う。
+        self._blocked_reason = ""
 
     @property
     def running(self) -> bool:
@@ -84,8 +99,20 @@ class StageExecutor:
                 self.input_stage, limit=1, content_type=self.content_type,
             )
             if not stories:
+                self._set_blocked("")
                 self._stop_event.wait(POLL_INTERVAL)
                 continue
+
+            # 実行ゲート (アップロード上限など)。ブロックされたストーリーは
+            # 取り出さずに待つだけなので、失敗扱いにも running にもならない。
+            gate = STAGE_GATES.get(self.target_stage)
+            if gate is not None:
+                allowed, reason = gate(self.content_type)
+                if not allowed:
+                    self._set_blocked(reason)
+                    self._stop_event.wait(POLL_INTERVAL)
+                    continue
+            self._set_blocked("")
 
             story = stories[0]
             db.mark_running(story.id, self.target_stage)
@@ -94,11 +121,57 @@ class StageExecutor:
                 self._active_count += 1
 
             if self._executor:
-                self._executor.submit(self._process, story)
+                future = self._executor.submit(self._process, story)
+                # Future を放置すると、_process から漏れた例外がどこにも
+                # 出ない。実際にこれで DB 更新の失敗が握りつぶされ、444 件が
+                # :running のまま取り残された。必ず回収してログに残す。
+                future.add_done_callback(
+                    lambda f, s=story: self._report_unhandled(f, s),
+                )
 
-            # Scraping delay
-            if self.target_stage == "scraped":
-                self._stop_event.wait(2.0)
+            post_delay = STAGE_POST_DELAY.get(self.target_stage, 0.0)
+            if post_delay > 0:
+                self._stop_event.wait(post_delay)
+
+    def _report_unhandled(self, future, story) -> None:
+        """`_process` から漏れた例外を記録し、ストーリーを :running から戻す。
+
+        ここに来るのは `_process` の except 節自体が失敗したときなど。放置すると
+        ワーカーが二度と拾わない幽霊レコードになる。
+        """
+        exc = None
+        try:
+            exc = future.exception()
+        except Exception:  # noqa: BLE001 — cancel 等
+            return
+        if exc is None:
+            return
+        msg = f"{type(exc).__name__}: {exc}"[:500]
+        log.error(
+            "✗✗ %s: %s - 処理外で例外 (ステージを戻します): %s",
+            self.target_stage, story.title, msg,
+        )
+        try:
+            db.mark_failed(
+                story.id, self.target_stage, f"処理外で例外: {msg}",
+                content_type=self.content_type,
+            )
+        except Exception as e:  # noqa: BLE001 — DB 自体が死んでいる場合
+            log.error("ステージの戻しにも失敗しました (DB異常の可能性): %s", e)
+
+    def _set_blocked(self, reason: str) -> None:
+        """ゲートの待機理由を更新する。変化したときだけログに残す。"""
+        if reason == self._blocked_reason:
+            return
+        self._blocked_reason = reason
+        if reason:
+            log.info("%s ワーカー待機中: %s", self.target_stage, reason)
+        else:
+            log.info("%s ワーカーの待機解除", self.target_stage)
+
+    @property
+    def blocked_reason(self) -> str:
+        return self._blocked_reason
 
     def _process(self, story) -> None:
         try:
@@ -122,6 +195,22 @@ class StageExecutor:
             }
             bus.publish(STAGE_FAILED, fail_data)
             log.error("✗ %s: %s - %s", self.target_stage, story.title, error_msg)
+
+            # 課金切れは次のストーリーでも必ず同じ結果になる。放っておくと
+            # キュー全件を数分で「失敗」にして在庫を焦がすので、ここで止める。
+            if is_quota_error(e):
+                log.error(
+                    "APIのクレジット切れ/クォータ超過を検知しました。"
+                    "%s パイプラインを停止します: %s",
+                    self.content_type, error_msg,
+                )
+                db.add_log(
+                    "ERROR",
+                    f"APIのクレジット切れを検知したため自動停止しました: {error_msg}",
+                    self.target_stage, story.id,
+                )
+                if self.on_fatal_error:
+                    self.on_fatal_error(error_msg)
         finally:
             with self._lock:
                 self._active_count -= 1
@@ -135,7 +224,20 @@ class Pipeline:
         stage_list = stages_for(content_type)
         self.executors: dict[str, StageExecutor] = {}
         for stage in stage_list[1:]:  # Skip 'pending'
-            self.executors[stage] = StageExecutor(stage, content_type=content_type)
+            self.executors[stage] = StageExecutor(
+                stage, content_type=content_type, on_fatal_error=self._halt,
+            )
+        # 直近の停止理由 (UI 表示用)。停止後もユーザーが理由を確認できるように残す。
+        self.halted_reason = ""
+
+    def _halt(self, reason: str) -> None:
+        """致命的エラーで全ワーカーを止める。
+
+        ワーカースレッドから呼ばれるので、その場で stop_all() すると自分自身の
+        ThreadPoolExecutor.shutdown(wait=True) を待って詰まる。別スレッドに逃がす。
+        """
+        self.halted_reason = reason
+        threading.Thread(target=self.stop_all, daemon=True, name="pipeline-halt").start()
 
     def start_stage(self, stage: str) -> None:
         if stage in self.executors:
@@ -146,6 +248,8 @@ class Pipeline:
             self.executors[stage].stop()
 
     def start_all(self) -> None:
+        # 手動で再開したら前回の停止理由は消す (原因を直したはずなので)
+        self.halted_reason = ""
         for ex in self.executors.values():
             ex.start()
 
@@ -162,6 +266,7 @@ class Pipeline:
             result[stage] = {
                 "running": ex.running,
                 "active": ex.active_count,
+                "blocked": ex.blocked_reason,
             }
         return result
 

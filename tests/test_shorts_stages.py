@@ -29,8 +29,14 @@ class TestStageRegistry:
     def test_short_video_is_different_from_long(self):
         assert STAGE_FUNCTIONS[("short", "video_complete")] is not STAGE_FUNCTIONS[("long", "video_complete")]
 
-    def test_report_submitted_not_in_short(self):
-        assert ("short", "report_submitted") not in STAGE_FUNCTIONS
+    def test_report_submitted_registered_for_both(self):
+        """使用報告も自動実行の対象。HHS以外は関数側でスキップされる。"""
+        assert ("short", "report_submitted") in STAGE_FUNCTIONS
+        assert ("long", "report_submitted") in STAGE_FUNCTIONS
+        assert (
+            STAGE_FUNCTIONS[("short", "report_submitted")]
+            is STAGE_FUNCTIONS[("long", "report_submitted")]
+        )
 
     def test_all_functions_are_callable(self):
         for key, func in STAGE_FUNCTIONS.items():

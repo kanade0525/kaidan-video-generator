@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from app.config import get as cfg_get
-from app.pipeline.retry import with_retry
+from app.pipeline.retry import is_credit_exhausted, with_retry
 from app.services.clients import get_gemini_text, get_openai
 from app.utils.log import get_logger
 
@@ -43,6 +43,12 @@ def process_text(
             try:
                 return _ai_proofread(mecab_result, text)
             except Exception as e:
+                # クレジット切れは握りつぶさない。以前はここで MeCab 結果を
+                # 返して「成功」扱いにしていたため、残高が尽きてから 14 時間
+                # 気づけず、校正なしのテキストが作られ続けた。
+                if is_credit_exhausted(e):
+                    log.error("APIのクレジット切れでAI校正が実行できません: %s", e)
+                    raise
                 log.warning("AI校正に失敗、MeCab結果をそのまま返す: %s", e)
                 return mecab_result
         return mecab_result
@@ -54,7 +60,20 @@ def process_text(
 _GEMINI_TRANSIENT_PATTERNS = ("500", "INTERNAL", "503", "UNAVAILABLE", "504", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED")
 
 
-def _gemini_generate_with_retry(client, model_name: str, prompt: str, max_attempts: int = 4):
+def _record_usage(response, model: str, purpose: str) -> None:
+    """利用量を記録する。記録の失敗で生成を止めない。"""
+    try:
+        from app.services.usage import record_response
+
+        record_response(response, model, purpose)
+    except Exception as e:  # noqa: BLE001
+        log.debug("利用量の記録をスキップ: %s", e)
+
+
+def _gemini_generate_with_retry(
+    client, model_name: str, prompt: str, max_attempts: int = 4,
+    purpose: str = "text",
+):
     """Call Gemini generate_content with retry on transient server errors.
 
     Gemini の SDK は 500 INTERNAL / 503 UNAVAILABLE / DEADLINE_EXCEEDED 等を
@@ -66,9 +85,14 @@ def _gemini_generate_with_retry(client, model_name: str, prompt: str, max_attemp
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
-            return client.models.generate_content(model=model_name, contents=prompt)
+            response = client.models.generate_content(model=model_name, contents=prompt)
+            _record_usage(response, model_name, purpose)
+            return response
         except Exception as e:
             msg = str(e)
+            # 残高切れは待っても直らない。再送すると停止が遅れるだけ。
+            if is_credit_exhausted(e):
+                raise
             transient = any(p in msg for p in _GEMINI_TRANSIENT_PATTERNS)
             if not transient or attempt == max_attempts:
                 raise
@@ -82,6 +106,69 @@ def _gemini_generate_with_retry(client, model_name: str, prompt: str, max_attemp
     if last_exc:
         raise last_exc
     raise RuntimeError("unreachable")
+
+
+def build_narration_source(text: str) -> str | None:
+    """朗読用の「漢字混じり原稿」を作る。
+
+    ひらがな原稿 (`process_text`) と同じ読みになるが、辞書で矯正した語だけを
+    かなにし、それ以外の漢字は残す。VOICEVOX に渡すとアクセントが自然になる。
+    読みが本当に一致するかは voice_generator 側で audio_query を突き合わせて
+    検証し、一致しないチャンクはひらがな原稿にフォールバックする。
+
+    MeCab が使えない環境では None を返す (呼び出し側はひらがな原稿のみで動く)。
+    """
+    import unicodedata
+
+    text = (
+        text.replace("゛", "゙").replace("゜", "゚")
+        .replace("ﾞ", "゙").replace("ﾟ", "゚")
+    )
+    text = unicodedata.normalize("NFC", text)
+    return _mecab_to_hiragana(text, keep_kanji_readings=True)
+
+
+def _kept_kanji_in(text: str) -> list[str]:
+    """`keep_as_kanji` のうち、実際に読み原稿へ漢字のまま残っている語。
+
+    プロンプトに載せるのは実在する語だけにする。全件並べると無関係な語まで
+    「漢字にしろ」と誤解させかねないうえ、辞書が育つほどプロンプトが膨らむ。
+    長い語から順に返し、同じ語の重複は除く。
+    """
+    kept = _keep_as_kanji()
+    return sorted({w for w in kept if w and w in text}, key=len, reverse=True)
+
+
+def _format_keep_kanji_block(words: list[str]) -> str:
+    """keep_as_kanji 一覧をプロンプト差し込み用のブロックに整形。"""
+    if not words:
+        return ""
+    listed = "\n".join(f"- {w}" for w in words)
+    return (
+        "## 漢字のまま残す語 (ひらがなに直さないこと)\n"
+        "次の語は VOICEVOX が漢字のほうを正しく読むため、意図的に漢字のまま"
+        "残しています。読み間違いではないので、そのまま漢字で出力してください。\n"
+        f"{listed}\n\n"
+    )
+
+
+def _render_proofread_prompt(
+    template: str, raw: str, processed: str, keep_kanji: str,
+) -> str:
+    """校正プロンプトを組み立てる。
+
+    `{keep_kanji}` を持たない旧テンプレート (ユーザーの data/config.toml に
+    保存済みのもの) でも keep_as_kanji が AI に伝わるよう、プレースホルダーが
+    無い場合は先頭に追記する。`str.format` は使わず個別置換にしているのは、
+    プロンプト本文に含まれる `{` `}` (絵文字や記法の説明) で KeyError に
+    ならないようにするため。
+    """
+    rendered = template.replace("{raw}", raw).replace("{processed}", processed)
+    if "{keep_kanji}" in rendered:
+        return rendered.replace("{keep_kanji}", keep_kanji)
+    if keep_kanji:
+        return f"{keep_kanji}{rendered}"
+    return rendered
 
 
 def _ai_proofread(processed_text: str, raw_text: str) -> str:
@@ -102,9 +189,19 @@ def _ai_proofread(processed_text: str, raw_text: str) -> str:
         log.warning("ai_proofread_prompt に {raw} / {processed} がない、MeCab結果を返す")
         return processed_text
 
+    # 「漢字のまま残す語」は MeCab 段階で意図的に漢字のまま通してある。これを
+    # AI に伝えないと「変換し忘れ」と誤認してひらがなに直してしまうので、
+    # 実際に読み原稿へ残っている語だけをプロンプトに明示する。
+    kept_present = _kept_kanji_in(processed_text)
+    keep_block = _format_keep_kanji_block(kept_present)
+
     client = get_gemini_text()
-    prompt = prompt_template.format(raw=raw_text, processed=processed_text)
-    response = _gemini_generate_with_retry(client, model_name, prompt)
+    prompt = _render_proofread_prompt(
+        prompt_template, raw=raw_text, processed=processed_text, keep_kanji=keep_block,
+    )
+    response = _gemini_generate_with_retry(
+        client, model_name, prompt, purpose="ai_proofread",
+    )
     result = (response.text or "").strip()
     # コードブロック等の冗長要素を除去
     result = re.sub(r"```[\s\S]*?```", "", result).strip()
@@ -156,6 +253,16 @@ def _ai_proofread(processed_text: str, raw_text: str) -> str:
     # ような同形異字を出力する。日本語怪談本文には現れないので一律破損扱い。
     if re.search(r"[Ͱ-ϿЀ-ԯᄀ-ᇿ가-힯]", result):
         log.warning("AI校正出力に非日本語スクリプト(キリル等)が混入、MeCab結果を返す")
+        return processed_text
+
+    # ガード2.7: 「漢字のまま残す語」が AI 出力から消えている = ひらがなに
+    # 直されたということ。プロンプトで禁止しているが、守られない場合の保険。
+    dropped = [w for w in kept_present if result.count(w) < processed_text.count(w)]
+    if dropped:
+        log.warning(
+            "AI校正で漢字のまま残すべき語がひらがな化された (%s)、MeCab結果を返す",
+            "/".join(dropped[:5]),
+        )
         return processed_text
 
     # ガード3: 行数が大きく変わっている場合は信用しない (構造破壊の保険)
@@ -506,8 +613,23 @@ def _reading_overrides() -> dict[str, str]:
 
 
 def _compound_replacements() -> dict[str, str]:
+    """複合語置換テーブル。`keep_as_kanji` に載っている語は除外する。
+
+    複合語置換は MeCab より前に走るので、同じ語が両方の辞書に載っていると
+    置換が先に効いて keep_as_kanji が一度も発火しない (例: 「不気味」を
+    keep_as_kanji に入れても compound_replacements の 不気味→ぶきみ が
+    先に潰す)。「漢字のまま残す」という指定のほうが後段の意図なので、
+    競合したら keep_as_kanji を優先する。
+    """
     user = cfg_get("compound_replacements") or {}
-    return {**_DEFAULT_COMPOUND_REPLACEMENTS, **user}
+    merged = {**_DEFAULT_COMPOUND_REPLACEMENTS, **user}
+    kept = _keep_as_kanji()
+    conflicts = [k for k in merged if k in kept]
+    for k in conflicts:
+        del merged[k]
+    if conflicts:
+        log.debug("keep_as_kanji 優先で複合語置換を除外: %s", "/".join(conflicts))
+    return merged
 
 
 def _keep_as_kanji() -> set[str]:
@@ -563,7 +685,7 @@ def _apply_compound_replacements(text: str, replacements: dict[str, str]) -> str
     return text
 
 
-def _mecab_to_hiragana(text: str) -> str | None:
+def _mecab_to_hiragana(text: str, keep_kanji_readings: bool = False) -> str | None:
     """Convert text to hiragana using MeCab (kanji→reading + particle は/へ→わ/え).
 
     Returns None if MeCab is unavailable so the caller can fall back.
@@ -586,15 +708,28 @@ def _mecab_to_hiragana(text: str) -> str | None:
 
     if "\n" in text:
         parts = text.split("\n")
-        converted = [_mecab_to_hiragana_segment(p) for p in parts]
+        converted = [
+            _mecab_to_hiragana_segment(p, keep_kanji_readings=keep_kanji_readings)
+            for p in parts
+        ]
         if any(c is None for c in converted):
             return None
         return "\n".join(converted)  # type: ignore[arg-type]
-    return _mecab_to_hiragana_segment(text)
+    return _mecab_to_hiragana_segment(text, keep_kanji_readings=keep_kanji_readings)
 
 
-def _mecab_to_hiragana_segment(text: str) -> str | None:
-    """Convert a single line (no newline) to hiragana via MeCab."""
+def _mecab_to_hiragana_segment(
+    text: str, keep_kanji_readings: bool = False,
+) -> str | None:
+    """Convert a single line (no newline) to hiragana via MeCab.
+
+    `keep_kanji_readings=True` では「読みを修正した箇所だけ」をかなにし、
+    MeCab の読みをそのまま採用した漢字は漢字のまま残す (ナレーション原稿)。
+    VOICEVOX/OpenJTalk はひらがなだけの文だと語境界を推定できずアクセントが
+    平板化しやすいが、漢字が残っていれば正しいアクセントを付けられる。
+    読みが変わらないことは呼び出し側 (voice_generator) が VOICEVOX の
+    audio_query で検証してから採用する。
+    """
     try:
         import MeCab
         import unidic_lite
@@ -613,6 +748,11 @@ def _mecab_to_hiragana_segment(text: str) -> str | None:
     # Protect "数字+カウンター漢字" spans so MeCab does not split them and
     # emit wrong per-token readings (e.g. 一泊二日 → いち泊ふた日 with bad
     # 促音/連濁). VOICEVOX reads the original kanji form correctly.
+    # 「漢字のまま残す語」は MeCab より前にプレースホルダで退避する。
+    # surface 一致だけに頼ると、MeCab が複数トークンに割る語 (不気味 = 不+気味)
+    # では一度も発火せず、設定しても効かなかった。
+    text, keep_placeholders = _protect_keep_as_kanji(text, keep_as_kanji)
+
     text, counter_placeholders = _protect_counter_spans(text)
 
     try:
@@ -636,19 +776,25 @@ def _mecab_to_hiragana_segment(text: str) -> str | None:
             if surface in keep_as_kanji:
                 output.append(surface)
             elif surface in reading_overrides:
+                # 辞書で読みを矯正した語。漢字のままだと誤読されるので、
+                # ナレーション原稿でも必ずかなにする。
                 output.append(reading_overrides[surface])
             elif has_kanji and pron:
-                output.append(_katakana_to_hiragana(pron))
+                # MeCab の読みをそのまま使う語は、漢字を残しても読みは変わらない。
+                output.append(surface if keep_kanji_readings else _katakana_to_hiragana(pron))
             elif is_particle and surface == "は":
-                output.append("わ")
+                # 漢字混じり文なら OpenJTalk が助詞の は を正しく ワ と読む。
+                output.append("は" if keep_kanji_readings else "わ")
             elif is_particle and surface == "へ":
-                output.append("え")
+                output.append("へ" if keep_kanji_readings else "え")
             else:
                 output.append(surface)
             node = node.next
 
         result = "".join(output)
         for placeholder, original in counter_placeholders.items():
+            result = result.replace(placeholder, original)
+        for placeholder, original in keep_placeholders.items():
             result = result.replace(placeholder, original)
         return result
     except Exception as e:
@@ -705,6 +851,36 @@ def _apply_furigana(text: str) -> str:
     for kanji in sorted(mapping, key=len, reverse=True):
         stripped = stripped.replace(kanji, mapping[kanji])
     return stripped
+
+
+def _protect_keep_as_kanji(
+    text: str, keep_as_kanji: set[str],
+) -> tuple[str, dict[str, str]]:
+    """`keep_as_kanji` の語をプレースホルダに退避し、MeCab の変換対象から外す。
+
+    Private Use Area の記号に置き換えるので MeCab は不透明な記号として扱い、
+    分割も読み付けもしない。変換後に元の漢字へ戻す。長い語から順に置換して
+    「不気味」が「気味」より先に取られるようにする。
+    """
+    placeholders: dict[str, str] = {}
+    for word in sorted((w for w in keep_as_kanji if w), key=len, reverse=True):
+        if word not in text:
+            continue
+        # 漢字境界ガード。無条件に置換すると長い語の一部を食う
+        # (話→会話が「かい話」、後→午後が「うま後」、人→何人が「何ひと」)。
+        # 単漢字は前後とも漢字でないときだけ、複数字は直前が漢字でないときだけ
+        # 発火させる (`_apply_compound_replacements` と同じ考え方)。
+        if len(word) == 1:
+            pattern = f"(?<![{_KANJI_CLASS}]){re.escape(word)}(?![{_KANJI_CLASS}])"
+        else:
+            pattern = f"(?<![{_KANJI_CLASS}]){re.escape(word)}"
+        key = f"\uE010{len(placeholders):04d}\uE011"
+        new_text, n = re.subn(pattern, key, text)
+        if n == 0:
+            continue
+        placeholders[key] = word
+        text = new_text
+    return text, placeholders
 
 
 def _protect_counter_spans(text: str) -> tuple[str, dict[str, str]]:
@@ -841,6 +1017,49 @@ def split_into_chunks(text: str, max_length: int | None = None) -> list[str]:
     return chunks
 
 
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？\n])")
+
+
+def _sentences(text: str) -> list[str]:
+    """`split_into_chunks` と同じ規則で文に分割する。"""
+    return [s.strip() for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()]
+
+
+def align_chunks(hiragana_text: str, mixed_text: str) -> list[str] | None:
+    """ひらがなチャンクに 1:1 対応する漢字混じりチャンクを返す。
+
+    `split_into_chunks` は文を連結してチャンクを作るので、同じ文構造を持つ
+    2 つのテキストなら「何文目までを 1 チャンクにしたか」を再生して対応付け
+    できる。長さ基準で別々に分割すると (ひらがなのほうが長いので) 境界が
+    ずれ、音声生成側の読み一致判定がまず通らない。
+
+    対応付けできない場合 (文数が違う / 長すぎる文が強制分割された) は None を
+    返し、呼び出し側はアクセント原稿なしで動く。
+    """
+    hira_sents = _sentences(hiragana_text)
+    mixed_sents = _sentences(mixed_text)
+    if not hira_sents or len(hira_sents) != len(mixed_sents):
+        return None
+
+    aligned: list[str] = []
+    idx = 0
+    for chunk in split_into_chunks(hiragana_text):
+        rebuilt = ""
+        parts: list[str] = []
+        while idx < len(hira_sents) and rebuilt != chunk:
+            rebuilt += hira_sents[idx]
+            parts.append(mixed_sents[idx])
+            idx += 1
+        if rebuilt != chunk:
+            # 強制分割などで文の境界と一致しなかった
+            return None
+        aligned.append("".join(parts))
+
+    if idx != len(hira_sents):
+        return None
+    return aligned
+
+
 def split_into_n_chunks(text: str, n: int) -> list[str]:
     """Split text into exactly *n* chunks at sentence boundaries.
 
@@ -917,6 +1136,7 @@ def generate_shorts_metadata(title: str, text: str, author: str) -> dict[str, st
         client = get_gemini_text()
         model_name = cfg_get("gemini_model") or "gemini-2.5-flash-lite"
         response = client.models.generate_content(model=model_name, contents=prompt)
+        _record_usage(response, model_name, "shorts_metadata")
         result_text = (response.text or "").strip()
 
         # Strip markdown code blocks if present
@@ -939,3 +1159,85 @@ def generate_shorts_metadata(title: str, text: str, author: str) -> dict[str, st
             "title": f"👻【怖い話】{title}",
             "description": f"【怖い話】{title}\n\n#怪談 #怖い話 #心霊 #ホラー #Shorts",
         }
+
+
+# ── アクセント情報の抽出 (VOICEVOX ユーザー辞書用) ─────────────────────
+# unidic-lite の素性は 26 列で、23 列目が aType (アクセント核の位置)。
+# 「昨日」のように候補が複数ある語は aType が `"2,0"` のようにクォート付き
+# CSV になるため、単純な split(",") では列がずれる。csv モジュールで正しく
+# 分解してから参照する。
+_ATYPE_INDEX = 23
+
+# 拗音・小書き文字はモーラを構成しないので、モーラ数のカウントから除く。
+_NON_MORA_CHARS = set("ァィゥェォャュョヮ")
+
+
+def _parse_feature(feature_line: str) -> list[str]:
+    """MeCab の feature 行をクォート込みの CSV として分解する。"""
+    import csv
+    import io
+
+    try:
+        return next(csv.reader(io.StringIO(feature_line)))
+    except Exception:
+        return feature_line.split(",")
+
+
+def count_moras(katakana: str) -> int:
+    """カタカナ読みのモーラ数。拗音の小書き文字は前のモーラに含める。"""
+    return sum(1 for ch in katakana if ch not in _NON_MORA_CHARS)
+
+
+def analyze_accent(surface: str) -> tuple[str, int] | None:
+    """語の (カタカナ読み, アクセント型) を unidic から取得する。
+
+    VOICEVOX のユーザー辞書登録に使う。アクセント型は「アクセント核が何モーラ
+    目にあるか」(0 = 平板型)。取得できない・複数トークンに割れる・読みが
+    カタカナでない場合は None を返し、呼び出し側で登録をスキップさせる。
+    """
+    try:
+        import MeCab
+        import unidic_lite
+    except ImportError:
+        return None
+
+    try:
+        tagger = MeCab.Tagger(f"-d {unidic_lite.DICDIR}")
+        tagger.parse("")
+        nodes = []
+        node = tagger.parseToNode(surface)
+        while node:
+            if node.surface:
+                nodes.append(node)
+            node = node.next
+    except Exception as e:
+        log.warning("アクセント解析に失敗 (%s): %s", surface, e)
+        return None
+
+    # 複合語 (MeCab が複数トークンに割る語) はトークンごとのアクセント型を
+    # 単純結合できない (連結規則 aConType が必要)。誤ったアクセントを登録する
+    # くらいなら登録しないほうが安全なので、1 トークンの語だけ扱う。
+    if len(nodes) != 1:
+        return None
+
+    feature = _parse_feature(nodes[0].feature)
+    if len(feature) <= _ATYPE_INDEX:
+        return None
+
+    reading = _extract_reading(feature)
+    if not reading or not re.fullmatch(r"[ァ-ヴー]+", reading):
+        return None
+
+    raw_atype = (feature[_ATYPE_INDEX] or "").strip()
+    if not raw_atype or raw_atype == "*":
+        return None
+    # `"2,0"` のような複数候補は第一候補を採用 (unidic の並び順が優先度順)
+    first = raw_atype.split(",")[0].strip()
+    if not first.lstrip("-").isdigit():
+        return None
+    accent = int(first)
+
+    n_moras = count_moras(reading)
+    if accent < 0 or accent > n_moras:
+        return None
+    return reading, accent

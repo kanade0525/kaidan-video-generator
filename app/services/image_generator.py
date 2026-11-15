@@ -14,12 +14,42 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from app.config import get as cfg_get
 from app.pipeline.retry import with_retry
-from app.services.clients import get_gemini_image
+from app.services import image_pool
+from app.services.clients import get_gemini_image, get_gemini_text
 from app.utils.log import get_logger
 
 log = get_logger("kaidan.image")
 
 AIRFORCE_URL = "https://api.airforce/v1/images/generations"
+
+
+def _record_usage(response, model: str, purpose: str) -> None:
+    """利用量を記録する。記録の失敗で生成を止めない。"""
+    try:
+        from app.services.usage import record_response
+
+        record_response(response, model, purpose)
+    except Exception as e:  # noqa: BLE001
+        log.debug("利用量の記録をスキップ: %s", e)
+
+
+def _record_image(model: str, purpose: str) -> None:
+    """画像1枚の生成を記録する (枚数課金)。"""
+    try:
+        from app.services.usage import record_image
+
+        record_image(model, purpose)
+    except Exception as e:  # noqa: BLE001
+        log.debug("利用量の記録をスキップ: %s", e)
+
+
+class ImageUnavailableError(RuntimeError):
+    """画像を用意できなかった。
+
+    以前はここで真っ黒のグラデーションを返していたため、生成に失敗しても
+    パイプラインが止まらず、そのまま動画化されて YouTube に投稿されていた。
+    画像は動画の中身そのものなので、揃わないなら止める。
+    """
 
 
 @dataclass
@@ -159,12 +189,18 @@ def extract_scene_prompts(
         f"・構図（wide shot, close-up, medium shot, overhead, dutch angle等）を必ず含める\n"
         f"・照明（moonlight, flickering light, backlit, single dim lamp等）を必ず含める\n"
         f"・人物・霊的存在を描いて良い。怪談に登場する場合はむしろ中心主題として描写する\n"
+        f"・ただし画像生成AIの安全フィルタに引っかかる描写は避ける:\n"
+        f"  - 子供・未成年を主題にしない(登場する話でも、大人・人影・場所に置き換える)\n"
+        f"  - 恐怖や苦痛に歪んだ顔のクローズアップにしない\n"
+        f"  - 流血・損傷・遺体の直接描写をしない\n"
+        f"  怖さは暗さ・影・気配・不穏な構図で出す(日本の怪談の静かな恐怖)\n"
         f"・テキストや文字は絶対に含めない\n"
         f"・1行に1プロンプト、番号やマーカーは不要\n\n"
         f"物語:\n{text[:2000]}"
     )
     try:
         response = client.models.generate_content(model=model_name, contents=prompt)
+        _record_usage(response, model_name, "scene_prompts")
         lines = [ln.strip() for ln in (response.text or "").strip().split("\n") if ln.strip()]
         # Remove numbered prefixes
         cleaned = []
@@ -216,6 +252,7 @@ def _generate_title_bg_prompt(
             f"物語:\n{text[:1000]}"
         )
         response = client.models.generate_content(model=model_name, contents=prompt)
+        _record_usage(response, model_name, "title_bg_prompt")
         result = (response.text or "").strip().split("\n")[0].strip()
         if len(result) > 20:
             return result
@@ -226,7 +263,9 @@ def _generate_title_bg_prompt(
 
 
 
-@with_retry(max_attempts=2, base_delay=30.0)
+# 画像生成は 1 枚失敗すると作品ごと止まるので、一時的な切断には粘る。
+# 30秒×2回より、短い間隔で回数を稼ぐほうが復帰率が高い。
+@with_retry(max_attempts=4, base_delay=5.0, max_delay=60.0)
 def generate_image_ai(
     prompt: str, model: str | None = None, size: str | None = None,
     aspect_ratio: str | None = None, style_override: str | None = None,
@@ -238,7 +277,8 @@ def generate_image_ai(
     """
     img_model = model or cfg_get("image_model")
     style = style_override if style_override is not None else cfg_get("image_style")
-    full_prompt = f"{prompt}, {style}"
+    # style が空文字なら何も足さない (プロンプト側で画作りが完結している場合)
+    full_prompt = f"{prompt}, {style}" if style else prompt
 
     # Use Google API if model starts with "imagen" or "gemini"
     if img_model.startswith("imagen") or img_model.startswith("gemini"):
@@ -248,9 +288,98 @@ def generate_image_ai(
     return _generate_airforce(full_prompt, img_model, size)
 
 
+def score_image_quality(image_data: bytes) -> float:
+    """生成画像の「使えそう度」を 0.0〜1.0 で採点する。
+
+    タイトルカード背景として破綻している画像 (ほぼ真っ黒 / 真っ白 / のっぺりして
+    情報量が無い) を弾くのが目的。芸術性の評価ではなく、明らかな失敗作を
+    候補から落とすためのフィルタ。
+
+    - detail: ラプラシアン相当の隣接差分の分散。輪郭やテクスチャの量。
+    - exposure: 平均輝度が極端に暗い/明るいほど減点。
+    """
+    try:
+        img = Image.open(BytesIO(image_data)).convert("L")
+    except Exception:
+        return 0.0
+    # 大きい画像をそのまま扱うと遅いので縮小してから評価する
+    img.thumbnail((256, 256), Image.BILINEAR)
+    arr = np.asarray(img, dtype=np.float32)
+    if arr.size == 0:
+        return 0.0
+
+    dx = np.diff(arr, axis=1)
+    dy = np.diff(arr, axis=0)
+    detail = float(dx.var() + dy.var())
+    # 経験的に分散 400 前後で「十分ディテールがある」ので、そこを上限に正規化
+    detail_score = min(detail / 400.0, 1.0)
+
+    mean = float(arr.mean()) / 255.0
+    # 平均輝度 0.35 付近 (暗めだが潰れていない) を満点とし、離れるほど減点
+    exposure_score = max(0.0, 1.0 - abs(mean - 0.35) / 0.35)
+
+    return 0.7 * detail_score + 0.3 * exposure_score
+
+
+def generate_best_image(
+    prompt: str, candidates: int = 1, model: str | None = None,
+    size: str | None = None, aspect_ratio: str | None = None,
+    style_override: str | None = None,
+) -> bytes:
+    """候補を複数生成し、採点が最も高い 1 枚を返す。
+
+    `candidates <= 1` なら従来どおり 1 回だけ生成する。生成に失敗した候補は
+    無視し、全滅した場合は最後の例外を送出して呼び出し側のフォールバックに
+    委ねる。
+    """
+    if candidates <= 1:
+        return generate_image_ai(
+            prompt, model=model, size=size,
+            aspect_ratio=aspect_ratio, style_override=style_override,
+        )
+
+    best: bytes | None = None
+    best_score = -1.0
+    last_exc: Exception | None = None
+    for i in range(candidates):
+        try:
+            data = generate_image_ai(
+                prompt, model=model, size=size,
+                aspect_ratio=aspect_ratio, style_override=style_override,
+            )
+        except Exception as e:  # noqa: BLE001 — 候補単位の失敗は許容
+            last_exc = e
+            log.warning("画像候補 %d/%d の生成に失敗: %s", i + 1, candidates, e)
+            continue
+        score = score_image_quality(data)
+        log.info("画像候補 %d/%d のスコア: %.3f", i + 1, candidates, score)
+        if score > best_score:
+            best, best_score = data, score
+
+    if best is None:
+        raise last_exc or RuntimeError("画像候補をすべて生成できませんでした")
+    log.info("画像候補 %d 枚から採用 (スコア %.3f)", candidates, best_score)
+    return best
+
+
+# Imagen (`generate_images`) は Vertex AI 専用で、Gemini Developer API キーでは
+# 動かない。google-genai 2.x は
+#   "This method is only supported in Gemini Enterprise Agent Platform mode"
+# という ValueError を投げる。設定で選ばれていても気づきにくいので、実行前に
+# 何が悪くてどう直すのかを明示して止める。
+_IMAGEN_NOT_SUPPORTED = (
+    "{model} は Gemini Developer API キーでは使えません "
+    "(Imagen は Vertex AI 専用)。設定の画像モデルを "
+    "gemini-2.5-flash-image に変更してください。"
+)
+
+
 def _generate_imagen(prompt: str, model: str, aspect_ratio: str | None = None) -> bytes:
     """Generate image using Google Imagen or Gemini Image API."""
     from google.genai import types
+
+    if model.startswith("imagen"):
+        raise ImageUnavailableError(_IMAGEN_NOT_SUPPORTED.format(model=model))
 
     client = get_gemini_image()
 
@@ -271,10 +400,20 @@ def _generate_imagen(prompt: str, model: str, aspect_ratio: str | None = None) -
                 imageConfig=image_config,
             ),
         )
-        for part in response.candidates[0].content.parts:
+        parts = response.candidates[0].content.parts or []
+        for part in parts:
             if part.inline_data:
+                _record_image(model, "image")
                 return part.inline_data.data
-        raise RuntimeError("Gemini image generation returned no image")
+        # 画像が返らないときは、たいてい安全性フィルタによる拒否で、その理由が
+        # テキストで返っている。"returned no image" だけでは何が悪いか分からず
+        # 直しようがないので、モデルの言い分をそのままエラーに載せる。
+        reason = " ".join(p.text.strip() for p in parts if getattr(p, "text", None))
+        finish = getattr(response.candidates[0], "finish_reason", None)
+        raise RuntimeError(
+            f"画像が返りませんでした (finish_reason={finish}): "
+            f"{reason[:300] or '理由の記載なし'}"
+        )
 
     # Imagen API (imagen-* models)
     # Imagen 4 only supports: numberOfImages, aspectRatio, personGeneration, imageSize
@@ -427,21 +566,6 @@ def replace_scene_image(
     img.save(target_path, "PNG")
     log.info("シーン画像を差し替え: %s (%dx%d)", target_path, target_w, target_h)
     return target_path
-
-
-def generate_fallback_image(width: int = 1792, height: int = 1024) -> bytes:
-    """Generate a simple dark gradient background as fallback."""
-    img = Image.new("RGB", (width, height), (10, 10, 20))
-    draw = ImageDraw.Draw(img)
-    for y in range(height):
-        r = int(10 + (y / height) * 15)
-        g = int(10 + (y / height) * 10)
-        b = int(20 + (y / height) * 20)
-        draw.line([(0, y), (width, y)], fill=(r, g, b))
-
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
 
 
 def _find_cjk_font(size: int, use_koin: bool = False) -> ImageFont.FreeTypeFont | None:
@@ -727,6 +851,175 @@ def create_title_card(
     return buf.getvalue()
 
 
+def thumbnail_subject(text: str, title: str) -> str:
+    """本文から「サムネイルに何を大きく写すか」を英語1文で起こす。
+
+    失敗したらタイトルだけを手掛かりにした無難な描写を返す。ここは絵の題材選び
+    であって、失敗しても真っ黒にはならない (画像生成側は失敗すれば止まる)。
+    """
+    prompt = (
+        f"以下の怪談「{title}」を読み、サムネイルの主役として大きく写すべき"
+        f"最も印象的で不気味な対象を、英語1文(40語以内)で描写してください。"
+        f"人物・怪異・場所・物体のどれでも可。説明や前置きは不要、描写のみ。\n\n"
+        f"{text[:1500]}"
+    )
+    try:
+        client = get_gemini_text()
+        model_name = cfg_get("gemini_model")
+        response = client.models.generate_content(model=model_name, contents=prompt)
+        _record_usage(response, model_name, "thumbnail_subject")
+        result = (response.text or "").strip().split("\n")[0].strip()
+        if len(result) > 15:
+            return result
+    except Exception as e:  # noqa: BLE001 — 題材選びの失敗は致命的でない
+        log.warning("サムネイル主役の抽出に失敗: %s", e)
+    return (
+        "a dark, ominous Japanese scene evoking quiet dread, "
+        "with a single unsettling presence"
+    )
+
+
+def thumbnail_badge(category: str) -> str:
+    """サムネイル左上のバッジ文言。カテゴリ名をそのまま使う。
+
+    怪談と人怖では話の性質が違うので、同じ「怪談朗読」を貼るのは正しくない。
+    長すぎる等で別名にしたいカテゴリは `shorts_badge_overrides` で上書きする。
+    カテゴリが無い作品は空文字を返し、バッジ自体を出さない。
+    """
+    category = (category or "").strip()
+    if not category:
+        return ""
+    overrides = cfg_get("shorts_badge_overrides") or {}
+    return overrides.get(category, category)
+
+
+def _badge_instruction(badge: str) -> str:
+    """バッジの有無をプロンプトの指示文に落とす。"""
+    if not badge:
+        return (
+            "- Do NOT draw any stamp, plaque, label or badge in the corners. "
+            "Only the title text below.\n"
+        )
+    return (
+        "- Top-LEFT corner: a small red weathered stamp/plaque reading exactly: "
+        f"{badge}\n"
+    )
+
+
+def generate_shorts_thumbnail(title: str, text: str, category: str = "") -> bytes:
+    """Shorts の 1 枚目 (タイトル文字入りサムネイル) を生成する。
+
+    タイトルと「怪談朗読」を画像生成AI自身に描かせる。後段で文字を合成しないので、
+    暗くする・ぼかす等の加工も掛けない (掛けると絵が潰れて読めなくなる)。
+    モデルは日本語を正しく描けるものを選ぶこと — 2.5-flash-image は
+    「赤い土」を「我い土」にする。
+    """
+    template = cfg_get("shorts_thumbnail_prompt") or ""
+    if "{title}" not in template:
+        raise ImageUnavailableError(
+            "shorts_thumbnail_prompt に {title} がありません。設定を確認してください。"
+        )
+    subject = thumbnail_subject(text, title)
+    badge = thumbnail_badge(category)
+    prompt = (
+        template.replace("{title}", title)
+        .replace("{subject}", subject)
+        .replace("{badge_instruction}", _badge_instruction(badge))
+    )
+    log.info(
+        "サムネイル生成: %s / バッジ: %s / 主役: %s",
+        title, badge or "(なし)", subject[:60],
+    )
+
+    model = shorts_image_model() or cfg_get("image_model")
+    try:
+        # style_override="" でグローバルの VHS スタイル文を付けない。
+        # プロンプト側で画作りを完結させているため。
+        return generate_image_ai(
+            prompt, model=model,
+            aspect_ratio=cfg_get("shorts_image_aspect_ratio"),
+            style_override="",
+        )
+    except Exception as e:
+        raise ImageUnavailableError(
+            f"サムネイル生成に失敗しました (model={model}): {e}"
+        ) from e
+
+
+def _needs_ai(source: str, kind: str) -> bool:
+    """この調達方法で AI 生成が発生しうるか (プロンプト生成の要否判定用)。"""
+    if source == "pool":
+        return False
+    if source == "pool_first":
+        return not image_pool.list_pool(kind)
+    return True
+
+
+def shorts_image_model() -> str | None:
+    """Shorts 用の画像モデル。未設定なら None (= 共通の image_model を使う)。
+
+    1 枚目の品質が安定しないため、長編と別のモデルを指定できるようにしている。
+    """
+    model = (cfg_get("shorts_image_model") or "").strip()
+    return model or None
+
+
+def _resolve_shorts_image(
+    kind: str,
+    source: str,
+    key: str,
+    offset: int,
+    prompt: str,
+    width: int,
+    height: int,
+    aspect_ratio: str | None,
+    style_suffix: str | None,
+    use_vhs: bool,
+    candidates: int,
+) -> tuple[bytes | None, bool]:
+    """Shorts 用の画像 1 枚を調達する。戻り値は (画像バイト列, プール由来か)。
+
+    `source` が "pool" / "pool_first" のときは `assets/shorts/<kind>/` から
+    決定的に選ぶ。"pool_first" でプールが空なら AI 生成にフォールバックする。
+    画像を用意できない場合は `ImageUnavailableError` を送出する。黙って黒背景を
+    返すと、真っ黒な動画がそのまま YouTube まで流れてしまうため。
+    """
+    if source in ("pool", "pool_first"):
+        picked = image_pool.pick(kind, key, offset=offset)
+        if picked is not None:
+            try:
+                data = image_pool.load_fitted(picked, width, height)
+                if cfg_get("shorts_pool_apply_vhs"):
+                    data = degrade_to_vhs(data)
+                log.info("%s: プール画像を使用 (%s)", kind, picked.name)
+                return data, True
+            except Exception as e:  # noqa: BLE001 — 壊れた画像は AI 生成へ回す
+                log.warning("プール画像の読込に失敗 (%s): %s", picked, e)
+        if source == "pool":
+            raise ImageUnavailableError(
+                f"{kind}: 画像プールが空です。"
+                f"assets/shorts/{kind}/ に画像を入れるか、設定で「プール優先」"
+                f"または「毎回AI生成」に変更してください。"
+            )
+
+    try:
+        data = generate_best_image(
+            prompt,
+            candidates=max(1, candidates),
+            model=shorts_image_model(),
+            aspect_ratio=aspect_ratio,
+            style_override=style_suffix,
+        )
+    except Exception as e:
+        raise ImageUnavailableError(
+            f"{kind}: 画像生成に失敗しました (model={shorts_image_model()}): {e}"
+        ) from e
+    if use_vhs:
+        data = degrade_to_vhs(data)
+    log.info("%s: AI 画像生成成功", kind)
+    return data, False
+
+
 def generate_images_for_story(
     text: str, title: str, output_dir: Path, category: str = "怪談",
     progress_callback=None, content_type: str = "long",
@@ -754,7 +1047,7 @@ def generate_images_for_story(
     else:
         tc_w, tc_h = 1792, 1024
 
-    fb_w, fb_h = (1080, 1920) if is_short else (1792, 1024)
+    scene_w, scene_h = (1080, 1920) if is_short else (1792, 1024)
 
     # ----- Shorts: scene_000.png IS the title card -----
     # The first AI image gets the title text/badge composited directly onto
@@ -763,74 +1056,62 @@ def generate_images_for_story(
     # Total output for Shorts: 2 PNGs (scene_000.png + scene_001.png) under
     # the default shorts_num_scenes=2.
     if is_short:
-        prompts = extract_scene_prompts(text, title, num_scenes, style=style_profile)
+        scene_source = cfg_get("shorts_scene_source") or "ai"
+        # 2枚目以降をプールで賄えるなら、シーンプロンプトの生成自体を省く。
+        prompts: list[str] = []
+        if num_scenes > 1 and _needs_ai(scene_source, image_pool.SCENE):
+            prompts = extract_scene_prompts(text, title, num_scenes, style=style_profile)
         if not prompts:
-            prompts = [f"dark Japanese horror scene, {title}"]
+            prompts = [f"dark Japanese horror scene, {title}"] * max(num_scenes, 1)
 
-        title_template = pick_shorts_title_template(title)
-        log.info("タイトルカードテンプレート: %s", title_template.name)
+        style_suffix = style_profile.style_suffix if style_profile else None
+        ar = cfg_get("shorts_image_aspect_ratio")
 
-        # AI gen #1 — used as the title-bearing scene_000.png.
-        title_bg_data = None
-        try:
-            ar = cfg_get("shorts_image_aspect_ratio")
-            title_bg_data = generate_image_ai(
-                prompts[0], aspect_ratio=ar,
-                style_override=style_profile.style_suffix if style_profile else None,
-            )
-            if title_bg_data and use_vhs:
-                title_bg_data = degrade_to_vhs(title_bg_data)
-            log.info("scene_000.png 用 AI 画像生成成功 (タイトルカード兼用)")
-        except Exception as e:
-            log.warning("scene_000.png 用画像生成失敗、プロシージャル背景を使用: %s", e)
-
+        # ── scene_000.png = サムネイル ──
+        # タイトル文字と「怪談朗読」は画像生成AIが絵の中に描く。以前はここで
+        # 生成画像を暗くしてぼかし、その上に文字を合成していたが、加工が強すぎて
+        # どんな絵を入れても黒い板になっていた。合成も加工もしない。
         scene0_path = output_dir / "scene_000.png"
-        scene0_path.write_bytes(
-            create_title_card(
-                title, width=tc_w, height=tc_h,
-                bg_image_data=title_bg_data, category=category,
-                template=title_template,
-            )
-        )
+        scene0_path.write_bytes(generate_shorts_thumbnail(title, text, category))
         image_paths.append(scene0_path)
         if progress_callback:
-            progress_callback(1, len(prompts))
-        if rate_limit > 0 and len(prompts) > 1:
+            progress_callback(1, num_scenes)
+        if rate_limit > 0 and num_scenes > 1:
             time.sleep(rate_limit)
 
-        # AI gen #2..N — bare scene images, numbered scene_001 onwards because
-        # scene_000 already exists as the title-bearing slot.
-        for i, prompt in enumerate(prompts[1:]):
-            scene_idx = i + 1
-            log.info("AI画像生成中 (%d/%d): %s", scene_idx + 1, len(prompts), prompt[:60])
+        # ── scene_001.png 以降 = 本編のシーン画像 ──
+        for scene_idx in range(1, num_scenes):
             img_path = output_dir / f"scene_{scene_idx:03d}.png"
-            try:
-                ar = cfg_get("shorts_image_aspect_ratio")
-                img_data = generate_image_ai(
-                    prompt, aspect_ratio=ar,
-                    style_override=style_profile.style_suffix if style_profile else None,
-                )
-                if use_vhs:
-                    img_data = degrade_to_vhs(img_data)
-                img_path.write_bytes(img_data)
-            except Exception as e:
-                log.warning("画像生成失敗、フォールバック使用: %s", e)
-                img_path.write_bytes(generate_fallback_image(width=fb_w, height=fb_h))
+            prompt = prompts[scene_idx] if scene_idx < len(prompts) else prompts[-1]
+            img_data, from_pool = _resolve_shorts_image(
+                kind=image_pool.SCENE,
+                source=scene_source,
+                key=title,
+                offset=scene_idx,
+                prompt=prompt,
+                width=scene_w, height=scene_h,
+                aspect_ratio=ar,
+                style_suffix=style_suffix,
+                use_vhs=use_vhs,
+                candidates=1,
+            )
+            img_path.write_bytes(img_data)
             image_paths.append(img_path)
             if progress_callback:
-                progress_callback(scene_idx + 1, len(prompts))
-            if i < len(prompts) - 2 and rate_limit > 0:
+                progress_callback(scene_idx + 1, num_scenes)
+            if scene_idx < num_scenes - 1 and rate_limit > 0 and not from_pool:
                 time.sleep(rate_limit)
         return image_paths
 
     # ----- Long-form: separate title BG generation, full scene set -----
     title_bg_prompt = _generate_title_bg_prompt(text, title, style=style_profile)
-    title_bg_data = None
     try:
         title_bg_data = generate_image_ai(title_bg_prompt)
         log.info("タイトル背景画像生成成功")
     except Exception as e:
-        log.warning("タイトル背景生成失敗、プロシージャル背景を使用: %s", e)
+        raise ImageUnavailableError(
+            f"タイトル背景の生成に失敗しました (model={cfg_get('image_model')}): {e}"
+        ) from e
 
     title_path = output_dir / "000_title_card.png"
     title_path.write_bytes(
@@ -854,12 +1135,14 @@ def generate_images_for_story(
 
         try:
             img_data = generate_image_ai(prompt)
-            if use_vhs:
-                img_data = degrade_to_vhs(img_data)
-            img_path.write_bytes(img_data)
         except Exception as e:
-            log.warning("画像生成失敗、フォールバック使用: %s", e)
-            img_path.write_bytes(generate_fallback_image(width=fb_w, height=fb_h))
+            raise ImageUnavailableError(
+                f"シーン {i + 1} の画像生成に失敗しました "
+                f"(model={cfg_get('image_model')}): {e}"
+            ) from e
+        if use_vhs:
+            img_data = degrade_to_vhs(img_data)
+        img_path.write_bytes(img_data)
 
         image_paths.append(img_path)
 

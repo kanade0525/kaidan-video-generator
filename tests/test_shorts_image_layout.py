@@ -1,14 +1,13 @@
 """Tests for the Shorts image layout.
 
 Brand rule: a Short produces exactly 2 PNGs:
-- scene_000.png  — first AI image with title/badge composited directly onto it.
-                   This file IS the title card (no separate 000_title_card.png).
+- scene_000.png  — サムネイル。タイトル文字と「怪談朗読」を画像AIが絵の中に描く。
+                   PIL での文字合成も暗くする加工も掛けない。
 - scene_001.png  — bare second AI image used during the narration slideshow.
 
 This test locks in:
 1. Shorts produce exactly those two filenames (not 3+, no 000_title_card.png).
-2. The first AI generation is reused for the title slot (no separate
-   `_generate_title_bg_prompt` call on the Shorts path).
+2. Shorts は `create_title_card` も `_generate_title_bg_prompt` も呼ばない。
 3. Long-form is unaffected (still 000_title_card.png + 3 scenes by default).
 """
 
@@ -46,6 +45,10 @@ def _fake_vhs(data):
     return data + b"_vhs"
 
 
+_SHORT_CFG["shorts_thumbnail_prompt"] = "thumb {title} / {subject}"
+_SHORT_CFG["shorts_scene_source"] = "ai"
+
+
 def _fake_cfg(key):
     return _SHORT_CFG.get(key, "")
 
@@ -64,9 +67,15 @@ def _generate(content_type: str, calls: dict) -> list[str]:
             calls["title_bg_prompt_calls"] += 1
             return "long-form title bg prompt"
 
+        def tracked_titlecard(*a, **k):
+            calls.setdefault("title_card_calls", 0)
+            calls["title_card_calls"] += 1
+            return _fake_titlecard(*a, **k)
+
         with patch.object(ig, "generate_image_ai", side_effect=tracked_image), \
              patch.object(ig, "extract_scene_prompts", side_effect=_fake_extract), \
-             patch.object(ig, "create_title_card", side_effect=_fake_titlecard), \
+             patch.object(ig, "create_title_card", side_effect=tracked_titlecard), \
+             patch.object(ig, "thumbnail_subject", return_value="a dark corridor"), \
              patch.object(ig, "_generate_title_bg_prompt", side_effect=tracked_title_bg), \
              patch.object(ig, "degrade_to_vhs", side_effect=_fake_vhs), \
              patch.object(ig, "cfg_get", side_effect=_fake_cfg):
@@ -89,12 +98,32 @@ def test_short_does_not_create_legacy_title_card_filename():
 
 
 def test_short_skips_separate_title_bg_prompt():
-    """Shorts must not call _generate_title_bg_prompt — scene 0 is reused."""
+    """Shorts must not call _generate_title_bg_prompt."""
     calls: dict = {}
     _generate("short", calls)
     assert calls.get("title_bg_prompt_calls", 0) == 0
-    # Two AI image calls: scene 0 (title-bearing) + scene 1 (bare scene_001.png).
+    # Two AI image calls: scene 0 (サムネイル) + scene 1 (bare scene_001.png).
     assert len(calls["image_ai_prompts"]) == 2
+
+
+def test_short_does_not_composite_title_text():
+    """サムネイルは画像AIが完成品を返すので、PIL での文字合成はしない。
+
+    以前は生成画像を暗くしてぼかし、その上に赤文字を乗せていたため、
+    どんな絵を入れても黒い板になっていた。
+    """
+    calls: dict = {}
+    _generate("short", calls)
+    assert calls.get("title_card_calls", 0) == 0
+
+
+def test_short_thumbnail_prompt_carries_title_and_subject():
+    """タイトルと主役の描写が、そのまま画像AIへのプロンプトに入る。"""
+    calls: dict = {}
+    _generate("short", calls)
+    thumb_prompt = calls["image_ai_prompts"][0]
+    assert "テスト" in thumb_prompt
+    assert "a dark corridor" in thumb_prompt
 
 
 def test_long_form_unchanged():
@@ -111,5 +140,7 @@ def test_long_form_still_uses_separate_title_bg_prompt():
     calls: dict = {}
     _generate("long", calls)
     assert calls.get("title_bg_prompt_calls", 0) == 1
+    # 長編は従来どおり合成でタイトルカードを作る
+    assert calls.get("title_card_calls", 0) == 1
     # 1 title bg + 3 scenes = 4 image AI calls
     assert len(calls["image_ai_prompts"]) == 4

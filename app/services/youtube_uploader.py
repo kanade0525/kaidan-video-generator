@@ -128,20 +128,25 @@ def reset_service():
     _youtube_service = None
 
 
+JST = "Asia/Tokyo"
+
+
+def _jst_now():
+    import zoneinfo
+    from datetime import datetime
+
+    return datetime.now(zoneinfo.ZoneInfo(JST))
+
+
 def get_next_publish_time(
     day: str = "saturday",
     hour: int = 20,
     minute: int = 0,
 ) -> str | None:
-    """Calculate the next scheduled publish time as RFC 3339 string.
+    """Calculate the next weekly publish slot as an RFC 3339 string."""
+    from datetime import timedelta
 
-    Returns None if scheduling is disabled.
-    """
-    import zoneinfo
-    from datetime import datetime, timedelta
-
-    jst = zoneinfo.ZoneInfo("Asia/Tokyo")
-    now = datetime.now(jst)
+    now = _jst_now()
 
     days_map = {
         "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
@@ -165,31 +170,270 @@ def get_next_publish_time(
     return publish_time.isoformat()
 
 
+def get_next_interval_publish_time(
+    interval_days: int = 2,
+    hour: int = 20,
+    minute: int = 0,
+    last_scheduled: str | None = None,
+) -> str:
+    """N 日おきの次の公開枠を返す (RFC 3339, JST)。
+
+    `last_scheduled` に「既に予約済みの最も遅い公開日時」を渡すと、その枠から
+    さらに `interval_days` 進めた時刻を返す。連続で複数本アップロードしても
+    全部が同じ日時に固まらず、1 本ずつ N 日おきに並ぶ。
+
+    予約済みが無い / 過去の場合は「今日のこの時刻」を起点にし、既に過ぎていれば
+    `interval_days` 日後にする。
+    """
+    from datetime import datetime, timedelta
+
+    interval = max(1, int(interval_days))
+    now = _jst_now()
+    today_slot = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    base: datetime | None = None
+    if last_scheduled:
+        try:
+            parsed = datetime.fromisoformat(last_scheduled)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=now.tzinfo)
+            base = parsed.astimezone(now.tzinfo)
+        except ValueError:
+            log.warning("予約済み日時を解釈できません: %s", last_scheduled)
+
+    if base is not None and base >= now:
+        candidate = base + timedelta(days=interval)
+    else:
+        candidate = today_slot if today_slot > now else today_slot + timedelta(days=interval)
+
+    candidate = candidate.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    # 予約が現在時刻より後になるまで進める (時刻設定を過去へ変えた場合の保険)
+    while candidate <= now:
+        candidate += timedelta(days=interval)
+    return candidate.isoformat()
+
+
+def resolve_publish_time() -> str | None:
+    """設定に従って次の公開予約時刻を決める。無効なら None。
+
+    "interval" モードでは DB に記録済みの最も遅い予約時刻を起点にするので、
+    オートパイロットで動画が溜まっても 1 本ずつ N 日おきに公開される。
+    """
+    from app.config import get as cfg_get
+
+    if not cfg_get("youtube_schedule_enabled"):
+        return None
+
+    hour = cfg_get("youtube_schedule_hour")
+    minute = cfg_get("youtube_schedule_minute")
+    hour = 20 if hour is None else int(hour)
+    minute = 0 if minute is None else int(minute)
+
+    mode = cfg_get("youtube_schedule_mode") or "weekly"
+    if mode == "interval":
+        from app import database as db
+
+        return get_next_interval_publish_time(
+            interval_days=int(cfg_get("youtube_schedule_interval_days") or 2),
+            hour=hour,
+            minute=minute,
+            last_scheduled=db.get_latest_scheduled_publish_at(),
+        )
+
+    return get_next_publish_time(
+        day=cfg_get("youtube_schedule_day") or "saturday",
+        hour=hour,
+        minute=minute,
+    )
+
+
+# YouTube のカスタムサムネイルは 2MB まで。超えると
+# "Media larger than: 2097152" で失敗する。生成した PNG は縦長 1080x1920 で
+# 2MB を超えることがあるので、送る前に必ず収める。
+THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
+
+
+def fit_thumbnail(source: Path) -> tuple[Path, str]:
+    """サムネイルを 2MB 以内に収める。(送信するパス, mimetype) を返す。
+
+    収まっていればそのまま。超えていれば JPEG に変換し、品質を落として再試行する。
+    それでも収まらなければ縮小する。1080x1920 が必要なのは動画側で、サムネイルは
+    YouTube 側でどのみち縮小されるため、多少小さくても実害はない。
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    mimetype = "image/jpeg" if source.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+    if source.stat().st_size <= THUMBNAIL_MAX_BYTES:
+        return source, mimetype
+
+    img = Image.open(source)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+
+    for scale in (1.0, 0.75, 0.5):
+        resized = img if scale == 1.0 else img.resize(
+            (int(img.width * scale), int(img.height * scale)), Image.LANCZOS,
+        )
+        for quality in (90, 80, 70, 60):
+            buf = BytesIO()
+            resized.save(buf, format="JPEG", quality=quality, optimize=True)
+            if buf.tell() <= THUMBNAIL_MAX_BYTES:
+                out = source.with_name(f"{source.stem}_thumb.jpg")
+                out.write_bytes(buf.getvalue())
+                log.info(
+                    "サムネイルを圧縮: %s → %s (%.1fMB → %.1fMB, %d%%/q%d)",
+                    source.name, out.name,
+                    source.stat().st_size / 1024 / 1024, buf.tell() / 1024 / 1024,
+                    int(scale * 100), quality,
+                )
+                return out, "image/jpeg"
+
+    raise RuntimeError(
+        f"サムネイルを {THUMBNAIL_MAX_BYTES // 1024 // 1024}MB 以内に圧縮できません: {source}"
+    )
+
+
 @with_retry(max_attempts=3, base_delay=30.0)
 def set_thumbnail(video_id: str, thumbnail_path: str | Path) -> None:
     """Set a custom thumbnail for a YouTube video.
 
-    Requires channel phone verification. Silently logs warning on failure.
+    失敗しても例外は投げない — 動画自体は既にアップロード済みで、ここで
+    ステージを失敗させると再アップロードされて重複投稿になる。ただし
+    ログは ERROR で残し、原因をそのまま出す (以前は原因不明の warning 1行で、
+    2MB 超過を「電話番号認証が必要」と誤誘導していた)。
     """
     from googleapiclient.http import MediaFileUpload
 
     thumbnail_path = Path(thumbnail_path)
     if not thumbnail_path.exists():
-        log.warning("サムネイル画像が見つかりません: %s", thumbnail_path)
+        log.error("サムネイル画像が見つかりません: %s", thumbnail_path)
         return
 
     service = _get_service()
-    mimetype = "image/jpeg" if thumbnail_path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
-    media = MediaFileUpload(str(thumbnail_path), mimetype=mimetype)
+    try:
+        send_path, mimetype = fit_thumbnail(thumbnail_path)
+    except Exception as e:
+        log.error("サムネイルの圧縮に失敗、設定をスキップ: %s", e)
+        return
 
+    media = MediaFileUpload(str(send_path), mimetype=mimetype)
     try:
         service.thumbnails().set(
             videoId=video_id,
             media_body=media,
         ).execute()
-        log.info("サムネイル設定完了: %s", video_id)
+        log.info("サムネイル設定完了: %s (%s)", video_id, send_path.name)
     except Exception as e:
-        log.warning("サムネイル設定失敗（電話番号認証が必要な場合があります）: %s", e)
+        log.error(
+            "サムネイル設定失敗: %s (%s, %.2fMB) — %s",
+            video_id, send_path.name, send_path.stat().st_size / 1024 / 1024, e,
+        )
+
+
+# resumable アップロード中に起きうる「再送すれば直る」ネットワーク例外。
+# googleapiclient 内部の num_retries は HTTP エラーしか見ておらず、
+# BrokenPipeError / ConnectionResetError / SSL の途中切断はそのまま
+# 例外として上がってくる (ユーザー報告の「ブロークンパイプ」がこれ)。
+def _retryable_upload_errors() -> tuple[type[BaseException], ...]:
+    import http.client
+    import socket
+    import ssl
+
+    errors: list[type[BaseException]] = [
+        BrokenPipeError,
+        ConnectionResetError,
+        ConnectionAbortedError,
+        TimeoutError,
+        socket.timeout,
+        ssl.SSLError,
+        ssl.SSLEOFError,
+        http.client.IncompleteRead,
+        http.client.BadStatusLine,
+        http.client.CannotSendRequest,
+        http.client.ResponseNotReady,
+        OSError,  # socket.error は OSError の別名。上記以外の I/O 断も拾う
+    ]
+    del socket  # 参照済み (socket.timeout は OSError の別名)
+    try:
+        import httplib2
+
+        errors.append(httplib2.HttpLib2Error)
+    except ImportError:
+        pass
+    return tuple(errors)
+
+
+# 再送で直る見込みのある HTTP ステータス (Google の推奨リトライ対象)
+_RETRIABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+# OSError のサブクラスだが再送しても直らないもの (ファイルが消えた等)。
+# これらまで再送すると無駄に 10 分待ってから失敗することになる。
+_NON_RETRIABLE_OS_ERRORS = (
+    FileNotFoundError,
+    PermissionError,
+    IsADirectoryError,
+    NotADirectoryError,
+    FileExistsError,
+)
+
+
+def _is_retriable_http_error(exc: Exception) -> bool:
+    """googleapiclient の HttpError が一過性かどうか。"""
+    try:
+        from googleapiclient.errors import HttpError
+    except ImportError:
+        return False
+    if not isinstance(exc, HttpError):
+        return False
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    return status in _RETRIABLE_STATUS_CODES
+
+
+def _upload_chunks(request, progress_callback=None, max_retries: int = 10) -> dict:
+    """resumable アップロードを最後まで進める。切断したら同じセッションを再開する。
+
+    `next_chunk()` は resumable セッションの続きから送るので、途中で切れても
+    最初からやり直しにはならない。連続失敗が `max_retries` に達したときだけ
+    諦めて例外を送出する。1 チャンクでも成功したら失敗カウンタは 0 に戻す
+    (長い動画で散発的に切れるケースを通し切るため)。
+    """
+    import random
+    import time
+
+    retryable = _retryable_upload_errors()
+    response = None
+    consecutive_failures = 0
+
+    while response is None:
+        try:
+            status, response = request.next_chunk()
+            consecutive_failures = 0
+            if status and progress_callback:
+                progress_callback(int(status.progress() * 100), 100)
+        except Exception as e:
+            if isinstance(e, _NON_RETRIABLE_OS_ERRORS):
+                raise
+            if not (isinstance(e, retryable) or _is_retriable_http_error(e)):
+                raise
+            consecutive_failures += 1
+            if consecutive_failures > max_retries:
+                log.error(
+                    "YouTubeアップロードが %d 回連続で失敗、中断: %s",
+                    consecutive_failures, e,
+                )
+                raise
+            # 指数バックオフ + ジッター (同時再送でサーバを叩き続けない)
+            delay = min(2 ** consecutive_failures, 60) + random.uniform(0, 1)
+            log.warning(
+                "YouTubeアップロードが中断 (%d/%d): %s — %.1fs後に再開",
+                consecutive_failures, max_retries, e, delay,
+            )
+            time.sleep(delay)
+
+    return response
 
 
 def upload_video(
@@ -237,11 +481,14 @@ def upload_video(
         "status": status_body,
     }
 
+    from app.config import get as cfg_get
+
+    chunk_mb = cfg_get("youtube_upload_chunk_mb") or 8
     media = MediaFileUpload(
         str(video_path),
         mimetype="video/mp4",
         resumable=True,
-        chunksize=1024 * 1024,  # 1MB chunks
+        chunksize=int(chunk_mb) * 1024 * 1024,
     )
 
     request = service.videos().insert(
@@ -250,12 +497,12 @@ def upload_video(
         media_body=media,
     )
 
-    log.info("YouTubeアップロード開始: %s", title)
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status and progress_callback:
-            progress_callback(int(status.progress() * 100), 100)
+    log.info("YouTubeアップロード開始: %s (%dMBチャンク)", title, int(chunk_mb))
+    response = _upload_chunks(
+        request,
+        progress_callback=progress_callback,
+        max_retries=int(cfg_get("youtube_upload_max_retries") or 10),
+    )
 
     video_id = response.get("id", "")
     result = {

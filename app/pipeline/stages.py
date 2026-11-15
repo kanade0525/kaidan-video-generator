@@ -14,9 +14,11 @@ from app.utils.paths import (
     images_dir,
     meta_path,
     narration_path,
+    narration_source_path,
     original_chunks_path,
     processed_text_path,
     raw_content_path,
+    source_chunks_path,
     story_dir,
     timestamps_path,
     video_path,
@@ -68,9 +70,19 @@ def backfill_char_counts() -> int:
 def do_text(
     story: Story,
     progress_callback: ProgressCallback = None,
-    use_ai_proofread: bool = False,
+    use_ai_proofread: bool | None = None,
 ) -> None:
-    """Stage: Process text with MeCab (optional Gemini AI proofread)."""
+    """Stage: Process text with MeCab (optional Gemini AI proofread).
+
+    `use_ai_proofread=None` (ワーカー経由の既定) では設定
+    `text_ai_proofread_enabled` に従う。True にしておけば「AI校正プレビュー →
+    適用」の手動ステップ無しで校正済みテキストが得られる。UI からの再処理は
+    チェックボックスの値を明示的に渡すのでこの既定より優先される。
+    """
+    from app.config import get as cfg_get
+
+    if use_ai_proofread is None:
+        use_ai_proofread = bool(cfg_get("text_ai_proofread_enabled"))
     log.info("[text] %s (ai_proofread=%s)", story.title, use_ai_proofread)
     ct = story.content_type
     if progress_callback:
@@ -93,9 +105,58 @@ def do_text(
         json.dumps(orig_chunks, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
+    # アクセント用の「漢字混じり原稿」。読みが一致するチャンクだけ音声生成で
+    # 採用されるので、生成に失敗しても後段はひらがな原稿で問題なく動く。
+    save_narration_source(story, raw, processed)
+
     if progress_callback:
         progress_callback(2, 2)
     log.info("[text] %d チャンク生成 (原文チャンクも保存)", len(chunks))
+
+
+def save_narration_source(story: Story, raw: str, processed: str) -> bool:
+    """漢字混じりのナレーション原稿を生成して保存する。
+
+    ひらがなチャンクと文単位で対応付けて `source_chunks.json` に置く。長さ基準で
+    別々に分割すると境界がずれ、音声生成側の読み一致判定がまず通らない。
+    対応付けできない場合や MeCab が無い場合は何も保存せず False を返す
+    (ひらがな原稿のみで従来どおり動作する)。
+    """
+    ct = story.content_type
+    try:
+        mixed = text_processor.build_narration_source(raw)
+    except Exception as e:  # noqa: BLE001 — 任意機能なので失敗を伝播させない
+        log.warning("[text] ナレーション原稿の生成に失敗: %s", e)
+        return False
+    if not mixed:
+        return False
+
+    source_chunks = text_processor.align_chunks(processed, mixed)
+    if source_chunks is None:
+        log.info("[text] ひらがな原稿と対応付けできず、アクセント原稿は使わない")
+        return False
+
+    narration_source_path(story.title, ct).write_text(mixed, encoding="utf-8")
+    source_chunks_path(story.title, ct).write_text(
+        json.dumps(source_chunks, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+    log.info("[text] ナレーション原稿 (漢字混じり) を保存: %d チャンク", len(source_chunks))
+    return True
+
+
+def load_source_chunks(story: Story, n_chunks: int) -> list[str] | None:
+    """保存済みのアクセント用チャンクを読む。数が合わなければ None。"""
+    path = source_chunks_path(story.title, story.content_type)
+    if not path.exists():
+        return None
+    try:
+        chunks = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        log.warning("[voice] ナレーション原稿の読込に失敗: %s", e)
+        return None
+    if not isinstance(chunks, list) or len(chunks) != n_chunks:
+        return None
+    return chunks
 
 
 def do_voice(story: Story, progress_callback: ProgressCallback = None) -> None:
@@ -106,6 +167,7 @@ def do_voice(story: Story, progress_callback: ProgressCallback = None) -> None:
     voice_generator.generate_narration(
         chunks, audio_dir(story.title, ct),
         progress_callback=progress_callback,
+        source_chunks=load_source_chunks(story, len(chunks)),
     )
 
 
@@ -450,13 +512,7 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
     category_id = cfg_get("youtube_category_id")
     privacy = cfg_get("youtube_privacy_status")
 
-    publish_at = None
-    if cfg_get("youtube_schedule_enabled"):
-        publish_at = youtube_uploader.get_next_publish_time(
-            day=cfg_get("youtube_schedule_day") or "saturday",
-            hour=cfg_get("youtube_schedule_hour") or 20,
-            minute=cfg_get("youtube_schedule_minute") or 0,
-        )
+    publish_at = youtube_uploader.resolve_publish_time()
 
     # Thumbnail: user-uploaded custom_thumbnail.* takes priority over the
     # auto-generated title card (same resolver as the manual upload UI).
@@ -476,17 +532,28 @@ def do_youtube_upload(story: Story, progress_callback: ProgressCallback = None) 
         progress_callback=progress_callback,
     )
 
-    db.set_youtube_video_id(story.id, result["video_id"])
+    db.mark_uploaded(story.id, result["video_id"], publish_at)
 
 
 def do_submit_report(story: Story, progress_callback: ProgressCallback = None) -> None:
-    """Stage: Submit usage report to HHS Library."""
+    """Stage: Submit usage report to HHS Library.
+
+    使用報告が必要なのは HHS図書館 (ホラホリ) 由来の作品だけ。奇々怪々由来は
+    報告先が無いので、何もせず正常終了してステージだけ進める — こうしないと
+    オートパイロットで奇々怪々の Short が最終ステージで必ず失敗して溜まる。
+    """
     from app.config import get as cfg_get
     from app.services import youtube_uploader
 
     log.info("[report] %s", story.title)
     if progress_callback:
         progress_callback(0, 1)
+
+    if story.source != "hhs":
+        log.info("[report] HHS由来ではないため使用報告は不要: %s", story.source)
+        if progress_callback:
+            progress_callback(1, 1)
+        return
 
     if not story.youtube_video_id:
         raise RuntimeError(
@@ -565,6 +632,7 @@ def do_voice_short(story: Story, progress_callback: ProgressCallback = None) -> 
         chunks, audio_dir(story.title, ct),
         progress_callback=progress_callback,
         speed=shorts_speed,
+        source_chunks=load_source_chunks(story, len(chunks)),
     )
 
     # Duration notice (non-blocking).
@@ -594,7 +662,9 @@ def do_images_short(story: Story, progress_callback: ProgressCallback = None) ->
     log.info("[images:short] %s", story.title)
     ct = story.content_type
     raw = raw_content_path(story.title, ct).read_text(encoding="utf-8")
-    category = story.categories[0] if story.categories else "怪談"
+    # カテゴリ未設定を "怪談" で埋めない。埋めると人怖や不思議な話まで
+    # 怪談バッジになり、未設定の作品にも誤ったバッジが付く。
+    category = story.categories[0] if story.categories else ""
 
     paths = image_generator.generate_images_for_story(
         raw, story.title, images_dir(story.title, ct),
@@ -761,6 +831,30 @@ def do_video_short(story: Story, progress_callback: ProgressCallback = None) -> 
     log.info("[video:short] 動画生成完了: %s", output)
 
 
+def _shorts_credit_block(story: Story, author: str, speaker_name: str) -> str:
+    """LLM が書いた説明文に足す出典・クレジット。
+
+    テンプレート経由の説明文には最初から入っているので、そちらには足さない。
+    BGM のクレジットは DOVA-SYNDROME の規約上必須なので必ず含める。
+    """
+    lines = ["\n\n━━━━━━━━━━━━━━━━━━━━"]
+    if story.source == "hhs":
+        lines += ["引用元: HHS図書館", f"「{story.title}」{story.url}"]
+    else:
+        lines += [
+            "引用元: 奇々怪々",
+            f"「{story.title}」{story.url}",
+            f"作者: {author}",
+        ]
+    lines += [
+        f"音声: VOICEVOX:{speaker_name}",
+        "BGM: 「Where the Light Never Speaks」松浦洋介",
+        "(DOVA-SYNDROME: https://dova-s.jp/bgm/play22758.html)",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+    return "\n".join(lines)
+
+
 def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = None) -> None:
     """Stage: Upload short video to YouTube with kikikaikai credits."""
     from app.config import get as cfg_get
@@ -804,59 +898,45 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
 
     speaker_name = get_speaker_name()
 
-    # Try LLM-generated engaging title/description
-    raw_text = ""
-    raw_file = raw_content_path(story.title, ct)
-    if raw_file.exists():
-        raw_text = raw_file.read_text(encoding="utf-8")
+    is_hhs = (story.source == "hhs")
 
+    # 既定はテンプレート。LLM に書かせると釣りタイトルにはなるが、
+    # チャンネルの定型フォーマット (挨拶・引用元・BGMクレジット・タグ) を
+    # 一切踏襲しないので、設定で明示的に選んだときだけ使う。
     yt_title = ""
     description = ""
-    if raw_text:
-        try:
-            meta_result = text_processor.generate_shorts_metadata(
-                story.title, raw_text, author,
-            )
-            yt_title = meta_result["title"]
-            description = meta_result["description"]
-        except Exception as e:
-            log.warning("[youtube:short] LLM metadata生成失敗: %s", e)
+    if (cfg_get("shorts_metadata_source") or "template") == "llm":
+        raw_file = raw_content_path(story.title, ct)
+        raw_text = raw_file.read_text(encoding="utf-8") if raw_file.exists() else ""
+        if raw_text:
+            try:
+                meta_result = text_processor.generate_shorts_metadata(
+                    story.title, raw_text, author,
+                )
+                yt_title = meta_result["title"]
+                # LLM の説明文には出典もクレジットも入らないので補う
+                description = meta_result["description"] + _shorts_credit_block(
+                    story, author, speaker_name,
+                )
+            except Exception as e:
+                log.warning("[youtube:short] LLM metadata生成失敗: %s", e)
 
-    # Fallback to template. HHS-sourced Shorts (migrated from long) use the
-    # HHS-specific template so the 引用元 line is correct per ホラホリ規約.
     if not yt_title:
-        title_template = cfg_get("shorts_youtube_title_template")
-        yt_title = title_template.format(title=story.title)
-    is_hhs = (story.source == "hhs")
+        yt_title = cfg_get("shorts_youtube_title_template").format(title=story.title)
     if not description:
+        # HHS由来 Short は ホラホリ規約に沿った引用元表記のテンプレートを使う。
+        # テンプレートには出典・BGMクレジットが含まれているので追記しない
+        # (追記すると引用元が2回出る)。
         if is_hhs:
-            description_template = cfg_get("shorts_hhs_youtube_description_template")
-            description = description_template.format(
-                title=story.title, url=story.url, speaker=speaker_name,
-            )
+            description = cfg_get(
+                "shorts_hhs_youtube_description_template",
+            ).format(title=story.title, url=story.url, speaker=speaker_name)
         else:
-            description_template = cfg_get("shorts_youtube_description_template")
-            description = description_template.format(
+            description = cfg_get(
+                "shorts_youtube_description_template",
+            ).format(
                 title=story.title, url=story.url, author=author, speaker=speaker_name,
             )
-
-    # Always append source credit to description (source-specific).
-    if is_hhs:
-        credit = (
-            f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
-            f"引用元: HHS図書館\n"
-            f"「{story.title}」{story.url}\n"
-            f"音声: VOICEVOX:{speaker_name}"
-        )
-    else:
-        credit = (
-            f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
-            f"引用元: 奇々怪々\n"
-            f"「{story.title}」{story.url}\n"
-            f"作者: {author}\n"
-            f"音声: VOICEVOX:{speaker_name}"
-        )
-    description += credit
 
     tags = cfg_get("shorts_youtube_tags")
     # HHS由来 Short のみ #ホラホリ タグを付与（規約上の出典タグ慣習）
@@ -868,13 +948,7 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
     category_id = cfg_get("youtube_category_id")
     privacy = cfg_get("youtube_privacy_status")
 
-    publish_at = None
-    if cfg_get("youtube_schedule_enabled"):
-        publish_at = youtube_uploader.get_next_publish_time(
-            day=cfg_get("youtube_schedule_day") or "saturday",
-            hour=cfg_get("youtube_schedule_hour") or 20,
-            minute=cfg_get("youtube_schedule_minute") or 0,
-        )
+    publish_at = youtube_uploader.resolve_publish_time()
 
     # Thumbnail: user-uploaded custom_thumbnail.* takes priority over the
     # auto-generated title card (same resolver as the manual upload UI).
@@ -892,11 +966,12 @@ def do_youtube_upload_short(story: Story, progress_callback: ProgressCallback = 
         progress_callback=progress_callback,
     )
 
-    db.set_youtube_video_id(story.id, result["video_id"])
+    db.mark_uploaded(story.id, result["video_id"], publish_at)
 
 
 # Stage function registry: maps (content_type, output_stage) -> processing function
-# report_submitted is excluded - triggered manually via UI
+# report_submitted も登録してあるので、ワーカーを起動すればスクレイピングから
+# 使用報告までノータッチで流れる (HHS由来以外は自動スキップ)。
 STAGE_FUNCTIONS: dict[tuple[str, str], Callable] = {
     ("long", "scraped"): do_scrape,
     ("long", "text_processed"): do_text,
@@ -910,4 +985,149 @@ STAGE_FUNCTIONS: dict[tuple[str, str], Callable] = {
     ("short", "images_generated"): do_images_short,
     ("short", "video_complete"): do_video_short,
     ("short", "youtube_uploaded"): do_youtube_upload_short,
+    ("long", "report_submitted"): do_submit_report,
+    ("short", "report_submitted"): do_submit_report,
+}
+
+
+# API のクレジット切れ・クォータ超過を示す文字列。これを踏んだら以降の
+# ストーリーも確実に同じ失敗をするので、1件ずつ失敗扱いにして在庫を焦がす
+# のではなく、パイプラインごと止める。
+_QUOTA_ERROR_MARKERS = (
+    "RESOURCE_EXHAUSTED",
+    "credits are depleted",
+    "quota",
+    "billing",
+    "429",
+    "insufficient_quota",
+)
+
+
+def is_quota_error(exc: BaseException) -> bool:
+    """例外が「お金/回数が尽きた」系かどうか。
+
+    原因が解消するまで何度やっても失敗するので、リトライにも次のストーリーにも
+    進ませてはいけない種類のエラー。残高切れの判定は `retry.is_credit_exhausted`
+    と共通にし、こちらは RESOURCE_EXHAUSTED 等も含めて広めに拾う。
+    """
+    from app.pipeline.retry import is_credit_exhausted
+
+    if is_credit_exhausted(exc):
+        return True
+    message = f"{exc} {getattr(exc, '__cause__', '') or ''}".lower()
+    return any(marker.lower() in message for marker in _QUOTA_ERROR_MARKERS)
+
+
+# ── ステージ実行ゲート (自動運転時のブレーキ) ─────────────────────────
+# ワーカーがストーリーを取り出す前に呼ばれる。False を返すと、そのストーリーは
+# 取り出されず次のポーリングまで待たされる。失敗扱いにはならないので、条件が
+# 解消すれば自然に再開する。
+
+
+def youtube_upload_gate(content_type: str) -> tuple[bool, str]:
+    """YouTube アップロードを今すぐ実行してよいか。
+
+    2 つのブレーキをかける:
+    1. 1日あたりのアップロード本数 (API クォータ: videos.insert = 1600 ユニット、
+       1日 10000 ユニットなので実質 6 本が限界)
+    2. 予約投稿の先詰まり。指定日数より先まで公開枠が埋まっていたら止める。
+       これで「常に N 日分の在庫を持って自動停止する」状態になり、未処理の
+       ストーリーが大量にあっても一気に投稿し尽くさない。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.config import get as cfg_get
+
+    limit = int(cfg_get("youtube_daily_upload_limit") or 0)
+    if limit > 0:
+        since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        # ステージ完了ではなく「実際に送信した本数」で数える。既に投稿済みの
+        # 作品はスキップされて即座にステージだけ進むので、完了数で数えると
+        # 1本も上がっていないのに上限に達してしまう。
+        done = db.count_uploads_since(since)
+        if done >= limit:
+            return False, f"24時間のアップロード上限に到達 ({done}/{limit})"
+
+    max_ahead = int(cfg_get("youtube_schedule_max_ahead_days") or 0)
+    if max_ahead > 0 and cfg_get("youtube_schedule_enabled"):
+        latest = db.get_latest_scheduled_publish_at()
+        if latest:
+            try:
+                parsed = datetime.fromisoformat(latest)
+            except ValueError:
+                parsed = None
+            if parsed is not None:
+                now = datetime.now(parsed.tzinfo) if parsed.tzinfo else datetime.now()
+                if parsed - now > timedelta(days=max_ahead):
+                    return False, (
+                        f"予約投稿が {max_ahead} 日先まで埋まっている "
+                        f"(最終: {latest[:16]})"
+                    )
+
+    return True, ""
+
+
+def api_cost_gate(content_type: str) -> tuple[bool, str]:
+    """24時間の API 費用が上限に達していないか。
+
+    見積もりではなく `api_usage` に積み上げた実測で判定する。想定を外しても
+    上限額で必ず止まるので、クレジットを一気に溶かすことがない。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.config import get as cfg_get
+
+    limit = float(cfg_get("api_daily_cost_limit_usd") or 0)
+    if limit <= 0:
+        return True, ""
+
+    since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    spent = db.get_api_cost_since(since)
+    if spent >= limit:
+        return False, f"24時間のAPI費用が上限に到達 (${spent:.2f} / ${limit:.2f})"
+    return True, ""
+
+
+def generation_gate(content_type: str) -> tuple[bool, str]:
+    """生成系ステージの実行可否。在庫とコストの両方を見る。"""
+    allowed, reason = api_cost_gate(content_type)
+    if not allowed:
+        return allowed, reason
+    return video_inventory_gate(content_type)
+
+
+def video_inventory_gate(content_type: str) -> tuple[bool, str]:
+    """音声・画像・動画の生成を続けてよいか (在庫ブレーキ)。
+
+    アップロード側だけ絞っても上流が回り続けると、未処理ストーリーを片っ端から
+    動画化してディスクと画像 API を消費してしまう。「未投稿の完成動画」が
+    一定本数に達したら生成を止め、投稿されて在庫が減ったら自動で再開する。
+    """
+    from app.config import get as cfg_get
+
+    limit = int(cfg_get("autopilot_max_ready_videos") or 0)
+    if limit <= 0:
+        return True, ""
+
+    ready = db.get_stage_counts(content_type=content_type).get("video_complete", 0)
+    if ready >= limit:
+        return False, f"未投稿の完成動画が {ready} 本 (上限 {limit})"
+    return True, ""
+
+
+# stage -> ゲート関数。未登録のステージは常に実行可。
+# スクレイピングとテキスト処理は安いので素通し、金と容量を食う工程だけ絞る。
+STAGE_GATES: dict[str, Callable[[str], tuple[bool, str]]] = {
+    # テキスト処理も課金するのでコスト上限の対象にする (在庫は関係ない)
+    "text_processed": api_cost_gate,
+    "voice_generated": generation_gate,
+    "images_generated": generation_gate,
+    "video_complete": generation_gate,
+    "youtube_uploaded": youtube_upload_gate,
+}
+
+# ステージ完了後に待つ秒数。外部サービスへの連投を避けるため。
+STAGE_POST_DELAY: dict[str, float] = {
+    "scraped": 2.0,
+    "report_submitted": 5.0,
 }

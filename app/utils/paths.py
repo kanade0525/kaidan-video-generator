@@ -43,6 +43,20 @@ def original_chunks_path(title: str, content_type: str = "long") -> Path:
     return story_dir(title, content_type) / "original_chunks.json"
 
 
+def narration_source_path(title: str, content_type: str = "long") -> Path:
+    """漢字混じりのナレーション原稿 (アクセント改善用)。
+
+    読みを矯正した語だけかなにして、他は漢字のまま残したテキスト。VOICEVOX に
+    渡すとアクセントが自然になるが、読みが一致するチャンクだけ採用される。
+    """
+    return story_dir(title, content_type) / "narration_source.txt"
+
+
+def source_chunks_path(title: str, content_type: str = "long") -> Path:
+    """ナレーション原稿を chunks.json と同数に分割したもの。"""
+    return story_dir(title, content_type) / "source_chunks.json"
+
+
 def audio_dir(title: str, content_type: str = "long") -> Path:
     d = story_dir(title, content_type) / "audio"
     d.mkdir(parents=True, exist_ok=True)

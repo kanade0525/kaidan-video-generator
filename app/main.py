@@ -30,6 +30,12 @@ from app.pipeline.stages import backfill_char_counts  # noqa: E402
 
 backfill_char_counts()
 
+# オートパイロットが有効なら、UI を開かなくてもワーカーが走り出す。
+# 「1日おきに投稿」を人手なしで回すためのエントリポイント。
+from app.pipeline import autopilot  # noqa: E402
+
+autopilot.start_if_enabled()
+
 
 @ui.page("/")
 def index():
