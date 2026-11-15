@@ -32,11 +32,11 @@ def _calls_for_single_image(tmp_path, duration, *, with_scale=True):
 
 
 def _encode_call(calls):
-    """The looping encode call (as opposed to the one-shot prescale)."""
+    """The video encode call (as opposed to the one-shot prescale)."""
     for c in calls:
-        if "-loop" in list(c.args[0]):
+        if "libx264" in list(c.args[0]):
             return c
-    raise AssertionError("encode (-loop) call not found")
+    raise AssertionError("encode (libx264) call not found")
 
 
 def test_short_clip_keeps_minimum_timeout(tmp_path):
@@ -65,7 +65,9 @@ def test_image_is_prescaled_once(tmp_path):
     assert "-frames:v" in prescale and prescale[prescale.index("-frames:v") + 1] == "1"
     assert "-vf" in prescale  # the scale/crop happens here, once
     enc = list(_encode_call(calls).args[0])
-    assert "-vf" not in enc  # not re-applied every frame
+    # the encode only repeats the already-scaled frame; no per-frame scale/crop
+    assert "scale" not in enc[enc.index("-vf") + 1]
+    assert "crop" not in enc[enc.index("-vf") + 1]
 
 
 def test_no_prescale_when_no_target_resolution(tmp_path):

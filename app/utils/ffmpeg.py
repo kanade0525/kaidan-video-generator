@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 from app.utils.log import get_logger
@@ -24,6 +24,15 @@ def run_ffmpeg(args: list[str], timeout: int = 600) -> subprocess.CompletedProce
         raise RuntimeError(f"ffmpeg failed (exit {result.returncode}): {result.stderr[-200:]}")
     return result
 
+
+# 静止画を動画化するときのフィルタ。画像は1回だけ読み込み、yuv420p に変換した
+# 1フレームをフィルタ側で繰り返す。
+# 以前の `-loop 1 -i image` は同じ画像ファイルを毎フレーム読み直してデコード・
+# 色変換するので、尺に比例して無駄な時間がかかっていた (60秒の1枚絵で2倍以上)。
+# 入力を `-framerate <出力fps>` で読むので fps 変換も入らず、出力のフレーム数・
+# 尺・画素は従来と同一。
+# (入力フレームレートを下げて複製させる方法は、短い尺でフレームが欠けるので不可)
+STILL_LOOP_FILTER = "format=yuv420p,loop=loop=-1:size=1:start=0"
 
 _duration_cache: dict[str, float] = {}
 
@@ -119,9 +128,10 @@ def create_slideshow(
 
         enc_timeout = max(600, int(total_duration * 3) + 300)
         run_ffmpeg([
-            "-loop", "1",
+            "-framerate", str(fps),
             "-i", str(src_image),
             "-i", str(audio_path),
+            "-vf", STILL_LOOP_FILTER,
             "-c:v", "libx264",
             "-preset", "veryfast",
             "-tune", "stillimage",
@@ -144,12 +154,24 @@ def create_slideshow(
 
     for i, (img, dur) in enumerate(zip(images, final_durations, strict=False)):
         clip_path = temp_dir / f"slide_clip_{i:03d}.ts"
-        vf_args = ["-vf", vf_scale] if vf_scale else []
+        # 単一画像のときと同じく、スケールは先に1回だけ済ませる
+        # (毎フレーム scale/crop すると尺に比例して遅くなる。出力画素は同一)。
+        src_image = img
+        prescaled: Path | None = None
+        if vf_scale:
+            prescaled = temp_dir / f"_slide_prescaled_{i:03d}.png"
+            run_ffmpeg([
+                "-i", str(img),
+                "-vf", vf_scale,
+                "-frames:v", "1",
+                str(prescaled),
+            ])
+            src_image = prescaled
         run_ffmpeg([
-            "-loop", "1",
-            "-i", str(img),
+            "-framerate", str(fps),
+            "-i", str(src_image),
             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-            *vf_args,
+            "-vf", STILL_LOOP_FILTER,
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
             "-r", str(fps),
@@ -158,6 +180,8 @@ def create_slideshow(
             "-t", f"{dur:.3f}",
             str(clip_path),
         ])
+        if prescaled is not None:
+            prescaled.unlink(missing_ok=True)
         clip_paths.append(clip_path)
         log.info("スライドクリップ %d/%d 生成完了 (%.1fs)", i + 1, len(images), dur)
 
@@ -230,7 +254,10 @@ def create_title_clip(
     # fade フィルタは d=0 を「フェード無し」ではなく「既定の nb_frames(25)を使う」
     # と解釈する。fade_in=0 を渡しても 25フレーム(30fpsで約0.8秒)のフェードが
     # 掛かってしまうので、無効化したいときはフィルタ自体を外す。
-    video_filters = ["scale=trunc(iw/2)*2:trunc(ih/2)*2"]
+    # 色範囲は標準 (tv) に揃える。タイトル画像が JPEG 由来だとフルレンジ (pc) の
+    # まま動画になり、標準レンジの本編と連結して再エンコードしたときに本編が
+    # フルレンジ扱いされて黒が浮く (暗部が白っぽくなる)。
+    video_filters = ["scale=trunc(iw/2)*2:trunc(ih/2)*2:out_range=tv", "format=yuv420p"]
     if fade_in > 0:
         video_filters.append(f"fade=in:st=0:d={fade_in}")
     video_filters.append(f"fade=out:st={fade_out_start:.2f}:d={fade_out}")
@@ -355,9 +382,10 @@ def _normalize_video(
     Scale timeout based on input duration (6x with 30min floor) so the
     default 600s ffmpeg timeout doesn't kill the process mid-encode.
     """
+    # out_range=tv: フルレンジの素材が混ざっても連結後の色範囲を標準に統一する
     vf = (
-        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={fps}"
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease:out_range=tv,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={fps},format=yuv420p"
     )
     try:
         timeout = max(1800, int(get_audio_duration(input_path) * 6))
@@ -390,7 +418,8 @@ def _probe_video_params(path: Path) -> dict:
             [
                 "ffprobe", "-v", "quiet", "-print_format", "json",
                 "-select_streams", "v:0",
-                "-show_entries", "stream=codec_name,width,height,pix_fmt,r_frame_rate",
+                "-show_entries",
+                "stream=codec_name,width,height,pix_fmt,r_frame_rate,color_range",
                 str(path),
             ],
             capture_output=True, text=True, timeout=30,
@@ -413,6 +442,7 @@ def _probe_video_params(path: Path) -> dict:
         "height": s.get("height"),
         "pix_fmt": s.get("pix_fmt"),
         "fps": fps,
+        "color_range": s.get("color_range"),
     }
 
 
@@ -431,6 +461,8 @@ def _video_matches_concat_target(path: Path, width: int, height: int, fps: int) 
         and p.get("width") == width
         and p.get("height") == height
         and p.get("pix_fmt") == "yuv420p"
+        # フルレンジのままコピーで繋ぐと、標準レンジの他パートと色範囲が混ざる
+        and p.get("color_range") != "pc"
         and abs(p.get("fps", 0.0) - fps) <= 0.5
     )
 
@@ -444,6 +476,21 @@ CJK_FONT_PATHS = [
     "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
     "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
 ]
+
+def _drawtext_textfile(text: str, created: list[Path]) -> str:
+    """drawtext に渡す文字列を一時ファイルに書き、`textfile='...'` 用のパスを返す。
+
+    文字列をフィルタ記述に直接埋めると、`'` `:` `,` `[` `;` などがフィルタ
+    グラフの構文と衝突する。ファイル経由なら中身はそのまま描画されるので、
+    overlay と同じフィルタグラフ (filter_complex) に drawtext を混ぜられる。
+    作ったファイルは `created` に積むので、呼び出し側が後で消す。
+    """
+    fd, name = tempfile.mkstemp(prefix="burn_text_", suffix=".txt")
+    with open(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    created.append(Path(name))
+    return name
+
 
 def _find_ffmpeg_font() -> str:
     """Find a CJK font usable by FFmpeg (prefers Zomzi for horror style)."""
@@ -733,7 +780,10 @@ def generate_scroll_image(
         font = ImageFont.load_default()
 
     # Use pre-split segments if provided, otherwise split text
-    segments = pre_split_segments if pre_split_segments else _split_subtitle_text(text, max_chars=max_chars)
+    segments = (
+        pre_split_segments if pre_split_segments
+        else _split_subtitle_text(text, max_chars=max_chars)
+    )
 
     # Measure total height
     line_height = font_size + line_spacing
@@ -803,7 +853,8 @@ def burn_all_overlays(
 
     # Track filter components
     filter_parts: list[str] = []  # for filter_complex (ASS/overlay)
-    drawtext_filters: list[str] = []  # for -vf (drawtext chain)
+    drawtext_filters: list[str] = []  # drawbox/drawtext chain (appended after overlay)
+    text_files: list[Path] = []  # drawtext の文字列を渡す一時ファイル (最後に消す)
     current_stream = "[0:v]"
     extra_inputs: list[str] = []
 
@@ -891,11 +942,11 @@ def burn_all_overlays(
 
     # 2. Title banner (drawtext at top)
     if banner_text:
-        escaped = banner_text.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
+        banner_file = _drawtext_textfile(banner_text, text_files)
         font_opt = f":fontfile='{font_path}'" if font_path else ""
         enable = f":enable='gte(t,{banner_start_time:.2f})'" if banner_start_time > 0 else ""
         drawtext_filters.append(
-            f"drawtext=text='{escaped}'"
+            f"drawtext=textfile='{banner_file}':expansion=none"
             f":fontsize={banner_font_size}"
             f":fontcolor={banner_font_color}"
             f":borderw=2:bordercolor=black"
@@ -911,11 +962,11 @@ def burn_all_overlays(
     if credit_lines:
         credit_enable = f":enable='gte(t,{banner_start_time:.2f})'" if banner_start_time > 0 else ""
         for i, line in enumerate(reversed(credit_lines)):
-            escaped = line.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
+            line_file = _drawtext_textfile(line, text_files)
             y_offset = credit_margin_bottom + i * (credit_font_size + 16)
             font_opt = f":fontfile='{font_path}'" if font_path else ""
             drawtext_filters.append(
-                f"drawtext=text='{escaped}'"
+                f"drawtext=textfile='{line_file}':expansion=none"
                 f":fontsize={credit_font_size}"
                 f":fontcolor=white"
                 f":borderw=3:bordercolor=black"
@@ -930,9 +981,6 @@ def burn_all_overlays(
         shutil.copy2(input_path, output_path)
         return output_path
 
-    # Strategy: if we have both overlay (filter_complex) and drawtext filters,
-    # run them in two passes. Mixing drawtext with Japanese text inside
-    # filter_complex causes escaping issues with 「」 and other characters.
     # Burn can take longer than default 600s for 5+ minute videos; use fast
     # preset and scale timeout with input length.
     try:
@@ -940,58 +988,33 @@ def burn_all_overlays(
     except Exception:
         burn_timeout = 1800
 
-    if filter_parts and drawtext_filters:
-        # Pass 1: overlay (filter_complex)
-        temp_overlay = output_path.parent / f"_overlay_temp_{output_path.name}"
-        last_tag = filter_parts[-1].rsplit("[", 1)[-1].rstrip("]")
-        vf = ";".join(filter_parts)
-        cmd1 = ["-i", str(input_path)]
-        cmd1.extend(extra_inputs)
-        cmd1.extend([
-            "-filter_complex", vf,
-            "-map", f"[{last_tag}]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "veryfast", "-c:a", "copy",
-            "-movflags", "+faststart",
-            str(temp_overlay),
-        ])
-        run_ffmpeg(cmd1, timeout=burn_timeout)
-
-        # Pass 2: drawtext (simple -vf, no escaping issues)
-        dt_chain = ",".join(drawtext_filters)
-        run_ffmpeg([
-            "-i", str(temp_overlay),
-            "-vf", dt_chain,
-            "-c:v", "libx264", "-preset", "veryfast", "-c:a", "copy",
-            "-movflags", "+faststart",
-            str(output_path),
-        ], timeout=burn_timeout)
-        temp_overlay.unlink(missing_ok=True)
-
-    elif filter_parts:
-        # Only overlay
-        last_tag = filter_parts[-1].rsplit("[", 1)[-1].rstrip("]")
-        vf = ";".join(filter_parts)
-        cmd = ["-i", str(input_path)]
-        cmd.extend(extra_inputs)
-        cmd.extend([
-            "-filter_complex", vf,
-            "-map", f"[{last_tag}]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "veryfast", "-c:a", "copy",
-            "-movflags", "+faststart",
-            str(output_path),
-        ])
+    # 以前は overlay と drawtext を2回に分けて焼いていた (全編の再エンコードが
+    # 2回)。drawtext の文字列を textfile 経由にしたのでフィルタグラフの構文と
+    # 衝突しなくなり、1本のグラフにまとめて1回で焼ける。
+    # 末尾の format=yuv420p / -pix_fmt は、後段の連結でコピーできる形式に揃える
+    # ため (形式が違うと連結時にもう1回、全編を再エンコードすることになる)。
+    tail = ",".join([*drawtext_filters, "format=yuv420p"])
+    encode_args = [
+        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+    ]
+    try:
+        if filter_parts:
+            graph = ";".join([*filter_parts, f"{current_stream}{tail}[vout]"])
+            cmd = [
+                "-i", str(input_path), *extra_inputs,
+                "-filter_complex", graph,
+                "-map", "[vout]", "-map", "0:a?",
+                *encode_args,
+                str(output_path),
+            ]
+        else:
+            cmd = ["-i", str(input_path), "-vf", tail, *encode_args, str(output_path)]
         run_ffmpeg(cmd, timeout=burn_timeout)
-
-    else:
-        # Only drawtext
-        vf = ",".join(drawtext_filters)
-        run_ffmpeg([
-            "-i", str(input_path),
-            "-vf", vf,
-            "-c:v", "libx264", "-preset", "veryfast", "-c:a", "copy",
-            "-movflags", "+faststart",
-            str(output_path),
-        ], timeout=burn_timeout)
+    finally:
+        for f in text_files:
+            f.unlink(missing_ok=True)
 
     return output_path
 
@@ -1006,7 +1029,7 @@ def generate_black_clip(
     """Generate a silent black video clip for end screen."""
     run_ffmpeg([
         "-f", "lavfi", "-i", f"color=black:s={width}x{height}:r={fps}:d={duration:.3f}",
-        "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo",
+        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
         "-t", f"{duration:.3f}",
         "-c:v", "libx264", "-pix_fmt", "yuv420p",
         "-c:a", "aac",
